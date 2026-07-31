@@ -1,0 +1,569 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum DepartmentType {
+  REQUESTING
+  CENTRALIZED
+}
+
+enum RoleType {
+  DEPARTMENT_HEAD
+  CENTRALIZED_FIRST_LEVEL_REVIEWER
+  CENTRALIZED_DEPARTMENT_HEAD
+  BCA_HEAD
+  CENTRALIZED_BUDGET_PREPARER
+  BUDGET_OFFICER
+  HR_ANALYST
+  CFO
+}
+
+enum ExpenseLineItemStatus {
+  STANDARD
+  PENDING_REFINEMENT
+}
+
+enum RequestStage {
+  DRAFT
+  DEPT_HEAD_REVIEW
+  CFO_APPROVAL
+  CENTRALIZED_L1_REVIEW
+  CENTRALIZED_HEAD_REVIEW
+  BCA_HEAD_REVIEW
+  BUDGET_OFFICER_REVIEW
+  APPROVED
+  RETURNED_TO_REQUESTOR
+  REJECTED
+  CANCELLED
+}
+
+enum HeadcountRequestStage {
+  DEPT_HEAD_REVIEW
+  HR_ANALYST_REVIEW
+  HR_HEAD_REVIEW
+  APPROVED
+  RETURNED
+}
+
+enum ManpowerForecastSource {
+  HR_PORTAL
+  MANUAL
+}
+
+// Notes_4: Budget Officer's only 2 actions are Return (-> HR_ANALYST_DRAFT) or
+// Upload to SAP (-> UPLOADED_TO_SAP directly) - no separate "Approved" stage.
+enum ManpowerSubmissionStage {
+  HR_ANALYST_DRAFT
+  HR_HEAD_REVIEW
+  BUDGET_OFFICER_REVIEW
+  UPLOADED_TO_SAP
+}
+
+// Global (not per-department) due-date checkpoints. Notes_2: Steps 1+2 share
+// one due date, Steps 4+5 share one due date, and a new Forecast-finalization
+// checkpoint precedes everything.
+enum DueDateStage {
+  FINALIZE_FORECAST
+  REQUEST_AND_AUTHORIZATION
+  CENTRALIZED_L1_REVIEW
+  CENTRALIZED_HEAD_REVIEW
+  BCA_AND_FINALIZATION
+}
+
+enum ForecastSubmissionStage {
+  DRAFT
+  HEAD_REVIEW
+  BUDGET_OFFICER_REVIEW
+  APPROVED
+  RETURNED
+}
+
+enum RequestStatus {
+  DRAFT
+  IN_REVIEW
+  RETURNED
+  REJECTED
+  APPROVED
+  UPLOADED_TO_SAP
+  CANCELLED
+}
+
+enum ReviewDecisionType {
+  APPROVE
+  REJECT
+  RETURN
+}
+
+enum BulkUploadStatus {
+  PROCESSING
+  COMPLETED
+  COMPLETED_WITH_ERRORS
+  FAILED
+}
+
+model Department {
+  id        String         @id @default(cuid())
+  name      String         @unique
+  type      DepartmentType
+  createdAt DateTime       @default(now())
+
+  users                  User[]
+  roleAssignments        RoleAssignment[]
+  historicalActuals      HistoricalActuals[]
+  departmentalCaps       DepartmentalBudgetCap[]
+  growthRateOverride     GrowthRateOverride?
+  budgetRequests         BudgetRequest[]
+  bulkUploadBatches      BulkUploadBatch[]
+  growthRateAuditLogs    GrowthRateAuditLog[]
+  ownedExpenseLineItems  ExpenseLineItem[]
+  additionalHeadcountRequests AdditionalHeadcountRequest[]
+  forecastSubmissions    ForecastSubmission[]
+}
+
+// Business unit / legal entity (OCC, OCLP, OCLP Project, OLC, OLC Project,
+// Outsourced). Only some ExpenseLineItem rows are company-specific variants;
+// most G&A items have none.
+model Company {
+  id   String @id @default(cuid())
+  code String @unique
+  name String
+
+  expenseLineItems           ExpenseLineItem[]
+  additionalHeadcountRequests AdditionalHeadcountRequest[]
+  manpowerEntries             ManpowerEntry[]
+  manpowerRosterSummaries     ManpowerRosterSummary[]
+}
+
+model User {
+  id        String   @id @default(cuid())
+  name      String
+  email     String   @unique
+  // Ties an imported row back to Budgeting System_Employee List.xlsx; null
+  // for users that aren't real employees (shouldn't happen post-import, but
+  // keeps the field optional for safety).
+  employeeIdNumber Int? @unique
+  departmentId String?
+  department   Department? @relation(fields: [departmentId], references: [id])
+  createdAt DateTime @default(now())
+
+  roleAssignments        RoleAssignment[] @relation("AssignedUser")
+  createdBudgetRequests  BudgetRequest[]  @relation("CreatedBy")
+  reviewDecisions        ReviewDecision[]
+  attachments            Attachment[]
+  bulkUploadBatches      BulkUploadBatch[]
+  createdHeadcountRequests AdditionalHeadcountRequest[] @relation("HeadcountCreatedBy")
+  headcountReviewDecisions HeadcountReviewDecision[]
+  manpowerTemplateUploadBatches ManpowerTemplateUploadBatch[]
+  manpowerRosterSummaries  ManpowerRosterSummary[]
+  forecastReviewDecisions  ForecastReviewDecision[]
+}
+
+model RoleAssignment {
+  id             String    @id @default(cuid())
+  departmentId   String
+  department     Department @relation(fields: [departmentId], references: [id])
+  roleType       RoleType
+  userId         String
+  user           User      @relation("AssignedUser", fields: [userId], references: [id])
+  assignedById   String?
+  effectiveDate  DateTime  @default(now())
+  createdAt      DateTime  @default(now())
+
+  @@unique([departmentId, roleType, userId])
+}
+
+// Global — Notes_2: "Don't make it per department setting, due dates setting
+// will apply to all departments." One row per DueDateStage.
+model WorkflowStageConfig {
+  id           String       @id @default(cuid())
+  stage        DueDateStage @unique
+  dueDate      DateTime
+  configuredBy String
+  updatedAt    DateTime     @updatedAt
+}
+
+model ExpenseLineItem {
+  id                String                 @id @default(cuid())
+  name              String
+  // The "Expense Category" grouping from the real catalog — Requestors pick
+  // a category first, then the line item, per the notes-driven two-level
+  // dropdown requirement.
+  category          String                 @default("Uncategorized")
+  glAccount         String
+  costCenter        String
+  // The centralized department (Admin Services/IS & IT/HR/Corporate
+  // Marketing/Tax/TSG/...) that owns this GL-CC and therefore reviews any
+  // request against it at Steps 3A/3B, regardless of which department
+  // originated the request.
+  ownerDepartmentId String
+  ownerDepartment   Department             @relation(fields: [ownerDepartmentId], references: [id])
+  // Set only for rows that are a company-specific GL-CC variant of the same
+  // name+category (mostly payroll-adjacent items). Null means the item is
+  // company-agnostic.
+  companyId         String?
+  company           Company?               @relation(fields: [companyId], references: [id])
+  // True only for the Mobile Phone line item — triggers the rank/plan policy
+  // sub-form and the conditional CFO approval gate.
+  requiresMobilePolicy Boolean              @default(false)
+  // Free-text example charges shown to Requestors (the source catalog's
+  // "Sample charges" column, e.g. "e.g., plates, air fryer").
+  sampleCharges     String?
+  isCustom          Boolean                @default(false)
+  status            ExpenseLineItemStatus  @default(STANDARD)
+  extraFieldsConfig Json                   @default("[]")
+  managedBy         String?
+  createdAt         DateTime               @default(now())
+  updatedAt         DateTime               @updatedAt
+
+  budgetRequests BudgetRequest[]
+}
+
+model GrowthRateConfig {
+  id           String   @id @default("singleton")
+  defaultValue Float
+  editedBy     String?
+  updatedAt    DateTime @updatedAt
+}
+
+model GrowthRateOverride {
+  id           String     @id @default(cuid())
+  departmentId String     @unique
+  department   Department @relation(fields: [departmentId], references: [id])
+  value        Float
+  editedBy     String?
+  updatedAt    DateTime   @updatedAt
+}
+
+model GrowthRateAuditLog {
+  id           String      @id @default(cuid())
+  userId       String
+  oldValue     Float?
+  newValue     Float
+  departmentId String?
+  department   Department? @relation(fields: [departmentId], references: [id])
+  reason       String
+  timestamp    DateTime    @default(now())
+}
+
+// Stand-in for the live SAP pull (2025 Actuals / 2026 Approved Budget / 2026 YTD
+// Actuals). Admin-editable reference data until a real SAP read replaces it.
+model HistoricalActuals {
+  id                     String     @id @default(cuid())
+  departmentId           String
+  department             Department @relation(fields: [departmentId], references: [id])
+  glAccount              String
+  costCenter             String
+  glDescription          String
+  actuals2025            Float      @default(0)
+  approvedBudget2026     Float      @default(0)
+  ytdActuals2026         Float      @default(0)
+  // { "10": 1234.5, "11": 0, "12": 0 } — keyed by calendar month (1-12).
+  // Only months after FiscalCycleConfig.asOfMonth2026 are meaningful/editable;
+  // earlier months are already folded into ytdActuals2026.
+  monthlyRemainingForecast2026 Json  @default("{}")
+  forecastCompletedAt    DateTime?
+  updatedAt              DateTime   @updatedAt
+
+  @@unique([departmentId, glAccount, costCenter])
+}
+
+// Singleton: which month the 2026 fiscal cycle is "as of" right now, so
+// past-vs-remaining-months forecast entry isn't tied to the server's actual
+// wall-clock date (which won't line up with the fictional 2026/2027 cycle).
+model FiscalCycleConfig {
+  id            String   @id @default("singleton")
+  asOfMonth2026 Int      @default(9)
+  updatedBy     String?
+  updatedAt     DateTime @updatedAt
+}
+
+model DepartmentalBudgetCap {
+  id                   String     @id @default(cuid())
+  departmentId         String
+  department           Department @relation(fields: [departmentId], references: [id])
+  fiscalYear           Int
+  value                Float
+  actualsYtd2026       Float
+  remainingForecast2026 Float
+  growthRateUsed       Float
+  computedAt           DateTime   @default(now())
+
+  @@unique([departmentId, fiscalYear])
+}
+
+model DocumentationThresholdConfig {
+  id        String   @id @default("singleton")
+  amount    Float
+  updatedAt DateTime @updatedAt
+}
+
+// Rank -> mobile phone monthly plan budget ceiling (notes item 7). A request
+// selecting a plan over the requestor's rank tier requires CFO approval.
+model MobilePhonePolicyTier {
+  id          String @id @default(cuid())
+  minRank     Int
+  maxRank     Int
+  budgetLimit Float
+}
+
+model ReasonCode {
+  id     String  @id @default(cuid())
+  label  String  @unique
+  active Boolean @default(true)
+}
+
+model BoardApprovedBudget {
+  id         String   @id @default(cuid())
+  fiscalYear Int
+  amount     Float
+  setBy      String
+  setAt      DateTime @default(now())
+}
+
+model BudgetRequest {
+  id                    String        @id @default(cuid())
+  departmentId          String
+  department            Department    @relation(fields: [departmentId], references: [id])
+  fiscalYear            Int
+  expenseLineItemId     String
+  expenseLineItem       ExpenseLineItem @relation(fields: [expenseLineItemId], references: [id])
+  monthlyAmounts        Json          // number[12]
+  proposedAmount        Float
+  businessJustification String
+  otherRequiredFields   Json          @default("{}")
+  currentStage          RequestStage  @default(DRAFT)
+  status                RequestStatus @default(DRAFT)
+  budgetCutAmount        Float        @default(0)
+  isOverBudget           Boolean      @default(false)
+  // Set at submit time when this is an over-limit Mobile Phone request;
+  // routes the request through the conditional CFO_APPROVAL stage.
+  requiresCfoApproval    Boolean      @default(false)
+  reasonCode             String?
+  sapDocumentNumber      String?
+  createdById            String
+  createdBy              User         @relation("CreatedBy", fields: [createdById], references: [id])
+  bulkUploadBatchId      String?
+  bulkUploadBatch        BulkUploadBatch? @relation(fields: [bulkUploadBatchId], references: [id])
+  createdAt              DateTime     @default(now())
+  updatedAt              DateTime     @updatedAt
+
+  attachments      Attachment[]
+  reviewDecisions  ReviewDecision[]
+}
+
+model Attachment {
+  id              String        @id @default(cuid())
+  budgetRequestId String
+  budgetRequest   BudgetRequest @relation(fields: [budgetRequestId], references: [id])
+  fileName        String
+  storagePath     String
+  uploadedById    String
+  uploadedBy      User          @relation(fields: [uploadedById], references: [id])
+  createdAt       DateTime      @default(now())
+}
+
+model ReviewDecision {
+  id              String              @id @default(cuid())
+  budgetRequestId String
+  budgetRequest   BudgetRequest       @relation(fields: [budgetRequestId], references: [id])
+  stage           RequestStage
+  decision        ReviewDecisionType
+  decidedById     String
+  decidedBy       User                @relation(fields: [decidedById], references: [id])
+  comment         String?
+  timestamp       DateTime            @default(now())
+}
+
+model BulkUploadBatch {
+  id               String            @id @default(cuid())
+  uploadedById     String
+  uploadedBy       User              @relation(fields: [uploadedById], references: [id])
+  departmentId     String
+  department       Department        @relation(fields: [departmentId], references: [id])
+  fiscalYear       Int
+  sourceFileRef    String
+  rowCount         Int
+  validationErrors Json              @default("[]")
+  status           BulkUploadStatus  @default(PROCESSING)
+  createdAt        DateTime          @default(now())
+
+  budgetRequests BudgetRequest[]
+}
+
+// ---- Additional Headcount Request (notes item "Additional Headcount") ----
+// A separate mini-workflow from BudgetRequest: Dept Head -> HR Analyst -> HR
+// Head. Approved rows feed the Manpower Budget's headcount + "Additional
+// Headcount Request" column for the target company.
+model AdditionalHeadcountRequest {
+  id                String                @id @default(cuid())
+  position          String
+  rank              Int
+  companyId         String
+  company           Company               @relation(fields: [companyId], references: [id])
+  departmentId      String
+  department        Department            @relation(fields: [departmentId], references: [id])
+  estimatedHireDate DateTime
+  justification     String
+  currentStage      HeadcountRequestStage @default(DEPT_HEAD_REVIEW)
+  createdById       String
+  createdBy         User                  @relation("HeadcountCreatedBy", fields: [createdById], references: [id])
+  createdAt         DateTime              @default(now())
+  updatedAt         DateTime              @updatedAt
+
+  reviewDecisions HeadcountReviewDecision[]
+}
+
+model HeadcountReviewDecision {
+  id                           String                     @id @default(cuid())
+  additionalHeadcountRequestId String
+  additionalHeadcountRequest   AdditionalHeadcountRequest @relation(fields: [additionalHeadcountRequestId], references: [id])
+  stage                        HeadcountRequestStage
+  decision                     ReviewDecisionType
+  decidedById                  String
+  decidedBy                    User                       @relation(fields: [decidedById], references: [id])
+  comment                      String?
+  timestamp                    DateTime                   @default(now())
+}
+
+// ---- Manpower Budgeting (HR Analyst-exclusive module) ----
+
+// The 18 fixed pay-component rows from the Manpower workbook.
+model PayComponent {
+  id                  String                 @id @default(cuid())
+  name                String                 @unique
+  sortOrder           Int                    @default(0)
+  isHeadcountDriven   Boolean                @default(false)
+  appliesMeritIncrease Boolean               @default(false)
+  forecastSource      ManpowerForecastSource @default(MANUAL)
+
+  entries ManpowerEntry[]
+}
+
+// One row per (payComponent, company, fiscalYear).
+model ManpowerEntry {
+  id                  String       @id @default(cuid())
+  payComponentId      String
+  payComponent        PayComponent @relation(fields: [payComponentId], references: [id])
+  companyId           String
+  company              Company     @relation(fields: [companyId], references: [id])
+  fiscalYear          Int
+  ytdActual           Float        @default(0)
+  // Roster-driven components (Basic Pay/Guaranteed Bonus/Gov't Contributions)
+  // are auto-filled by "Run Manpower Budget" from ManpowerRosterSummary;
+  // MANUAL components are a per-month map like
+  // HistoricalActuals.monthlyRemainingForecast2026.
+  remainingForecast   Json         @default("{}")
+  otherIncrease       Float        @default(0)
+  // HR-Analyst-manual Additional Headcount Request amount for components not
+  // covered by the rank/level lookup (resolveAdditionalHeadcountByComponent).
+  additionalHeadcountManual Float  @default(0)
+  updatedAt           DateTime     @updatedAt
+
+  @@unique([payComponentId, companyId, fiscalYear])
+}
+
+// Notes_4: "Put an editable field for the Merit Increase Rate" - a single
+// global rate per fiscal year (not per pay-component/company like the old
+// per-cell meritIncreasePercent).
+model ManpowerMeritRateConfig {
+  id          String @id @default(cuid())
+  fiscalYear  Int    @unique
+  ratePercent Float  @default(0)
+  updatedBy   String?
+  updatedAt   DateTime @updatedAt
+}
+
+// Level (1-12) -> average salary + ER contribution lookup, populated from the
+// uploaded Manpower Template's "Average Salary" sheet.
+model ManpowerSalaryLevel {
+  id            String   @id @default(cuid())
+  level         Int      @unique
+  avgSalary     Float
+  sssER         Float
+  pagibigER     Float
+  philhealthER  Float
+  updatedAt     DateTime @updatedAt
+}
+
+// Aggregated result of the uploaded Manpower Template's "Employee List"
+// sheet, grouped by company: headcount + monthly Basic Pay/Gov't
+// Contribution totals (each employee's amount resolved via
+// ManpowerSalaryLevel by their Level). Single source of truth for headcount -
+// replaces the old manual ManpowerHeadcount override + audit log.
+model ManpowerRosterSummary {
+  id               String   @id @default(cuid())
+  companyId        String
+  company          Company  @relation(fields: [companyId], references: [id])
+  fiscalYear       Int
+  headcount        Int      @default(0)
+  basicPayMonthly  Float    @default(0)
+  sssMonthly       Float    @default(0)
+  pagibigMonthly   Float    @default(0)
+  philhealthMonthly Float   @default(0)
+  sourceFileRef    String
+  uploadedById     String
+  uploadedBy       User     @relation(fields: [uploadedById], references: [id])
+  uploadedAt       DateTime @default(now())
+
+  @@unique([companyId, fiscalYear])
+}
+
+model ManpowerTemplateUploadBatch {
+  id               String           @id @default(cuid())
+  uploadedById     String
+  uploadedBy       User             @relation(fields: [uploadedById], references: [id])
+  fiscalYear       Int
+  sourceFileRef    String
+  rowCount         Int
+  validationErrors Json             @default("[]")
+  status           BulkUploadStatus @default(PROCESSING)
+  createdAt        DateTime         @default(now())
+}
+
+// The approval envelope for a Manpower Budget cycle: HR Analyst drafts/runs
+// the recompute, HR Head approves, Budget Officer finalizes + triggers SAP.
+model ManpowerBudgetSubmission {
+  id                String                  @id @default(cuid())
+  fiscalYear        Int                     @unique
+  stage             ManpowerSubmissionStage @default(HR_ANALYST_DRAFT)
+  sapDocumentNumber String?
+  submittedById     String?
+  createdAt         DateTime                @default(now())
+  updatedAt         DateTime                @updatedAt
+}
+
+// Notes_2: the 2026 Remaining Months Forecast is no longer self-certified —
+// it routes to the Centralized Department Head, then the Budget Officer,
+// either of whom can return it. Only BUDGET_OFFICER approval stamps
+// HistoricalActuals.forecastCompletedAt for the department.
+model ForecastSubmission {
+  id           String                  @id @default(cuid())
+  departmentId String
+  department   Department              @relation(fields: [departmentId], references: [id])
+  fiscalYear   Int
+  stage        ForecastSubmissionStage @default(DRAFT)
+  submittedById String?
+  createdAt    DateTime                @default(now())
+  updatedAt    DateTime                @updatedAt
+
+  reviewDecisions ForecastReviewDecision[]
+
+  @@unique([departmentId, fiscalYear])
+}
+
+model ForecastReviewDecision {
+  id                   String                  @id @default(cuid())
+  forecastSubmissionId String
+  forecastSubmission   ForecastSubmission      @relation(fields: [forecastSubmissionId], references: [id])
+  stage                ForecastSubmissionStage
+  decision             ReviewDecisionType
+  decidedById          String
+  decidedBy            User                    @relation(fields: [decidedById], references: [id])
+  comment              String?
+  timestamp            DateTime                @default(now())
+}
