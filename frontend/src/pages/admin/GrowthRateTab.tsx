@@ -67,6 +67,14 @@ export function GrowthRateTab() {
     },
   });
 
+  const removeOverride = useMutation({
+    mutationFn: async (departmentId: string) => (await api.delete(`/admin/growth-rate/overrides/${departmentId}`)).data,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["growth-rate"] });
+      queryClient.invalidateQueries({ queryKey: ["growth-rate-audit-log"] });
+    },
+  });
+
   const canEditDefault = hasRole("BUDGET_OFFICER");
   const canEditOverride = hasRole("BCA_HEAD") || hasRole("BUDGET_OFFICER");
 
@@ -113,6 +121,7 @@ export function GrowthRateTab() {
             <tr>
               <th className="py-1">Department</th>
               <th className="py-1">Override %</th>
+              {canEditOverride && <th className="py-1" />}
             </tr>
           </thead>
           <tbody>
@@ -120,6 +129,17 @@ export function GrowthRateTab() {
               <tr key={o.departmentId} className="border-t border-slate-100">
                 <td className="py-1">{o.department.name}</td>
                 <td className="py-1">{o.value}%</td>
+                {canEditOverride && (
+                  <td className="py-1 text-right">
+                    <button
+                      onClick={() => removeOverride.mutate(o.departmentId)}
+                      disabled={removeOverride.isPending}
+                      className="rounded bg-red-50 px-2 py-1 text-xs font-medium text-red-600 hover:bg-red-100 disabled:opacity-50"
+                    >
+                      Remove
+                    </button>
+                  </td>
+                )}
               </tr>
             ))}
           </tbody>

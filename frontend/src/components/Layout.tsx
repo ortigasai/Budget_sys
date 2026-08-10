@@ -45,6 +45,27 @@ function NavItem({ to, end, icon, children }: { to: string; end?: boolean; icon:
   );
 }
 
+function NewRequestSubMenu() {
+  const [searchParams] = useSearchParams();
+  const currentTab = searchParams.get("tab");
+  const location = useLocation();
+  const isStandardActive = location.pathname === "/requests/new" && !currentTab;
+
+  return (
+    <div className="ml-7 mt-1 flex flex-col gap-0.5 border-l border-emerald-100 pl-3">
+      <NavLink to="/requests/new" end className={subLinkClass(isStandardActive)}>
+        Standard Request
+      </NavLink>
+      <NavLink to="/requests/new?tab=bulk" className={subLinkClass(currentTab === "bulk")}>
+        Bulk Upload
+      </NavLink>
+      <NavLink to="/requests/new?tab=headcount" className={subLinkClass(currentTab === "headcount")}>
+        Additional Headcount Request
+      </NavLink>
+    </div>
+  );
+}
+
 const MANPOWER_FISCAL_YEAR = 2027;
 
 // Per user request: these 4 actions moved out of the Manpower Budgeting
@@ -161,9 +182,12 @@ export function Layout() {
             <NavItem to="/" end icon="home">
               Home
             </NavItem>
-            <NavItem to="/requests/new" icon="newRequest">
-              New Request
-            </NavItem>
+            <div>
+              <NavItem to="/requests/new" icon="newRequest">
+                New Request
+              </NavItem>
+              <NewRequestSubMenu />
+            </div>
             <NavItem to="/requests/mine" icon="myRequests">
               My Requests
             </NavItem>

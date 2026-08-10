@@ -1,25 +1,23 @@
-import { useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
-import { TabBar } from "../components/TabBar";
 import { StandardRequestTab } from "./newRequest/StandardRequestTab";
 import { BulkUploadTab } from "./newRequest/BulkUploadTab";
 import { AdditionalHeadcountTab } from "./newRequest/AdditionalHeadcountTab";
 
-const TABS = [
-  { id: "standard", label: "Standard Request" },
-  { id: "bulk", label: "Bulk Upload" },
-  { id: "headcount", label: "Additional Headcount Request" },
-] as const;
-
-type TabId = (typeof TABS)[number]["id"];
+const SUBTITLES = {
+  standard: "Create a standard request.",
+  bulk: "Bulk-upload a batch of requests.",
+  headcount: "Request additional headcount.",
+};
 
 export function NewRequestPage() {
-  const [tab, setTab] = useState<TabId>("standard");
+  const [searchParams] = useSearchParams();
+  const tabParam = searchParams.get("tab");
+  const tab = tabParam === "bulk" || tabParam === "headcount" ? tabParam : "standard";
 
   return (
     <div className="space-y-4">
-      <PageHeader title="New Request" subtitle="Create a standard request, bulk-upload a batch, or request additional headcount." />
-      <TabBar tabs={TABS} active={tab} onChange={setTab} />
+      <PageHeader title="New Request" subtitle={SUBTITLES[tab]} />
 
       {tab === "standard" && <StandardRequestTab />}
       {tab === "bulk" && <BulkUploadTab />}
