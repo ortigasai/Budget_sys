@@ -137,6 +137,7 @@ model Company {
   additionalHeadcountRequests AdditionalHeadcountRequest[]
   manpowerEntries             ManpowerEntry[]
   manpowerRosterSummaries     ManpowerRosterSummary[]
+  manpowerHeadcountByRank     ManpowerHeadcountByRank[]
 }
 
 model User {
@@ -511,6 +512,21 @@ model ManpowerRosterSummary {
   uploadedAt       DateTime @default(now())
 
   @@unique([companyId, fiscalYear])
+}
+
+// Notes_5: manual rank x company headcount entry ("Fill Headcount per
+// Company" button) - backs ManpowerRosterSummary for OLC/OCC/OCLP as an
+// alternative to the bulk Template upload.
+model ManpowerHeadcountByRank {
+  id         String   @id @default(cuid())
+  level      Int
+  companyId  String
+  company    Company  @relation(fields: [companyId], references: [id])
+  fiscalYear Int
+  headcount  Int      @default(0)
+  updatedAt  DateTime @updatedAt
+
+  @@unique([level, companyId, fiscalYear])
 }
 
 model ManpowerTemplateUploadBatch {

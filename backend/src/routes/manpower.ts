@@ -9,11 +9,15 @@ import { hasRole, requireAuth } from "../middleware/auth";
 import { HttpError } from "../httpError";
 import {
   budgetOfficerDecideManpowerBudget,
+  getManpowerDashboardSummary,
   getManpowerGrid,
+  getManpowerHeadcountByRank,
   hrHeadDecideManpowerBudget,
   parseManpowerTemplate,
   runManpowerRecompute,
+  setHeadcountByRank,
   setMeritRate,
+  setSalaryLevel,
   submitManpowerBudget,
 } from "../services/manpowerService";
 
@@ -92,6 +96,63 @@ manpowerRouter.get(
   asyncHandler(async (_req, res) => {
     const levels = await prisma.manpowerSalaryLevel.findMany({ orderBy: { level: "asc" } });
     res.json(levels);
+  })
+);
+
+// Notes_5: "Fill Average Salary & Gov't Contributions" button - manual
+// per-rank counterpart to the bulk Template upload.
+manpowerRouter.put(
+  "/salary-levels",
+  requireHrAnalyst,
+  asyncHandler(async (req, res) => {
+    const body = z
+      .object({
+        level: z.number().int().min(1).max(12),
+        avgSalary: z.number(),
+        sssER: z.number(),
+        pagibigER: z.number(),
+        philhealthER: z.number(),
+      })
+      .parse(req.body);
+    res.json(await setSalaryLevel(body.level, body));
+  })
+);
+
+// Notes_5: "Fill Headcount per Company" button.
+manpowerRouter.get(
+  "/headcount-by-rank",
+  requireManpowerViewer,
+  asyncHandler(async (req, res) => {
+    const fiscalYear = Number(req.query.fiscalYear ?? 2027);
+    res.json(await getManpowerHeadcountByRank(fiscalYear));
+  })
+);
+
+manpowerRouter.put(
+  "/headcount-by-rank",
+  requireHrAnalyst,
+  asyncHandler(async (req, res) => {
+    const body = z
+      .object({
+        level: z.number().int().min(1).max(12),
+        companyId: z.string(),
+        fiscalYear: z.number().int(),
+        headcount: z.number().int().min(0),
+      })
+      .parse(req.body);
+    res.json(await setHeadcountByRank(body.level, body.companyId, body.fiscalYear, body.headcount, req.user!.id));
+  })
+);
+
+// Notes_5: simplified Dashboard Report summary (Salary category only),
+// optionally scoped to one company via the company filter dropdown.
+manpowerRouter.get(
+  "/dashboard-summary",
+  requireManpowerViewer,
+  asyncHandler(async (req, res) => {
+    const fiscalYear = Number(req.query.fiscalYear ?? 2027);
+    const companyId = typeof req.query.companyId === "string" && req.query.companyId ? req.query.companyId : undefined;
+    res.json(await getManpowerDashboardSummary(fiscalYear, companyId));
   })
 );
 

@@ -38,7 +38,7 @@ export function RequestDetailPage() {
             <button
               onClick={() => cancelMutation.mutate()}
               disabled={cancelMutation.isPending}
-              className="rounded-md bg-white/15 px-2.5 py-1 text-xs font-semibold text-white ring-1 ring-white/30 hover:bg-red-500 disabled:opacity-50"
+              className="rounded-md bg-white/15 px-2.5 py-1 text-xs font-semibold text-red-200 ring-1 ring-white/30 hover:bg-white/25 hover:text-red-100 disabled:opacity-50"
             >
               Cancel Request
             </button>

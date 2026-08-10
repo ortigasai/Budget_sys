@@ -40,6 +40,11 @@ const SALARY_LEVEL_FIELD_BY_COMPONENT: Record<string, "avgSalary" | "sssER" | "p
   "Government Contributions (ER) - Philhealth": "philhealthER",
 };
 
+// Notes_5: the 5 roster-driven "Salary" category components that the new
+// Dashboard Report summary shows (Basic Pay, Guaranteed Bonus, 3 Gov't
+// Contributions) - everything else is the "Other Pay Components" table.
+const SALARY_COMPONENT_NAMES = [...Object.keys(SALARY_LEVEL_FIELD_BY_COMPONENT), "Guaranteed Bonus"];
+
 interface GridCell {
   companyId: string;
   companyCode: string;
@@ -133,7 +138,9 @@ export async function getManpowerGrid(fiscalYear: number) {
       const totalActualForecast = ytdActual + remainingForecast;
 
       const meritEligible = pc.appliesMeritIncrease && company.id !== outsourced?.id;
-      const meritAmount = meritEligible ? ytdActual * (meritRate / 100) : 0;
+      // Notes_5: Merit Increase = (Actual + Forecast) x rate, per the
+      // updated Report file's explicit formula (was YTD Actual x rate).
+      const meritAmount = meritEligible ? totalActualForecast * (meritRate / 100) : 0;
       const otherIncrease = entry?.otherIncrease ?? 0;
 
       const additionalHeadcountCount = pc.isHeadcountDriven ? additionalByCompany[company.id] ?? 0 : 0;
@@ -187,6 +194,52 @@ export async function getManpowerGrid(fiscalYear: number) {
   });
 
   return { companies, rows, headcountRow, asOfMonth: await getAsOfMonth(), meritRate };
+}
+
+/**
+ * Notes_5: the simplified "Dashboard Report" - just the 5 Salary-category
+ * rows (Basic Pay, Guaranteed Bonus, 3 Gov't Contributions) + a Total row,
+ * optionally scoped to one company (summed across all companies otherwise).
+ * Reuses getManpowerGrid's already-computed cells rather than recomputing.
+ */
+export async function getManpowerDashboardSummary(fiscalYear: number, companyId?: string) {
+  const grid = await getManpowerGrid(fiscalYear);
+  const salaryRows = grid.rows.filter((r) => SALARY_COMPONENT_NAMES.includes(r.payComponent.name));
+
+  const rowFor = (row: (typeof salaryRows)[number]) => {
+    const cells = companyId ? row.cells.filter((c) => c.companyId === companyId) : row.cells;
+    const sum = (f: (c: (typeof cells)[number]) => number) => cells.reduce((s, c) => s + f(c), 0);
+    const totalActualForecast = sum((c) => c.totalActualForecast);
+    const budget = sum((c) => c.budget);
+    return {
+      payComponentId: row.payComponent.id,
+      payComponentName: row.payComponent.name,
+      ytdActual: sum((c) => c.ytdActual),
+      remainingForecast: sum((c) => c.remainingForecast),
+      totalActualForecast,
+      meritAmount: sum((c) => c.meritAmount),
+      additionalHeadcountAmount: sum((c) => c.additionalHeadcountAmount),
+      budget,
+      budgetVsPriorAmount: budget - totalActualForecast,
+      budgetVsPriorPercent: totalActualForecast > 0 ? (budget - totalActualForecast) / totalActualForecast : 0,
+    };
+  };
+
+  const rows = salaryRows.map(rowFor);
+  const totalActualForecast = rows.reduce((s, r) => s + r.totalActualForecast, 0);
+  const totalBudget = rows.reduce((s, r) => s + r.budget, 0);
+  const total = {
+    ytdActual: rows.reduce((s, r) => s + r.ytdActual, 0),
+    remainingForecast: rows.reduce((s, r) => s + r.remainingForecast, 0),
+    totalActualForecast,
+    meritAmount: rows.reduce((s, r) => s + r.meritAmount, 0),
+    additionalHeadcountAmount: rows.reduce((s, r) => s + r.additionalHeadcountAmount, 0),
+    budget: totalBudget,
+    budgetVsPriorAmount: totalBudget - totalActualForecast,
+    budgetVsPriorPercent: totalActualForecast > 0 ? (totalBudget - totalActualForecast) / totalActualForecast : 0,
+  };
+
+  return { companyId: companyId ?? null, rows, total };
 }
 
 /**
@@ -317,6 +370,13 @@ export async function parseManpowerTemplate(
     levelRows.push({ level, avgSalary, sssER, pagibigER, philhealthER });
   }
 
+  // Fetched up front so the Employee List loop can also accept a company
+  // code directly (newer Template revisions use short codes like "OCC"
+  // instead of the full legal name).
+  const companies = await prisma.company.findMany();
+  const companyByCode = new Map(companies.map((c) => [c.code, c]));
+  const validCodes = new Set(companies.map((c) => c.code));
+
   // ---- Employee List: Company(col1), Level(col2) -> XLOOKUP'd amounts ----
   const employeeRows: { company: string; level: number }[] = [];
   for (let r = 8; r <= employeeSheet.rowCount; r++) {
@@ -328,7 +388,7 @@ export async function parseManpowerTemplate(
       errors.push({ sheet: "Employee List", row: r, error: "Company and Level must both be filled out." });
       continue;
     }
-    const code = TEMPLATE_COMPANY_NAME_TO_CODE[companyText];
+    const code = TEMPLATE_COMPANY_NAME_TO_CODE[companyText] ?? (validCodes.has(companyText.toUpperCase()) ? companyText.toUpperCase() : undefined);
     if (!code) {
       errors.push({ sheet: "Employee List", row: r, error: `Unknown company "${companyText}".` });
       continue;
@@ -342,10 +402,11 @@ export async function parseManpowerTemplate(
 
   const levelByNumber = new Map(levelRows.map((l) => [l.level, l]));
 
-  const companies = await prisma.company.findMany();
-  const companyByCode = new Map(companies.map((c) => [c.code, c]));
-
   const perCompany = new Map<string, { headcount: number; basicPay: number; sss: number; pagibig: number; philhealth: number }>();
+  // Per (company, level) headcount, so the "Fill Headcount per Company"
+  // manual-entry grid can be pre-populated with the same numbers the
+  // Employee List upload produced - the two should always agree.
+  const perCompanyLevel = new Map<string, number>();
   for (const row of employeeRows) {
     const level = levelByNumber.get(row.level);
     if (!level) continue; // level not in Average Salary sheet - treated as not-yet-configured, skipped
@@ -356,6 +417,9 @@ export async function parseManpowerTemplate(
     acc.pagibig += level.pagibigER;
     acc.philhealth += level.philhealthER;
     perCompany.set(row.company, acc);
+
+    const levelKey = `${row.company}:${row.level}`;
+    perCompanyLevel.set(levelKey, (perCompanyLevel.get(levelKey) ?? 0) + 1);
   }
 
   await prisma.$transaction([
@@ -395,6 +459,19 @@ export async function parseManpowerTemplate(
         }),
       ];
     }),
+    ...[...perCompanyLevel.entries()].flatMap(([key, headcount]) => {
+      const [code, levelStr] = key.split(":");
+      const company = companyByCode.get(code);
+      if (!company) return [];
+      const level = Number(levelStr);
+      return [
+        prisma.manpowerHeadcountByRank.upsert({
+          where: { level_companyId_fiscalYear: { level, companyId: company.id, fiscalYear } },
+          update: { headcount },
+          create: { level, companyId: company.id, fiscalYear, headcount },
+        }),
+      ];
+    }),
   ]);
 
   const batch = await prisma.manpowerTemplateUploadBatch.create({
@@ -423,6 +500,100 @@ export async function setMeritRate(fiscalYear: number, ratePercent: number, upda
     update: { ratePercent, updatedBy },
     create: { fiscalYear, ratePercent, updatedBy },
   });
+}
+
+export async function setSalaryLevel(
+  level: number,
+  fields: { avgSalary: number; sssER: number; pagibigER: number; philhealthER: number }
+) {
+  return prisma.manpowerSalaryLevel.upsert({
+    where: { level },
+    update: fields,
+    create: { level, ...fields },
+  });
+}
+
+export async function getManpowerHeadcountByRank(fiscalYear: number) {
+  // Per user request: every company gets a column here (including the
+  // "...Project" entities and Outsourced), not just OCC/OCLP/OLC.
+  const companies = await prisma.company.findMany({ orderBy: { name: "asc" } });
+  const rows = await prisma.manpowerHeadcountByRank.findMany({ where: { fiscalYear } });
+  const rowMap = new Map(rows.map((r) => [`${r.level}:${r.companyId}`, r.headcount]));
+
+  const cells = [];
+  for (let level = 1; level <= 12; level++) {
+    for (const company of companies) {
+      cells.push({
+        level,
+        companyId: company.id,
+        companyCode: company.code,
+        headcount: rowMap.get(`${level}:${company.id}`) ?? 0,
+      });
+    }
+  }
+  return { companies, cells };
+}
+
+/**
+ * Recomputes ManpowerRosterSummary for one company from the manually-entered
+ * ManpowerHeadcountByRank x ManpowerSalaryLevel tables (Notes_5's "Computed
+ * Monthly Salary" sheet: sum over ranks of headcount x per-rank rate).
+ */
+async function recomputeRosterFromRanks(companyId: string, fiscalYear: number, uploadedById: string) {
+  const [byRank, salaryLevels] = await Promise.all([
+    prisma.manpowerHeadcountByRank.findMany({ where: { companyId, fiscalYear } }),
+    prisma.manpowerSalaryLevel.findMany(),
+  ]);
+  const levelMap = new Map(salaryLevels.map((l) => [l.level, l]));
+
+  let headcount = 0;
+  let basicPay = 0;
+  let sss = 0;
+  let pagibig = 0;
+  let philhealth = 0;
+  for (const row of byRank) {
+    const level = levelMap.get(row.level);
+    if (!level || row.headcount <= 0) continue;
+    headcount += row.headcount;
+    basicPay += row.headcount * level.avgSalary;
+    sss += row.headcount * level.sssER;
+    pagibig += row.headcount * level.pagibigER;
+    philhealth += row.headcount * level.philhealthER;
+  }
+
+  await prisma.manpowerRosterSummary.upsert({
+    where: { companyId_fiscalYear: { companyId, fiscalYear } },
+    update: {
+      headcount,
+      basicPayMonthly: basicPay,
+      sssMonthly: sss,
+      pagibigMonthly: pagibig,
+      philhealthMonthly: philhealth,
+      sourceFileRef: "Manual entry (Headcount per Company)",
+      uploadedById,
+    },
+    create: {
+      companyId,
+      fiscalYear,
+      headcount,
+      basicPayMonthly: basicPay,
+      sssMonthly: sss,
+      pagibigMonthly: pagibig,
+      philhealthMonthly: philhealth,
+      sourceFileRef: "Manual entry (Headcount per Company)",
+      uploadedById,
+    },
+  });
+}
+
+export async function setHeadcountByRank(level: number, companyId: string, fiscalYear: number, headcount: number, updatedById: string) {
+  await prisma.manpowerHeadcountByRank.upsert({
+    where: { level_companyId_fiscalYear: { level, companyId, fiscalYear } },
+    update: { headcount },
+    create: { level, companyId, fiscalYear, headcount },
+  });
+  await recomputeRosterFromRanks(companyId, fiscalYear, updatedById);
+  return getManpowerHeadcountByRank(fiscalYear);
 }
 
 function requireSubmissionStage(actual: ManpowerSubmissionStage, expected: ManpowerSubmissionStage) {
