@@ -1,5 +1,7 @@
-import type { ReactNode } from "react";
-import { NavLink, Outlet } from "react-router-dom";
+import { useState, type ReactNode } from "react";
+import { NavLink, Outlet, useLocation, useSearchParams } from "react-router-dom";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { api } from "../api/client";
 import { useAuth } from "../context/AuthContext";
 import { RoleSwitcher } from "./RoleSwitcher";
 
@@ -8,6 +10,11 @@ const linkClass = ({ isActive }: { isActive: boolean }) =>
     isActive
       ? "bg-emerald-700 text-white shadow-sm shadow-emerald-700/30"
       : "text-slate-600 hover:bg-emerald-50 hover:text-emerald-900"
+  }`;
+
+const subLinkClass = (active: boolean) =>
+  `rounded-md px-2 py-1.5 text-left text-xs font-medium transition-colors ${
+    active ? "bg-emerald-100 text-emerald-900" : "text-slate-600 hover:bg-emerald-50 hover:text-emerald-900"
   }`;
 
 function Icon({ path }: { path: string }) {
@@ -35,6 +42,90 @@ function NavItem({ to, end, icon, children }: { to: string; end?: boolean; icon:
       <Icon path={ICONS[icon]} />
       {children}
     </NavLink>
+  );
+}
+
+const MANPOWER_FISCAL_YEAR = 2027;
+
+// Per user request: these 4 actions moved out of the Manpower Budgeting
+// page's toolbar into a sidebar sub-menu under "Manpower Budget". Download
+// is a plain link; Upload runs its own self-contained mutation (the sidebar
+// is mounted outside the Manpower page, so it can't share that page's local
+// state - it invalidates the same query keys instead); the two "Fill..."
+// items deep-link to /manpower?panel=salary|headcount, which
+// ManpowerDashboardPage reads to open the matching panel.
+function ManpowerSubMenu() {
+  const queryClient = useQueryClient();
+  const [searchParams] = useSearchParams();
+  const currentPanel = searchParams.get("panel");
+  const location = useLocation();
+  const isDashboardActive = location.pathname === "/manpower" && !currentPanel;
+  const [uploadStatus, setUploadStatus] = useState<{ ok: boolean; message: string } | null>(null);
+
+  const uploadMutation = useMutation({
+    mutationFn: async (file: File) => {
+      const form = new FormData();
+      form.append("file", file);
+      form.append("fiscalYear", String(MANPOWER_FISCAL_YEAR));
+      try {
+        return (await api.post("/manpower/template-upload", form)).data;
+      } catch (err: any) {
+        if (err.response?.status === 400 && err.response.data?.errors) return err.response.data;
+        throw err;
+      }
+    },
+    onSuccess: (data) => {
+      if (data.ok === false) {
+        setUploadStatus({ ok: false, message: `${data.errors.length} row(s) rejected - fix and re-upload.` });
+      } else {
+        setUploadStatus({
+          ok: true,
+          message: `Uploaded: ${data.employeesProcessed} employee(s), ${data.companiesUpdated} compan${data.companiesUpdated === 1 ? "y" : "ies"}.`,
+        });
+        [
+          "manpower-grid",
+          "manpower-submission",
+          "manpower-merit-rate",
+          "manpower-salary-levels",
+          "manpower-headcount-by-rank",
+          "manpower-dashboard-summary",
+        ].forEach((key) => queryClient.invalidateQueries({ queryKey: [key] }));
+      }
+    },
+  });
+
+  return (
+    <div className="ml-7 mt-1 flex flex-col gap-0.5 border-l border-emerald-100 pl-3">
+      <NavLink to="/manpower" className={subLinkClass(isDashboardActive)}>
+        Dashboard
+      </NavLink>
+      <a href="/api/manpower/template" className={subLinkClass(false)}>
+        Download Manpower Template
+      </a>
+      <label className={`cursor-pointer ${subLinkClass(false)}`}>
+        Upload Manpower Template
+        <input
+          type="file"
+          accept=".xlsx"
+          className="hidden"
+          onChange={(e) => {
+            setUploadStatus(null);
+            if (e.target.files?.[0]) uploadMutation.mutate(e.target.files[0]);
+          }}
+        />
+      </label>
+      {uploadStatus && (
+        <div className={`px-2 text-[11px] leading-snug ${uploadStatus.ok ? "text-emerald-700" : "text-red-600"}`}>
+          {uploadStatus.message}
+        </div>
+      )}
+      <NavLink to="/manpower?panel=salary" className={subLinkClass(currentPanel === "salary")}>
+        Fill Average Salary & Gov't Contributions
+      </NavLink>
+      <NavLink to="/manpower?panel=headcount" className={subLinkClass(currentPanel === "headcount")}>
+        Fill Headcount per Company
+      </NavLink>
+    </div>
   );
 }
 
@@ -85,9 +176,12 @@ export function Layout() {
               Forecast
             </NavItem>
             {(isHrAnalyst || isBudgetOfficer || isHrHead) && (
-              <NavItem to="/manpower" icon="manpower">
-                Manpower Budget
-              </NavItem>
+              <div>
+                <NavItem to="/manpower" icon="manpower">
+                  Manpower Budget
+                </NavItem>
+                {isHrAnalyst && <ManpowerSubMenu />}
+              </div>
             )}
             {isBudgetOfficer && (
               <>
