@@ -89,6 +89,40 @@ export function ExpenseLineItemsTab() {
     },
   });
 
+  const removeMutation = useMutation({
+    mutationFn: async (id: string) => (await api.delete(`/admin/expense-line-items/${id}`)).data,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["expense-line-items"] }),
+    onError: (err: any) => {
+      setUploadStatus({ ok: false, message: err.response?.data?.error ?? "Failed to remove line item." });
+    },
+  });
+
+  const [uploadStatus, setUploadStatus] = useState<{ ok: boolean; message: string } | null>(null);
+  const uploadMutation = useMutation({
+    mutationFn: async (file: File) => {
+      const form = new FormData();
+      form.append("file", file);
+      try {
+        return (await api.post("/admin/expense-line-items/template-upload", form)).data;
+      } catch (err: any) {
+        if (err.response?.status === 400 && err.response.data?.errors) return err.response.data;
+        throw err;
+      }
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["expense-line-items"] });
+      if (data.ok === false) {
+        setUploadStatus({ ok: false, message: data.errors.join(" ") });
+        return;
+      }
+      const skipped = data.skippedRemovals.length > 0 ? ` ${data.skippedRemovals.length} kept (in use): ${data.skippedRemovals.map((s: any) => s.name).join(", ")}.` : "";
+      setUploadStatus({
+        ok: true,
+        message: `Catalog updated: ${data.created} added, ${data.updated} updated, ${data.removed} removed.${skipped}`,
+      });
+    },
+  });
+
   return (
     <div className="space-y-6">
       {pending.length > 0 && (
@@ -137,6 +171,38 @@ export function ExpenseLineItemsTab() {
           </div>
         </div>
       )}
+
+      <div className="flex flex-wrap items-center gap-3 rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+        <div className="text-sm">
+          <div className="font-semibold text-slate-700">Upload Template</div>
+          <div className="text-xs text-slate-500">
+            Overrides the standard catalog with the uploaded file — added/changed rows are applied, and existing
+            rows missing from the file are removed (unless a request already references them).
+          </div>
+        </div>
+        <label className="cursor-pointer rounded bg-emerald-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-600">
+          {uploadMutation.isPending ? "Uploading…" : "Upload Template (.xlsx)"}
+          <input
+            type="file"
+            accept=".xlsx"
+            className="hidden"
+            disabled={uploadMutation.isPending}
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              e.target.value = "";
+              if (!file) return;
+              if (!window.confirm(`This will override the standard catalog with "${file.name}". Continue?`)) return;
+              setUploadStatus(null);
+              uploadMutation.mutate(file);
+            }}
+          />
+        </label>
+        {uploadStatus && (
+          <div className={`text-xs leading-snug ${uploadStatus.ok ? "text-emerald-700" : "text-red-600"}`}>
+            {uploadStatus.message}
+          </div>
+        )}
+      </div>
 
       <div>
         <h2 className="mb-2 text-sm font-semibold text-slate-700">Add Standard Expense Line Item</h2>
@@ -249,6 +315,7 @@ export function ExpenseLineItemsTab() {
               <th className="px-3 py-2">Company</th>
               <th className="px-3 py-2">GL Account</th>
               <th className="px-3 py-2">Cost Center</th>
+              <th className="px-3 py-2" />
             </tr>
           </thead>
           <tbody>
@@ -259,6 +326,17 @@ export function ExpenseLineItemsTab() {
                 <td className="px-3 py-2">{item.company?.code ?? "—"}</td>
                 <td className="px-3 py-2">{item.glAccount}</td>
                 <td className="px-3 py-2">{item.costCenter}</td>
+                <td className="px-3 py-2 text-right">
+                  <button
+                    onClick={() => {
+                      if (window.confirm(`Remove "${item.name}"?`)) removeMutation.mutate(item.id);
+                    }}
+                    disabled={removeMutation.isPending}
+                    className="rounded bg-red-50 px-2 py-1 text-xs font-medium text-red-600 hover:bg-red-100 disabled:opacity-50"
+                  >
+                    Remove
+                  </button>
+                </td>
               </tr>
             ))}
           </tbody>

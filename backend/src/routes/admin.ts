@@ -1,12 +1,16 @@
 import { Router } from "express";
 import { z } from "zod";
+import multer from "multer";
 import { RoleType } from "@prisma/client";
 import { prisma } from "../prisma";
 import { asyncHandler } from "../asyncHandler";
 import { requireAuth, requireRole } from "../middleware/auth";
 import { HttpError } from "../httpError";
+import { overrideExpenseLineItemsFromUpload } from "../services/expenseLineItemService";
 
 export const adminRouter = Router();
+
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
 
 adminRouter.use(requireAuth);
 
@@ -215,6 +219,35 @@ adminRouter.patch(
       data: body,
     });
     res.json(updated);
+  })
+);
+
+// "Upload Template" (override mode): the uploaded file becomes the new
+// source of truth for the STANDARD catalog — rows in the file are
+// created/updated, existing rows not in the file are removed (unless an
+// existing request references them, in which case they're kept and
+// reported back rather than breaking that request's foreign key).
+adminRouter.post(
+  "/expense-line-items/template-upload",
+  requireRole(RoleType.BUDGET_OFFICER),
+  upload.single("file"),
+  asyncHandler(async (req, res) => {
+    if (!req.file) throw new HttpError(400, "No file uploaded.");
+    const result = await overrideExpenseLineItemsFromUpload(req.file.buffer, req.user!.id);
+    res.status(result.ok ? 200 : 400).json(result);
+  })
+);
+
+adminRouter.delete(
+  "/expense-line-items/:id",
+  requireRole(RoleType.BUDGET_OFFICER),
+  asyncHandler(async (req, res) => {
+    const requestCount = await prisma.budgetRequest.count({ where: { expenseLineItemId: req.params.id } });
+    if (requestCount > 0) {
+      throw new HttpError(409, `Can't remove — ${requestCount} existing request(s) reference this line item.`);
+    }
+    await prisma.expenseLineItem.delete({ where: { id: req.params.id } });
+    res.status(204).end();
   })
 );
 

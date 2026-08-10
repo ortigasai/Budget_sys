@@ -166,7 +166,7 @@ export function Layout() {
 
   return (
     <div className="flex min-h-screen bg-slate-100">
-      <aside className="flex w-64 shrink-0 flex-col border-r border-emerald-900/10 bg-white">
+      <aside className="sticky top-0 flex h-screen w-64 shrink-0 flex-col border-r border-emerald-900/10 bg-white">
         <div className="flex items-center gap-3 bg-gradient-to-br from-emerald-700 to-emerald-900 px-5 py-5">
           <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-white/15 text-lg font-bold text-white ring-1 ring-white/30">
             ₱
