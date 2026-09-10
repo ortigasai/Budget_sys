@@ -1,0 +1,191 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Princess Jumalon - Finance \u2014 Budget - KSSB - V2",
+    "version": "1.0.0",
+    "description": "Scoped access issued by the Prompters API broker. File paths are relative to each folder scope, SAP rows and columns are allowlisted, and mail sending is limited to granted sender aliases."
+  },
+  "servers": [
+    {
+      "url": "https://paba.ortigasland.com.ph/api/v1"
+    }
+  ],
+  "security": [
+    {
+      "ApiKeyAuth": []
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "ApiKeyAuth": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-API-Key"
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "sap:budget_kssb_v2",
+      "description": "SAP report "
+    }
+  ],
+  "paths": {
+    "/sap/budget_kssb_v2/rows/": {
+      "get": {
+        "summary": "Query 'budget_kssb_v2'",
+        "tags": [
+          "sap:budget_kssb_v2"
+        ],
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 100
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 0
+            }
+          },
+          {
+            "name": "count",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            },
+            "description": "Include the total row count."
+          },
+          {
+            "name": "order_by",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "KOKRS",
+                "GJAHR",
+                "PostingPeriod",
+                "KOSTL",
+                "CostElements",
+                "CompanyCode"
+              ]
+            },
+            "description": "Prefix with '-' for descending."
+          },
+          {
+            "name": "KOKRS",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Filter on KOKRS. Append __contains, __gte, __in and so on for other operators."
+          },
+          {
+            "name": "GJAHR",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Filter on GJAHR. Append __contains, __gte, __in and so on for other operators."
+          },
+          {
+            "name": "PostingPeriod",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Filter on PostingPeriod. Append __contains, __gte, __in and so on for other operators."
+          },
+          {
+            "name": "KOSTL",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Filter on KOSTL. Append __contains, __gte, __in and so on for other operators."
+          },
+          {
+            "name": "CostElements",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Filter on CostElements. Append __contains, __gte, __in and so on for other operators."
+          },
+          {
+            "name": "CompanyCode",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Filter on CompanyCode. Append __contains, __gte, __in and so on for other operators."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Rows"
+          }
+        }
+      }
+    },
+    "/sap/budget_kssb_v2/schema/": {
+      "get": {
+        "summary": "Columns of 'budget_kssb_v2'",
+        "tags": [
+          "sap:budget_kssb_v2"
+        ],
+        "responses": {
+          "200": {
+            "description": "Schema"
+          }
+        }
+      }
+    },
+    "/sap/": {
+      "get": {
+        "summary": "List the SAP APIs this key holds",
+        "responses": {
+          "200": {
+            "description": "SAP API list"
+          }
+        }
+      }
+    },
+    "/scopes/": {
+      "get": {
+        "summary": "List the scopes this key holds",
+        "responses": {
+          "200": {
+            "description": "Scope list"
+          }
+        }
+      }
+    },
+    "/whoami/": {
+      "get": {
+        "summary": "Identify this key",
+        "responses": {
+          "200": {
+            "description": "Key identity"
+          }
+        }
+      }
+    }
+  }
+}

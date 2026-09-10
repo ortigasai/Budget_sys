@@ -40,13 +40,10 @@ export function StageDueDatesTab() {
 
   return (
     <div className="space-y-4">
-      <p className="text-sm text-slate-600">
-        Global due dates (apply to every department, not per-department). Once a stage's due date passes, actions at
-        that stage are blocked until the Budget Officer moves it.
-      </p>
+      <p className="text-sm text-slate-600">Global due dates (apply to every department, not per-department). Once a stage's due date passes, actions at that stage are blocked until the Budget Officer moves it.</p>
 
       <table className="w-full overflow-hidden rounded-lg border border-slate-200 bg-white text-sm">
-        <thead className="bg-emerald-50 text-left text-xs uppercase tracking-wide text-emerald-800">
+        <thead className="bg-emerald-50 text-left text-xs tracking-wide text-emerald-800">
           <tr>
             <th className="px-3 py-2">Stage</th>
             <th className="px-3 py-2">Current Due Date</th>
@@ -64,7 +61,7 @@ export function StageDueDatesTab() {
                   {existing ? (
                     <span className={isPastDue ? "font-medium text-red-600" : ""}>
                       {new Date(existing.dueDate).toLocaleDateString()}
-                      {isPastDue && " (past due — actions blocked)"}
+                      {isPastDue && "(past due — actions blocked)"}
                     </span>
                   ) : (
                     "Not set"
@@ -72,17 +69,8 @@ export function StageDueDatesTab() {
                 </td>
                 <td className="px-3 py-2">
                   <div className="flex items-center gap-2">
-                    <input
-                      type="date"
-                      className="rounded border border-slate-300 px-2 py-1"
-                      value={dueDates[s.stage] ?? ""}
-                      onChange={(e) => setDueDates({ ...dueDates, [s.stage]: e.target.value })}
-                    />
-                    <button
-                      onClick={() => save.mutate(s.stage)}
-                      disabled={!dueDates[s.stage]}
-                      className="rounded bg-emerald-700 px-2 py-1 text-xs font-medium text-white hover:bg-emerald-600 disabled:opacity-50"
-                    >
+                    <input type="date" className="rounded border border-slate-300 px-2 py-1" value={dueDates[s.stage] ?? ""} onChange={(e) => setDueDates({ ...dueDates, [s.stage]: e.target.value })} />
+                    <button onClick={() => save.mutate(s.stage)} disabled={!dueDates[s.stage]} className="rounded bg-emerald-700 px-2 py-1 text-xs font-medium text-white hover:bg-emerald-600 disabled:opacity-50">
                       Save
                     </button>
                   </div>

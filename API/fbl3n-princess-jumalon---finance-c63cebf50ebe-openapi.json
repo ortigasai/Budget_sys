@@ -1,0 +1,181 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Princess Jumalon - Finance \u2014 Budget - FBL3N",
+    "version": "1.0.0",
+    "description": "Scoped access issued by the Prompters API broker. File paths are relative to each folder scope, SAP rows and columns are allowlisted, and mail sending is limited to granted sender aliases."
+  },
+  "servers": [
+    {
+      "url": "https://paba.ortigasland.com.ph/api/v1"
+    }
+  ],
+  "security": [
+    {
+      "ApiKeyAuth": []
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "ApiKeyAuth": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-API-Key"
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "sap:budget_fbl3n",
+      "description": "SAP report "
+    }
+  ],
+  "paths": {
+    "/sap/budget_fbl3n/rows/": {
+      "get": {
+        "summary": "Query 'budget_fbl3n'",
+        "tags": [
+          "sap:budget_fbl3n"
+        ],
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 100
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 0
+            }
+          },
+          {
+            "name": "count",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            },
+            "description": "Include the total row count."
+          },
+          {
+            "name": "order_by",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "BUKRS",
+                "DocumentNumber",
+                "GLAccount",
+                "ProfitCenter",
+                "YearMonth"
+              ]
+            },
+            "description": "Prefix with '-' for descending."
+          },
+          {
+            "name": "BUKRS",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Filter on BUKRS. Append __contains, __gte, __in and so on for other operators."
+          },
+          {
+            "name": "DocumentNumber",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Filter on DocumentNumber. Append __contains, __gte, __in and so on for other operators."
+          },
+          {
+            "name": "GLAccount",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Filter on GLAccount. Append __contains, __gte, __in and so on for other operators."
+          },
+          {
+            "name": "ProfitCenter",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Filter on ProfitCenter. Append __contains, __gte, __in and so on for other operators."
+          },
+          {
+            "name": "YearMonth",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Filter on YearMonth. Append __contains, __gte, __in and so on for other operators."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Rows"
+          }
+        }
+      }
+    },
+    "/sap/budget_fbl3n/schema/": {
+      "get": {
+        "summary": "Columns of 'budget_fbl3n'",
+        "tags": [
+          "sap:budget_fbl3n"
+        ],
+        "responses": {
+          "200": {
+            "description": "Schema"
+          }
+        }
+      }
+    },
+    "/sap/": {
+      "get": {
+        "summary": "List the SAP APIs this key holds",
+        "responses": {
+          "200": {
+            "description": "SAP API list"
+          }
+        }
+      }
+    },
+    "/scopes/": {
+      "get": {
+        "summary": "List the scopes this key holds",
+        "responses": {
+          "200": {
+            "description": "Scope list"
+          }
+        }
+      }
+    },
+    "/whoami/": {
+      "get": {
+        "summary": "Identify this key",
+        "responses": {
+          "200": {
+            "description": "Key identity"
+          }
+        }
+      }
+    }
+  }
+}

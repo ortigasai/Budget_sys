@@ -1,13 +1,25 @@
 import { NextFunction, Request, Response } from "express";
-import { RoleType } from "@prisma/client";
+import jwt from "jsonwebtoken";
+import { RoleType, Sbu } from "@prisma/client";
 import { prisma } from "../prisma";
+
+// Shared with backend-py (same env var name, same value) so a token signed
+// by this backend's POST /auth/login is verifiable by both services.
+export const JWT_SECRET: string = (() => {
+  const value = process.env.JWT_SECRET;
+  if (!value) throw new Error("JWT_SECRET is not set - check backend/.env");
+  return value;
+})();
 
 export interface AuthedUser {
   id: string;
   name: string;
   email: string;
   departmentId: string | null;
-  roles: { roleType: RoleType; departmentId: string }[];
+  // Phase 3's BU_FINANCE_HEAD/BU_HEAD/BU_FINANCE_OFFICER are SBU-scoped
+  // rather than department-scoped - department is null and sbu is set for
+  // those, the reverse for every other (department-scoped) role.
+  roles: { roleType: RoleType; departmentId: string | null; sbu?: Sbu }[];
 }
 
 declare global {
@@ -20,20 +32,41 @@ declare global {
 }
 
 /**
- * Demo-mode auth: the frontend's role switcher sends the selected user's id
- * as `x-user-id` on every request. There is no password check. This is a
- * stand-in for real authentication and must not be used as-is in production.
+ * The frontend authenticates once via POST /auth/login (real email+password
+ * check against a bcrypt hash - see authRouter), which returns a JWT. Every
+ * subsequent request sends that token as `Authorization: Bearer <token>`.
+ * This middleware verifies the token's signature (proving it was actually
+ * issued by our own /auth/login, not just claimed by the client) and trusts
+ * its `sub` claim as the user id - the same shared secret is verified by
+ * backend-py, so a token issued here is valid there too.
  */
 export async function resolveUser(req: Request, _res: Response, next: NextFunction) {
-  const userId = req.header("x-user-id");
-  if (!userId) {
+  const header = req.header("authorization");
+  const token = header?.startsWith("Bearer ") ? header.slice("Bearer ".length) : null;
+  if (!token) {
+    next();
+    return;
+  }
+
+  let userId: string;
+  try {
+    const payload = jwt.verify(token, JWT_SECRET);
+    if (typeof payload !== "object" || typeof payload.sub !== "string") {
+      next();
+      return;
+    }
+    userId = payload.sub;
+  } catch {
+    // Expired or invalid token - treat as unauthenticated rather than erroring,
+    // same as a missing header did before; requireAuth/requireRole then reject
+    // the request with a proper 401/403 for routes that need a user.
     next();
     return;
   }
 
   const user = await prisma.user.findUnique({
     where: { id: userId },
-    include: { roleAssignments: true },
+    include: { roleAssignments: true, sbuRoleAssignments: true },
   });
 
   if (user) {
@@ -42,7 +75,10 @@ export async function resolveUser(req: Request, _res: Response, next: NextFuncti
       name: user.name,
       email: user.email,
       departmentId: user.departmentId,
-      roles: user.roleAssignments.map((r) => ({ roleType: r.roleType, departmentId: r.departmentId })),
+      roles: [
+        ...user.roleAssignments.map((r) => ({ roleType: r.roleType, departmentId: r.departmentId as string | null })),
+        ...user.sbuRoleAssignments.map((r) => ({ roleType: r.roleType, departmentId: null, sbu: r.sbu })),
+      ],
     };
   }
 
@@ -62,6 +98,11 @@ export function hasRole(user: AuthedUser | undefined, roleType: RoleType, depart
   return user.roles.some(
     (r) => r.roleType === roleType && (departmentId === undefined || r.departmentId === departmentId)
   );
+}
+
+export function hasSbuRole(user: AuthedUser | undefined, roleType: RoleType, sbu?: Sbu): boolean {
+  if (!user) return false;
+  return user.roles.some((r) => r.roleType === roleType && (sbu === undefined || r.sbu === sbu));
 }
 
 /**

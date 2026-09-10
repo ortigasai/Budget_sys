@@ -56,5 +56,26 @@ export const deptHeadHeadcountDecision = (requestId: string, userId: string, dec
 export const hrAnalystHeadcountDecision = (requestId: string, userId: string, decision: "APPROVE" | "RETURN", comment?: string) =>
   decide(requestId, userId, HeadcountRequestStage.HR_ANALYST_REVIEW, HeadcountRequestStage.HR_HEAD_REVIEW, decision, comment);
 
-export const hrHeadHeadcountDecision = (requestId: string, userId: string, decision: "APPROVE" | "RETURN", comment?: string) =>
-  decide(requestId, userId, HeadcountRequestStage.HR_HEAD_REVIEW, HeadcountRequestStage.APPROVED, decision, comment);
+export const hrHeadHeadcountDecision = async (
+  requestId: string,
+  userId: string,
+  decision: "APPROVE" | "RETURN",
+  comment?: string
+) => {
+  const updated = await decide(
+    requestId,
+    userId,
+    HeadcountRequestStage.HR_HEAD_REVIEW,
+    HeadcountRequestStage.APPROVED,
+    decision,
+    comment
+  );
+  // Notes_8: the hire is confirmed once HR Head approves — that's when the
+  // Office 365 Account request (IS & IT) and Mobile Phone budget request
+  // (Admin Services) are both created for their respective reviewers.
+  if (decision === "APPROVE") {
+    await prisma.office365AccountRequest.create({ data: { additionalHeadcountRequestId: requestId } });
+    await prisma.mobilePhoneBudgetRequest.create({ data: { additionalHeadcountRequestId: requestId } });
+  }
+  return updated;
+};

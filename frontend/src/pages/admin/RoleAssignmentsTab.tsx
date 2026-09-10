@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type Department, type DemoUser } from "../../api/client";
 import { SearchableSelect } from "../../components/SearchableSelect";
+import { roleLabel } from "../../components/RoleSwitcher";
 
 interface RoleAssignment {
   id: string;
@@ -10,14 +11,9 @@ interface RoleAssignment {
   user: { id: string; name: string; email: string };
 }
 
-const ROLE_TYPES = [
-  "DEPARTMENT_HEAD",
-  "CENTRALIZED_FIRST_LEVEL_REVIEWER",
-  "CENTRALIZED_DEPARTMENT_HEAD",
-  "BCA_HEAD",
-  "CENTRALIZED_BUDGET_PREPARER",
-  "BUDGET_OFFICER",
-];
+// Notes_7: role list and order follow the "Role" tab of the real "Budgeting
+// System_Employee List" file exactly.
+const ROLE_TYPES = ["BUDGET_OFFICER", "BCA_HEAD", "DEPARTMENT_HEAD", "DEPARTMENT_PREPARER", "CENTRALIZED_BUDGET_PREPARER", "CENTRALIZED_FIRST_LEVEL_REVIEWER", "CENTRALIZED_DEPARTMENT_HEAD", "CFO", "CEO", "HR_ANALYST"];
 
 export function RoleAssignmentsTab() {
   const queryClient = useQueryClient();
@@ -25,22 +21,58 @@ export function RoleAssignmentsTab() {
     queryKey: ["role-assignments"],
     queryFn: async () => (await api.get<RoleAssignment[]>("/admin/role-assignments")).data,
   });
-  const { data: departments = [] } = useQuery({
-    queryKey: ["departments"],
-    queryFn: async () => (await api.get<Department[]>("/admin/departments")).data,
-  });
   const { data: users = [] } = useQuery({
     queryKey: ["auth", "users"],
     queryFn: async () => (await api.get<DemoUser[]>("/auth/users")).data,
   });
 
-  const [form, setForm] = useState({ departmentId: "", roleType: ROLE_TYPES[0], userId: "" });
+  // Sort alphabetically by department, then user name, so the table reads
+  // in a stable, scannable order rather than insertion order.
+  const sortedAssignments = useMemo(() => [...assignments].sort((a, b) => a.department.name.localeCompare(b.department.name) || a.user.name.localeCompare(b.user.name)), [assignments]);
 
-  const createMutation = useMutation({
-    mutationFn: async () => (await api.post("/admin/role-assignments", form)).data,
+  // Notes_6: fields are (1) Username - searchable from the employee list,
+  // (2) Department - defaults to that user's own department but is
+  // overridable, (3) Role, (4) Email address (editable, pre-filled from the
+  // selected user's current email).
+  // Notes_9: "some employees may become an approver of more than two
+  // departments" — Department used to be a read-only mirror of the user's
+  // home department, which made it impossible to assign someone as an
+  // approver for a department they don't belong to. RoleAssignment.departmentId
+  // is already independent of User.departmentId on the backend (see
+  // schema.prisma), so this just unlocks the field the UI was artificially
+  // pinning.
+  const { data: departments = [] } = useQuery({
+    queryKey: ["departments"],
+    queryFn: async () => (await api.get<Department[]>("/admin/departments")).data,
+  });
+  const [userId, setUserId] = useState("");
+  const [departmentId, setDepartmentId] = useState("");
+  const [roleType, setRoleType] = useState(ROLE_TYPES[0]);
+  const [email, setEmail] = useState("");
+  const selectedUser = users.find((u) => u.id === userId);
+
+  const assignMutation = useMutation({
+    mutationFn: async () => {
+      if (!selectedUser) throw new Error("Select an employee.");
+      if (!departmentId) throw new Error("Select a department.");
+      if (email && email !== selectedUser.email) {
+        await api.patch(`/admin/users/${selectedUser.id}`, { email });
+      }
+      return (
+        await api.post("/admin/role-assignments", {
+          departmentId,
+          roleType,
+          userId: selectedUser.id,
+        })
+      ).data;
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["role-assignments"] });
-      setForm({ departmentId: "", roleType: ROLE_TYPES[0], userId: "" });
+      queryClient.invalidateQueries({ queryKey: ["auth", "users"] });
+      setUserId("");
+      setDepartmentId("");
+      setRoleType(ROLE_TYPES[0]);
+      setEmail("");
     },
   });
 
@@ -49,64 +81,118 @@ export function RoleAssignmentsTab() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["role-assignments"] }),
   });
 
+  // Notes_7: "Put a button to upload Employee List to update the list of
+  // employees to choose from and their corresponding departments."
+  const [uploadStatus, setUploadStatus] = useState<{ ok: boolean; message: string } | null>(null);
+  const uploadMutation = useMutation({
+    mutationFn: async (file: File) => {
+      const form = new FormData();
+      form.append("file", file);
+      return (await api.post("/admin/employees/upload", form)).data;
+    },
+    onSuccess: (data: { imported: number; positions: number; departments: number; roleAssignmentsUpdated: number }) => {
+      setUploadStatus({
+        ok: true,
+        message: `Updated ${data.imported} employees (${data.departments} departments, ${data.positions} positions, ${data.roleAssignmentsUpdated} role assignments moved to a new department).`,
+      });
+      queryClient.invalidateQueries({ queryKey: ["auth", "users"] });
+      queryClient.invalidateQueries({ queryKey: ["departments"] });
+      queryClient.invalidateQueries({ queryKey: ["positions"] });
+      queryClient.invalidateQueries({ queryKey: ["role-assignments"] });
+    },
+    onError: (err: any) => setUploadStatus({ ok: false, message: err.response?.data?.error ?? "Upload failed." }),
+  });
+
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center gap-2 text-sm">
-        <select
-          className="rounded border border-slate-300 px-2 py-1"
-          value={form.departmentId}
-          onChange={(e) => setForm({ ...form, departmentId: e.target.value })}
-        >
-          <option value="">— Department —</option>
-          {departments.map((d) => (
-            <option key={d.id} value={d.id}>
-              {d.name}
-            </option>
-          ))}
-        </select>
-        <select
-          className="rounded border border-slate-300 px-2 py-1"
-          value={form.roleType}
-          onChange={(e) => setForm({ ...form, roleType: e.target.value })}
-        >
-          {ROLE_TYPES.map((r) => (
-            <option key={r} value={r}>
-              {r}
-            </option>
-          ))}
-        </select>
-        <div className="w-64">
+      <div className="flex flex-wrap items-center gap-3 rounded-lg border border-slate-200 bg-white p-3 shadow-sm">
+        <div className="text-sm">
+          <div className="font-semibold text-slate-700">Upload Employee List</div>
+          <div className="text-xs text-slate-500">Refreshes the employees available above and their departments (column J) from an updated roster file. Matches by Id Number, so existing users keep their email/login.</div>
+        </div>
+        <label className="cursor-pointer rounded bg-emerald-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-600">
+          {uploadMutation.isPending ? "Uploading…" : "Upload Employee List (.xlsx)"}
+          <input
+            type="file"
+            accept=".xlsx"
+            className="hidden"
+            disabled={uploadMutation.isPending}
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              e.target.value = "";
+              if (!file) return;
+              setUploadStatus(null);
+              uploadMutation.mutate(file);
+            }}
+          />
+        </label>
+        {uploadStatus && <span className={`text-xs ${uploadStatus.ok ? "text-emerald-700" : "text-red-600"}`}>{uploadStatus.message}</span>}
+      </div>
+
+      <div className="flex flex-wrap items-end gap-2 text-sm">
+        <div className="w-56">
+          <label className="mb-1 block text-xs font-medium text-slate-500">Username</label>
           <SearchableSelect
-            placeholder="Search users…"
-            options={users.map((u) => ({ value: u.id, label: u.name, sublabel: u.email }))}
-            value={form.userId}
-            onChange={(v) => setForm({ ...form, userId: v })}
+            placeholder="Search employees…"
+            options={users.map((u) => ({ value: u.id, label: u.name, sublabel: u.department?.name ?? "no dept" }))}
+            value={userId}
+            onChange={(v) => {
+              setUserId(v);
+              const u = users.find((x) => x.id === v);
+              setEmail(u?.email ?? "");
+              setDepartmentId(u?.department?.id ?? "");
+            }}
           />
         </div>
-        <button
-          onClick={() => createMutation.mutate()}
-          disabled={!form.departmentId || !form.userId}
-          className="rounded bg-emerald-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-600 disabled:opacity-50"
-        >
+        <div className="w-48">
+          <label className="mb-1 block text-xs font-medium text-slate-500">Department</label>
+          <select className="w-full rounded border border-slate-300 px-2 py-1.5" value={departmentId} onChange={(e) => setDepartmentId(e.target.value)}>
+            <option value="">— Select —</option>
+            {departments.map((d) => (
+              <option key={d.id} value={d.id}>
+                {d.name}
+                {d.id !== selectedUser?.department?.id ? "(override)" : ""}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label className="mb-1 block text-xs font-medium text-slate-500">Role</label>
+          <select className="rounded border border-slate-300 px-2 py-1.5" value={roleType} onChange={(e) => setRoleType(e.target.value)}>
+            {ROLE_TYPES.map((r) => (
+              <option key={r} value={r}>
+                {roleLabel(r)}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="w-56">
+          <label className="mb-1 block text-xs font-medium text-slate-500">Email address</label>
+          <input type="email" className="w-full rounded border border-slate-300 px-2 py-1.5" value={email} onChange={(e) => setEmail(e.target.value)} />
+        </div>
+        <button onClick={() => assignMutation.mutate()} disabled={!selectedUser || !departmentId || !email || assignMutation.isPending} className="rounded bg-emerald-700 px-3 py-2 text-xs font-medium text-white hover:bg-emerald-600 disabled:opacity-50">
           Assign
         </button>
       </div>
+      {assignMutation.isError && <div className="text-xs text-red-600">{(assignMutation.error as any)?.response?.data?.error ?? "Could not assign this role."}</div>}
 
       <table className="w-full overflow-hidden rounded-lg border border-slate-200 bg-white text-sm">
-        <thead className="bg-emerald-50 text-left text-xs uppercase tracking-wide text-emerald-800">
+        <thead className="bg-emerald-50 text-left text-xs tracking-wide text-emerald-800">
           <tr>
             <th className="px-3 py-2">Department</th>
             <th className="px-3 py-2">Role</th>
             <th className="px-3 py-2">User</th>
+            <th className="px-3 py-2">Email</th>
             <th className="px-3 py-2" />
           </tr>
         </thead>
         <tbody>
-          {assignments.map((a) => (
+          {sortedAssignments.map((a) => (
             <tr key={a.id} className="border-t border-slate-100">
               <td className="px-3 py-2">{a.department.name}</td>
-              <td className="px-3 py-2">{a.roleType}</td>
+              <td className="px-3 py-2">{roleLabel(a.roleType)}</td>
               <td className="px-3 py-2">{a.user.name}</td>
+              <td className="px-3 py-2 text-slate-500">{a.user.email}</td>
               <td className="px-3 py-2 text-right">
                 <button onClick={() => deleteMutation.mutate(a.id)} className="text-xs text-red-600 hover:underline">
                   Remove

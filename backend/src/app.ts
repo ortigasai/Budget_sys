@@ -8,9 +8,10 @@ import { forecastRouter } from "./routes/forecast";
 import { dashboardRouter } from "./routes/dashboard";
 import { budgetRequestsRouter } from "./routes/budgetRequests";
 import { bulkUploadRouter } from "./routes/bulkUpload";
-import { sapRouter } from "./routes/sap";
+import { revenueBatchesRouter } from "./routes/revenueBatches";
 import { additionalHeadcountRouter } from "./routes/additionalHeadcount";
 import { manpowerRouter } from "./routes/manpower";
+import { approvedBudgetRouter } from "./routes/approvedBudget";
 
 export function createApp() {
   const app = express();
@@ -35,9 +36,10 @@ export function createApp() {
   // catch-all GET "/:id".
   app.use("/api/budget-requests", bulkUploadRouter);
   app.use("/api/budget-requests", budgetRequestsRouter);
-  app.use("/api/sap", sapRouter);
+  app.use("/api/revenue-batches", revenueBatchesRouter);
   app.use("/api/additional-headcount", additionalHeadcountRouter);
   app.use("/api/manpower", manpowerRouter);
+  app.use("/api/approved-budget", approvedBudgetRouter);
 
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {

@@ -61,7 +61,7 @@ export function SearchableSelect({
         onChange={(e) => setQuery(e.target.value)}
       />
       {open && (
-        <div className="absolute z-10 mt-1 max-h-64 w-full overflow-auto rounded border border-slate-200 bg-white shadow-lg">
+        <div className="absolute z-50 mt-1 max-h-64 w-full overflow-auto rounded border border-slate-200 bg-white shadow-lg">
           {filtered.length === 0 ? (
             <div className="px-3 py-2 text-sm text-slate-400">No matches</div>
           ) : (

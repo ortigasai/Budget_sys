@@ -1,21 +1,17 @@
-import { useState, type ReactNode } from "react";
-import { NavLink, Outlet, useLocation, useSearchParams } from "react-router-dom";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { api } from "../api/client";
+import { useLayoutEffect, useState, type ReactNode } from "react";
+import { Link, NavLink, Outlet, useLocation, useSearchParams } from "react-router-dom";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { api, SBU_OPTIONS, type Department } from "../api/client";
 import { useAuth } from "../context/AuthContext";
 import { RoleSwitcher } from "./RoleSwitcher";
+import { UserMenu } from "./UserMenu";
+import { phaseForPath } from "../lib/phases";
+import { useFiscalYear } from "../lib/fiscalCycle";
+import { ADMIN_TABS } from "../pages/admin/AdminConsolePage";
 
-const linkClass = ({ isActive }: { isActive: boolean }) =>
-  `flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
-    isActive
-      ? "bg-emerald-700 text-white shadow-sm shadow-emerald-700/30"
-      : "text-slate-600 hover:bg-emerald-50 hover:text-emerald-900"
-  }`;
+const linkClass = ({ isActive }: { isActive: boolean }) => `flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${isActive ? "bg-emerald-700 text-white shadow-sm shadow-emerald-700/30" : "text-slate-600 hover:bg-emerald-50 hover:text-emerald-900"}`;
 
-const subLinkClass = (active: boolean) =>
-  `rounded-md px-2 py-1.5 text-left text-xs font-medium transition-colors ${
-    active ? "bg-emerald-100 text-emerald-900" : "text-slate-600 hover:bg-emerald-50 hover:text-emerald-900"
-  }`;
+const subLinkClass = (active: boolean) => `rounded-md px-2 py-1.5 text-left text-xs font-medium transition-colors ${active ? "bg-emerald-100 text-emerald-900" : "text-slate-600 hover:bg-emerald-50 hover:text-emerald-900"}`;
 
 function Icon({ path }: { path: string }) {
   return (
@@ -31,9 +27,14 @@ const ICONS = {
   myRequests: "M6 3.5h9l3 3V20a.5.5 0 0 1-.5.5h-11a.5.5 0 0 1-.5-.5V4a.5.5 0 0 1 .5-.5ZM9 9.5h6M9 13h6M9 16.5h4",
   inbox: "M3.5 12h4l1.5 3h6l1.5-3h4M3.5 12 5 5.5a1 1 0 0 1 1-.8h12a1 1 0 0 1 1 .8L20.5 12M3.5 12v6a1 1 0 0 0 1 1h15a1 1 0 0 0 1-1v-6",
   forecast: "M4 19V9.5m5 9.5V5m5 14v-7m5 7V11M4 19h16",
+  utilization: "M12 3v9l7.79 4.5A9 9 0 1 0 12 3Z",
   manpower: "M9 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM3.5 20c0-3 2.5-5.5 5.5-5.5S14.5 17 14.5 20M17 11a2.5 2.5 0 1 0 0-5M20.5 20c0-2.5-1.8-4.5-4-5",
   step5: "M4 20V10m6 10V4m6 16v-7m6 7V13",
-  admin: "M12 3.5 4.5 6.5v5.2c0 4.6 3.2 8.6 7.5 9.8 4.3-1.2 7.5-5.2 7.5-9.8V6.5L12 3.5ZM9.5 12l1.8 1.8L14.7 10",
+  capex: "M4 8.5 12 4l8 4.5V19a.5.5 0 0 1-.5.5h-15a.5.5 0 0 1-.5-.5V8.5ZM9 19v-6h6v6",
+  revenue: "M3 17h4l3-9 4 12 3-9h4",
+  reports: "M9 4.5h6l3 3V19a.5.5 0 0 1-.5.5h-11A.5.5 0 0 1 6 19V5a.5.5 0 0 1 .5-.5H9ZM9 10.5h6M9 14h6M9 17.5h3.5",
+  approvedBudget: "M9 12.5l2 2 4-4.5M6 3.5h9l3 3V20a.5.5 0 0 1-.5.5h-11a.5.5 0 0 1-.5-.5V4a.5.5 0 0 1 .5-.5Z",
+  dashFlow: "M4 6h16M4 12h10M4 18h7M17 15l3 3-3 3",
 };
 
 function NavItem({ to, end, icon, children }: { to: string; end?: boolean; icon: keyof typeof ICONS; children: ReactNode }) {
@@ -45,43 +46,83 @@ function NavItem({ to, end, icon, children }: { to: string; end?: boolean; icon:
   );
 }
 
+// Notes_7/10: "Make the sub-menu collapsible"/"hide the sub-menu by
+// default. just show them when the arrow is clicked." The parent link still
+// navigates as before; a separate chevron button toggles the sub-menu's
+// visibility so the two actions don't fight each other. Starts collapsed,
+// unless the caller already knows you're inside this section (defaultOpen)
+// - e.g. landing directly on /requests/new should show its sub-menu right
+// away instead of making you click the chevron to see where you are.
+function CollapsibleNavGroup({ to, icon, label, defaultOpen, children }: { to: string; icon: keyof typeof ICONS; label: ReactNode; defaultOpen?: boolean; children: ReactNode }) {
+  const [open, setOpen] = useState(defaultOpen ?? false);
+  // The sidebar persists across client-side navigation (Layout doesn't
+  // remount), so a plain useState initializer only catches the very first
+  // page load. Re-opening whenever defaultOpen flips true - i.e. whenever
+  // you navigate INTO this section from elsewhere - covers every landing,
+  // not just the first. Doesn't fight a manual collapse: defaultOpen stays
+  // true the whole time you're in the section, so the effect doesn't fire
+  // again just because you closed it. useLayoutEffect (not useEffect) so
+  // this commits before the browser paints - an effect would let the stale
+  // "collapsed" frame flash on screen for one tick after every navigation
+  // into the section, since it only runs after paint.
+  useLayoutEffect(() => {
+    if (defaultOpen) setOpen(true);
+  }, [defaultOpen]);
+  return (
+    <div>
+      <div className="flex items-center gap-0.5">
+        <div className="min-w-0 flex-1">
+          <NavItem to={to} icon={icon}>
+            {label}
+          </NavItem>
+        </div>
+        <button type="button" onClick={() => setOpen((o) => !o)} aria-label={open ? "Collapse" : "Expand"} aria-expanded={open} className="shrink-0 rounded p-1.5 text-slate-400 transition-colors hover:bg-emerald-50 hover:text-emerald-700">
+          <svg viewBox="0 0 24 24" fill="none" strokeWidth={2} stroke="currentColor" className={`h-3.5 w-3.5 transition-transform ${open ? "rotate-90" : ""}`}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M9 6l6 6-6 6" />
+          </svg>
+        </button>
+      </div>
+      {open && children}
+    </div>
+  );
+}
+
 function NewRequestSubMenu() {
   const [searchParams] = useSearchParams();
   const currentTab = searchParams.get("tab");
-  const location = useLocation();
-  const isStandardActive = location.pathname === "/requests/new" && !currentTab;
 
   return (
     <div className="ml-7 mt-1 flex flex-col gap-0.5 border-l border-emerald-100 pl-3">
-      <NavLink to="/requests/new" end className={subLinkClass(isStandardActive)}>
-        Standard Request
+      <NavLink to="/requests/new?tab=standard" className={subLinkClass(currentTab === "standard")}>
+        General &amp; Administrative Expenses (GAE)
       </NavLink>
-      <NavLink to="/requests/new?tab=bulk" className={subLinkClass(currentTab === "bulk")}>
-        Bulk Upload
+      <NavLink to="/requests/new?tab=doe" className={subLinkClass(currentTab === "doe")}>
+        Direct Operating Expenses (DOE)
+      </NavLink>
+      <NavLink to="/requests/new?tab=npc" className={subLinkClass(currentTab === "npc")}>
+        Non-Project Capex (NPC)
+      </NavLink>
+      <NavLink to="/requests/new?tab=revenue" className={subLinkClass(currentTab === "revenue")}>
+        Revenue
       </NavLink>
       <NavLink to="/requests/new?tab=headcount" className={subLinkClass(currentTab === "headcount")}>
-        Additional Headcount Request
+        Additional Manpower
       </NavLink>
     </div>
   );
 }
 
-const MANPOWER_FISCAL_YEAR = 2027;
-
-// Per user request: these 4 actions moved out of the Manpower Budgeting
-// page's toolbar into a sidebar sub-menu under "Manpower Budget". Download
-// is a plain link; Upload runs its own self-contained mutation (the sidebar
-// is mounted outside the Manpower page, so it can't share that page's local
-// state - it invalidates the same query keys instead); the two "Fill..."
-// items deep-link to /manpower?panel=salary|headcount, which
-// ManpowerDashboardPage reads to open the matching panel.
+// Notes_6: "Fill Average Salary" and "Fill Headcount per Company" (manual
+// box-by-box entry) are replaced by a single Download/Upload Template flow -
+// Download is a plain link; Upload runs its own self-contained mutation (the
+// sidebar is mounted outside the Manpower page, so it can't share that
+// page's local state - it invalidates the same query keys instead).
 function ManpowerSubMenu() {
   const queryClient = useQueryClient();
-  const [searchParams] = useSearchParams();
-  const currentPanel = searchParams.get("panel");
   const location = useLocation();
-  const isDashboardActive = location.pathname === "/manpower" && !currentPanel;
+  const isDashboardActive = location.pathname === "/manpower";
   const [uploadStatus, setUploadStatus] = useState<{ ok: boolean; message: string } | null>(null);
+  const { targetYear: MANPOWER_FISCAL_YEAR } = useFiscalYear();
 
   const uploadMutation = useMutation({
     mutationFn: async (file: File) => {
@@ -89,7 +130,7 @@ function ManpowerSubMenu() {
       form.append("file", file);
       form.append("fiscalYear", String(MANPOWER_FISCAL_YEAR));
       try {
-        return (await api.post("/manpower/template-upload", form)).data;
+        return (await api.post("/manpower/headcount-salary-template-upload", form)).data;
       } catch (err: any) {
         if (err.response?.status === 400 && err.response.data?.errors) return err.response.data;
         throw err;
@@ -101,16 +142,9 @@ function ManpowerSubMenu() {
       } else {
         setUploadStatus({
           ok: true,
-          message: `Uploaded: ${data.employeesProcessed} employee(s), ${data.companiesUpdated} compan${data.companiesUpdated === 1 ? "y" : "ies"}.`,
+          message: `Uploaded: ${data.levelsUpdated} rank(s), ${data.companiesUpdated} compan${data.companiesUpdated === 1 ? "y" : "ies"}.`,
         });
-        [
-          "manpower-grid",
-          "manpower-submission",
-          "manpower-merit-rate",
-          "manpower-salary-levels",
-          "manpower-headcount-by-rank",
-          "manpower-dashboard-summary",
-        ].forEach((key) => queryClient.invalidateQueries({ queryKey: [key] }));
+        ["manpower-grid", "manpower-submission", "manpower-merit-rate", "manpower-dashboard-summary"].forEach((key) => queryClient.invalidateQueries({ queryKey: [key] }));
       }
     },
   });
@@ -120,11 +154,11 @@ function ManpowerSubMenu() {
       <NavLink to="/manpower" className={subLinkClass(isDashboardActive)}>
         Dashboard
       </NavLink>
-      <a href="/api/manpower/template" className={subLinkClass(false)}>
-        Download Manpower Template
+      <a href={`/api/manpower/headcount-salary-template?fiscalYear=${MANPOWER_FISCAL_YEAR}`} className={subLinkClass(false)}>
+        Download Headcount & Salary Template
       </a>
       <label className={`cursor-pointer ${subLinkClass(false)}`}>
-        Upload Manpower Template
+        Upload Headcount & Salary Template
         <input
           type="file"
           accept=".xlsx"
@@ -135,110 +169,468 @@ function ManpowerSubMenu() {
           }}
         />
       </label>
-      {uploadStatus && (
-        <div className={`px-2 text-[11px] leading-snug ${uploadStatus.ok ? "text-emerald-700" : "text-red-600"}`}>
-          {uploadStatus.message}
-        </div>
-      )}
-      <NavLink to="/manpower?panel=salary" className={subLinkClass(currentPanel === "salary")}>
-        Fill Average Salary & Gov't Contributions
+      {uploadStatus && <div className={`px-2 text-[11px] leading-snug ${uploadStatus.ok ? "text-emerald-700" : "text-red-600"}`}>{uploadStatus.message}</div>}
+    </div>
+  );
+}
+
+// Notes_9: "Move GAE, DOE and Revenue to sub-menu bar" — was a row of
+// buttons at the top of Step5DashboardPage; now a real sub-menu like New
+// Request's, driven by the same `?category=` query param the page already
+// reads. NPC was added later, treated like GAE (a flat board-approved
+// figure, no SBU breakdown) since its own breakdown dimension is Head, not
+// SBU - a separate concept not tracked per-Head here.
+function Step5SubMenu() {
+  const [searchParams] = useSearchParams();
+  const currentCategory = searchParams.get("category");
+
+  return (
+    <div className="ml-7 mt-1 flex flex-col gap-0.5 border-l border-emerald-100 pl-3">
+      <NavLink to="/step5?category=GAE" className={subLinkClass(currentCategory === "GAE")}>
+        General &amp; Administrative Expenses (GAE)
       </NavLink>
-      <NavLink to="/manpower?panel=headcount" className={subLinkClass(currentPanel === "headcount")}>
-        Fill Headcount per Company
+      <NavLink to="/step5?category=DOE" className={subLinkClass(currentCategory === "DOE")}>
+        Direct Operating Expenses (DOE)
+      </NavLink>
+      <NavLink to="/step5?category=NPC" className={subLinkClass(currentCategory === "NPC")}>
+        Non-Project Capex (NPC)
+      </NavLink>
+      <NavLink to="/step5?category=REVENUE" className={subLinkClass(currentCategory === "REVENUE")}>
+        Revenue
+      </NavLink>
+      <NavLink to="/step5/finalized-budget" className={({ isActive }) => subLinkClass(isActive)}>
+        Finalized Budget Report
       </NavLink>
     </div>
   );
 }
 
+// Note 11 §4 - "Approved Budget" (new Module 1 section). 6 SBU tabs, each
+// shown only if the current user holds an SBU Finance role for that SBU (or
+// is Budget Officer, who sees all 6) - same gating the page itself
+// re-checks against the backend, this is just which links are worth
+// showing.
+function ApprovedBudgetSubMenu() {
+  const { hasRole, hasSbuRole } = useAuth();
+  const [searchParams] = useSearchParams();
+  const currentSbu = searchParams.get("sbu");
+  const isBudgetOfficer = hasRole("BUDGET_OFFICER");
+
+  const visibleOptions = SBU_OPTIONS.filter((o) => isBudgetOfficer || hasSbuRole("BU_FINANCE_OFFICER", o.value) || hasSbuRole("BU_FINANCE_HEAD", o.value));
+
+  return (
+    <div className="ml-7 mt-1 flex flex-col gap-0.5 border-l border-emerald-100 pl-3">
+      {visibleOptions.map((o) => (
+        <NavLink key={o.value} to={`/approved-budget?sbu=${o.value}`} className={subLinkClass(currentSbu === o.value)}>
+          {o.label}
+        </NavLink>
+      ))}
+    </div>
+  );
+}
+
+// Forecast's GAE/DOE/NPC/Revenue sub-menu — same `?category=` pattern as
+// Step5SubMenu above, but with NPC included (Finalization never had it).
+function ForecastSubMenu() {
+  const [searchParams] = useSearchParams();
+  const currentCategory = searchParams.get("category");
+
+  return (
+    <div className="ml-7 mt-1 flex flex-col gap-0.5 border-l border-emerald-100 pl-3">
+      <NavLink to="/forecast?category=GAE" className={subLinkClass(currentCategory === "GAE")}>
+        General &amp; Administrative Expenses (GAE)
+      </NavLink>
+      <NavLink to="/forecast?category=DOE" className={subLinkClass(currentCategory === "DOE")}>
+        Direct Operating Expenses (DOE)
+      </NavLink>
+      <NavLink to="/forecast?category=NPC" className={subLinkClass(currentCategory === "NPC")}>
+        Non-Project Capex (NPC)
+      </NavLink>
+      <NavLink to="/forecast?category=REVENUE" className={subLinkClass(currentCategory === "REVENUE")}>
+        Revenue
+      </NavLink>
+    </div>
+  );
+}
+
+// Phase 3's New Transfer/My Transfers/Inbox sidebar nav. Not built from the
+// generic NavItem/linkClass (NavLink's own isActive matches by pathname
+// only, ignoring the query string, so all three would light up together
+// since they all share /transfers) - same reasoning as ForecastSubMenu/
+// Step5SubMenu already reading `?category=` manually instead of relying on
+// NavLink's isActive.
+//
+// "New Transfer" no longer carries a GAE/DOE sub-menu (the workflow revision
+// replaced that classification concept - SBU is now a field on the New
+// Transfer form itself), so this is a plain 3-link list.
+function TransferSidebarNav() {
+  const location = useLocation();
+  const [searchParams] = useSearchParams();
+  const view = searchParams.get("view");
+  const isTransfersPath = location.pathname === "/transfers";
+  const isNewActive = isTransfersPath && !view;
+
+  return (
+    <>
+      <Link to="/transfers" className={linkClass({ isActive: isNewActive })}>
+        <Icon path={ICONS.newRequest} />
+        New Transfer
+      </Link>
+      <Link to="/transfers?view=mine" className={linkClass({ isActive: isTransfersPath && view === "mine" })}>
+        <Icon path={ICONS.myRequests} />
+        My Transfers
+      </Link>
+      <Link to="/transfers?view=inbox" className={linkClass({ isActive: isTransfersPath && view === "inbox" })}>
+        <Icon path={ICONS.inbox} />
+        Inbox
+      </Link>
+    </>
+  );
+}
+
+// Internal Order Request sidebar nav (spec item 8) - a separate feature from
+// Transfer (own model/router), given its own New/Mine/Inbox trio at
+// /internal-orders following the identical pattern above.
+function InternalOrderSidebarNav() {
+  const location = useLocation();
+  const [searchParams] = useSearchParams();
+  const view = searchParams.get("view");
+  const isIoPath = location.pathname === "/internal-orders";
+
+  return (
+    <>
+      <Link to="/internal-orders" className={linkClass({ isActive: isIoPath && !view })}>
+        <Icon path={ICONS.newRequest} />
+        New Internal Order Request
+      </Link>
+      <Link to="/internal-orders?view=mine" className={linkClass({ isActive: isIoPath && view === "mine" })}>
+        <Icon path={ICONS.myRequests} />
+        My Internal Order Requests
+      </Link>
+      <Link to="/internal-orders?view=inbox" className={linkClass({ isActive: isIoPath && view === "inbox" })}>
+        <Icon path={ICONS.inbox} />
+        Inbox
+      </Link>
+    </>
+  );
+}
+
+// Note 11 §5 - Dash Flow Budget Check, gated the same way Approved Budget is
+// (any SBU Finance role, or Budget Officer for all SBUs) - access is
+// re-checked server-side regardless.
+function DashFlowSidebarNav() {
+  return (
+    <NavItem to="/dash-flow" end icon="dashFlow">
+      Dash Flow Budget Check
+    </NavItem>
+  );
+}
+
+// Spec item 17: Phase 2's two GAE/DOE views (previously an in-page TabBar -
+// see UtilizationPage.tsx) move into the sidebar, grouped under "Operating
+// Expenses" since they share one department picker; NPC gets its own flat
+// entry since it's scoped by SBU instead. `?view=` read manually (not
+// CollapsibleNavGroup/NavLink's own isActive) for the same reason as
+// TransferSidebarNav above - every view shares the /utilization pathname.
+function UtilizationSidebarNav() {
+  const location = useLocation();
+  const [searchParams] = useSearchParams();
+  const view = searchParams.get("view");
+  const isUtilizationPath = location.pathname === "/utilization";
+  const isOperatingExpensesActive = isUtilizationPath && view !== "npc";
+  const [open, setOpen] = useState(isOperatingExpensesActive);
+  useLayoutEffect(() => {
+    if (isOperatingExpensesActive) setOpen(true);
+  }, [isOperatingExpensesActive]);
+
+  return (
+    <>
+      <div>
+        <div className="flex items-center gap-0.5">
+          <div className="min-w-0 flex-1">
+            <Link to="/utilization" className={linkClass({ isActive: isOperatingExpensesActive })}>
+              <Icon path={ICONS.utilization} />
+              Operating Expenses (GAE &amp; DOE)
+            </Link>
+          </div>
+          <button type="button" onClick={() => setOpen((o) => !o)} aria-label={open ? "Collapse" : "Expand"} aria-expanded={open} className="shrink-0 rounded p-1.5 text-slate-400 transition-colors hover:bg-emerald-50 hover:text-emerald-700">
+            <svg viewBox="0 0 24 24" fill="none" strokeWidth={2} stroke="currentColor" className={`h-3.5 w-3.5 transition-transform ${open ? "rotate-90" : ""}`}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9 6l6 6-6 6" />
+            </svg>
+          </button>
+        </div>
+        {open && (
+          <div className="ml-7 mt-1 flex flex-col gap-0.5 border-l border-emerald-100 pl-3">
+            <Link to="/utilization" className={subLinkClass(isOperatingExpensesActive && !view)}>
+              Departmental Overview
+            </Link>
+            <Link to="/utilization?view=reconciliation" className={subLinkClass(isOperatingExpensesActive && view === "reconciliation")}>
+              Live Reconciliation
+            </Link>
+          </div>
+        )}
+      </div>
+      <Link to="/utilization?view=npc" className={linkClass({ isActive: isUtilizationPath && view === "npc" })}>
+        <Icon path={ICONS.capex} />
+        Non-Project Capex (NPC)
+      </Link>
+    </>
+  );
+}
+
+// Admin Console's sidebar (spec: "place the sidebar to the leftmost part of
+// the page - same as the other sidebars in other modules") - flat `?tab=`
+// links, same manual-active-state pattern as TransferSidebarNav above,
+// reading the shared ADMIN_TABS list so this never drifts from what
+// AdminConsolePage itself renders.
+function AdminConsoleSidebarNav() {
+  const [searchParams] = useSearchParams();
+  const tabParam = searchParams.get("tab");
+  const activeTab = ADMIN_TABS.find((t) => t.id === tabParam)?.id ?? "expense-items";
+
+  return (
+    <>
+      {ADMIN_TABS.map((t) => (
+        <Link key={t.id} to={`/admin?tab=${t.id}`} className={linkClass({ isActive: activeTab === t.id })}>
+          {t.label}
+        </Link>
+      ))}
+    </>
+  );
+}
+
 export function Layout() {
-  const { currentUser, hasRole } = useAuth();
+  const { currentUser, hasRole, hasSbuRole } = useAuth();
+  const location = useLocation();
+  // The root route is the post-login phase menu (PhaseMenuPage), not inside
+  // any one phase yet - the phase-specific nav below doesn't make sense
+  // until a phase is chosen, so it's hidden there instead of pointing at
+  // pages the user hasn't navigated into.
+  const isAtPhaseMenu = location.pathname === "/";
+  // Admin Console (spec item 10) lives outside the module system entirely -
+  // reached from its own landing-page link, not nested in any module's
+  // sidebar - so it gets neither a module's sidebar nor its top-bar title
+  // below, same treatment as the phase menu itself minus the tile grid.
+  const isAdminConsole = location.pathname.startsWith("/admin");
+  // Which phase the current route belongs to, shown in the top bar so it's
+  // clear at a glance which of the phase menu's tiles you're inside - same
+  // PHASES list PhaseMenuPage renders its tiles from, so the title/blurb
+  // shown here can never drift from what the menu itself says.
+  const currentPhase = phaseForPath(location.pathname);
 
   const isBudgetOfficer = hasRole("BUDGET_OFFICER");
-  const isReviewer =
-    hasRole("DEPARTMENT_HEAD") ||
-    hasRole("CENTRALIZED_FIRST_LEVEL_REVIEWER") ||
-    hasRole("CENTRALIZED_DEPARTMENT_HEAD") ||
-    hasRole("BCA_HEAD") ||
-    hasRole("CFO") ||
-    isBudgetOfficer;
+  const isReviewer = hasRole("DEPARTMENT_HEAD") || hasRole("CENTRALIZED_FIRST_LEVEL_REVIEWER") || hasRole("CENTRALIZED_DEPARTMENT_HEAD") || hasRole("BCA_HEAD") || hasRole("CFO") || isBudgetOfficer;
+  // Spec item 16 - Revenue's 4-stage chain reuses BCA_HEAD/BUDGET_OFFICER
+  // (already covered by isReviewer) plus Phase 3's two SBU-scoped roles.
+  const isRevenueReviewer = isReviewer || hasSbuRole("BU_FINANCE_OFFICER") || hasSbuRole("BU_FINANCE_HEAD");
+  // Note 11 §4 - "Approved Budget" (Module 1). Same SBU Finance roles as
+  // Transfers/Revenue above, plus unconditional Budget Officer oversight.
+  const canViewApprovedBudget = isBudgetOfficer || hasSbuRole("BU_FINANCE_OFFICER") || hasSbuRole("BU_FINANCE_HEAD");
   const isHrAnalyst = hasRole("HR_ANALYST");
   const isHrHead = currentUser?.department?.name === "Human Resources" && hasRole("CENTRALIZED_DEPARTMENT_HEAD");
 
-  return (
-    <div className="flex min-h-screen bg-slate-100">
-      <aside className="sticky top-0 flex h-screen w-64 shrink-0 flex-col border-r border-emerald-900/10 bg-white">
-        <div className="flex items-center gap-3 bg-gradient-to-br from-emerald-700 to-emerald-900 px-5 py-5">
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-white/15 text-lg font-bold text-white ring-1 ring-white/30">
-            ₱
-          </div>
-          <div className="leading-tight">
-            <div className="text-base font-bold tracking-tight text-white">Budgeting System</div>
-            <div className="text-[11px] font-medium uppercase tracking-wider text-emerald-100/80">Ortigas Group</div>
-          </div>
-        </div>
+  // Notes_7: "Forecast should be shown on centralized departments' dashboard
+  // only" — gated to the same core centralized department list (see
+  // backend's lib/coreDepartments.ts) that drives Home's Cap & Pool cards.
+  // The Budget Officer always sees it, matching Forecast's own view-access rule.
+  const { data: coreDepartments = [] } = useQuery({
+    queryKey: ["core-departments"],
+    queryFn: async () => (await api.get<Department[]>("/admin/core-departments")).data,
+    enabled: !!currentUser,
+  });
+  const isForecastEligible = isBudgetOfficer || coreDepartments.some((d) => d.id === currentUser?.department?.id);
 
-        {currentUser && (
-          <nav className="flex flex-1 flex-col gap-1 overflow-y-auto px-3 py-4">
-            <NavItem to="/" end icon="home">
-              Home
-            </NavItem>
-            <div>
-              <NavItem to="/requests/new" icon="newRequest">
-                New Request
-              </NavItem>
-              <NewRequestSubMenu />
+  // Notes_8: "On the menu bar, put a count of how many tasks are pending for
+  // that user." Reuses the same query keys InboxPage.tsx fetches with, so
+  // TanStack Query dedupes the network call when both are mounted — this
+  // just needs the counts, not the full inbox content.
+  const inboxCountQuery = { enabled: !!currentUser, staleTime: 30_000 };
+  const { data: budgetInboxCount = 0 } = useQuery({
+    queryKey: ["inbox"],
+    queryFn: async () => (await api.get<unknown[]>("/budget-requests/inbox")).data,
+    select: (data) => data.length,
+    ...inboxCountQuery,
+  });
+  const { data: headcountInboxCount = 0 } = useQuery({
+    queryKey: ["additional-headcount-inbox"],
+    queryFn: async () => (await api.get<unknown[]>("/additional-headcount/inbox")).data,
+    select: (data) => data.length,
+    ...inboxCountQuery,
+  });
+  const { data: forecastInboxCount = 0 } = useQuery({
+    queryKey: ["forecast-inbox"],
+    queryFn: async () => (await api.get<unknown[]>("/forecast/inbox/pending")).data,
+    select: (data) => data.length,
+    ...inboxCountQuery,
+  });
+  const { data: office365InboxCount = 0 } = useQuery({
+    queryKey: ["office365-inbox"],
+    queryFn: async () => (await api.get<unknown[]>("/additional-headcount/office365-inbox")).data,
+    select: (data) => data.length,
+    ...inboxCountQuery,
+  });
+  const { data: mobilePhoneBudgetInboxCount = 0 } = useQuery({
+    queryKey: ["mobile-phone-budget-inbox"],
+    queryFn: async () => (await api.get<unknown[]>("/additional-headcount/mobile-phone-budget-inbox")).data,
+    select: (data) => data.length,
+    ...inboxCountQuery,
+  });
+  const { data: revenueInboxCount = 0 } = useQuery({
+    queryKey: ["revenue-batches", "inbox"],
+    queryFn: async () => (await api.get<unknown[]>("/revenue-batches/inbox")).data,
+    select: (data) => data.length,
+    ...inboxCountQuery,
+  });
+  const pendingCount = budgetInboxCount + headcountInboxCount + forecastInboxCount + office365InboxCount + mobilePhoneBudgetInboxCount + revenueInboxCount;
+
+  if (!currentUser) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-slate-100">
+        <div className="w-full max-w-sm rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div className="mb-5 flex items-center gap-3">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-emerald-800 text-lg font-bold text-white">₱</div>
+            <div className="leading-tight">
+              <div className="text-base font-bold tracking-tight text-slate-900">Budgeting System</div>
+              <div className="text-[11px] font-medium tracking-wider text-slate-500">Ortigas Group</div>
             </div>
-            <NavItem to="/requests/mine" icon="myRequests">
-              My Requests
-            </NavItem>
-            {isReviewer && (
-              <NavItem to="/inbox" icon="inbox">
-                Inbox
-              </NavItem>
-            )}
-            <NavItem to="/forecast" icon="forecast">
-              Forecast
-            </NavItem>
-            {(isHrAnalyst || isBudgetOfficer || isHrHead) && (
-              <div>
-                <NavItem to="/manpower" icon="manpower">
-                  Manpower Budget
-                </NavItem>
-                {isHrAnalyst && <ManpowerSubMenu />}
-              </div>
-            )}
-            {isBudgetOfficer && (
-              <>
-                <div className="mb-1 mt-4 border-t border-slate-100 pt-4 text-xs font-semibold uppercase tracking-wide text-emerald-800/70">
-                  Budget Officer
-                </div>
-                <NavItem to="/step5" icon="step5">
-                  Step 5 Dashboard
-                </NavItem>
-                <NavItem to="/admin" icon="admin">
-                  Admin Console
-                </NavItem>
-              </>
-            )}
-          </nav>
-        )}
-
-        <div className="border-t border-slate-100 bg-slate-50 px-3 py-4">
+          </div>
           <RoleSwitcher />
         </div>
-      </aside>
+      </div>
+    );
+  }
 
-      <main className="min-w-0 flex-1 px-8 py-6">
-        {currentUser ? (
-          <div className="mx-auto max-w-6xl">
-            <Outlet />
+  // One shared green top bar across every logged-in state (phase menu and
+  // every phase) - the sidebar below it is nav-only, not a second place
+  // carrying the same branding.
+  return (
+    <div className="flex h-screen flex-col bg-slate-100">
+      <div className="flex shrink-0 items-center justify-between bg-emerald-800 px-6 py-4">
+        <div className="flex items-center gap-3">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-white/15 text-lg font-bold text-white ring-1 ring-white/30">₱</div>
+          <div className="leading-tight">
+            <div className="text-base font-bold tracking-tight text-white">Budgeting System</div>
+            <div className="text-[11px] font-medium tracking-wider text-emerald-100/80">Ortigas Group</div>
           </div>
-        ) : (
-          <div className="mt-16 text-center text-slate-500">
-            Select a demo user in the sidebar to log in and explore the Budgeting System.
-          </div>
+          {!isAtPhaseMenu && (
+            <>
+              <div className="h-8 w-px bg-white/20" />
+              <div className="text-sm font-semibold text-white/90">{isAdminConsole ? "Admin Console" : currentPhase.title}</div>
+            </>
+          )}
+        </div>
+        <UserMenu dark />
+      </div>
+
+      <div className="flex flex-1 overflow-hidden">
+        {/* Phase 3's New Transfer/My Transfers/Inbox views use a sidebar with
+            flat NavItems, no collapsible wrapper - there's no higher-level
+            grouping needed since the whole sidebar already is Phase 3,
+            unlike Forecast/New Request which are one group among several
+            Phase 1 siblings. Phase 2 (spec item 17) groups its two GAE/DOE
+            views under one collapsible "Operating Expenses" entry instead,
+            since NPC is scoped differently (by SBU, not department) and
+            reads better as its own flat entry - see UtilizationSidebarNav. */}
+        {/* Note 12 - Phase 4 has nothing left to navigate to within itself
+            (the dashboard's own control bar replaced the old 4-link
+            sub-menu), so it gets no sidebar at all now, same as any other
+            single-page phase would. */}
+        {!isAtPhaseMenu && (isAdminConsole || currentPhase.number === 1 || currentPhase.number === 2 || currentPhase.number === 3) && (
+          <aside className="flex w-64 shrink-0 flex-col overflow-y-auto border-r border-emerald-900/10 bg-white">
+            <nav className="flex flex-1 flex-col gap-1 px-3 py-4">
+              {isAdminConsole && <AdminConsoleSidebarNav />}
+              {!isAdminConsole && currentPhase.number === 1 && (
+                <>
+                  <NavItem to="/phase1" icon="home">
+                    Home
+                  </NavItem>
+                  {/* Every collapsible group starts expanded on arrival, not just
+                      once you're already on its section - each one's sub-menu
+                      should be visible right from Home without an extra click.
+                      defaultOpen=true (a constant, not derived from location)
+                      only forces this open once on first mount; a later manual
+                      collapse still sticks, since the effect that reopens it
+                      only re-fires when defaultOpen itself changes value, which
+                      it never does here. */}
+                  {isForecastEligible && (
+                    <CollapsibleNavGroup to="/forecast" icon="forecast" label="Forecast" defaultOpen>
+                      <ForecastSubMenu />
+                    </CollapsibleNavGroup>
+                  )}
+                  <CollapsibleNavGroup to="/requests/new" icon="newRequest" label="New Request" defaultOpen>
+                    <NewRequestSubMenu />
+                  </CollapsibleNavGroup>
+                  {canViewApprovedBudget && (
+                    <CollapsibleNavGroup to="/approved-budget" icon="approvedBudget" label="Approved Budget" defaultOpen>
+                      <ApprovedBudgetSubMenu />
+                    </CollapsibleNavGroup>
+                  )}
+                  <NavItem to="/requests/mine" icon="myRequests">
+                    My Requests
+                  </NavItem>
+                  {/* Revenue Approvals merged into Inbox per user request -
+                      isRevenueReviewer (isReviewer plus the two SBU Finance
+                      roles) is the gate now, so a BU Finance-only user (no
+                      base isReviewer role) still sees Inbox once Revenue
+                      batches are waiting on them. */}
+                  {isRevenueReviewer && (
+                    <NavItem to="/inbox" icon="inbox">
+                      <span className="flex flex-1 items-center justify-between">
+                        Inbox
+                        {pendingCount > 0 && <span className="rounded-full bg-red-500 px-1.5 py-0.5 text-[10px] font-bold leading-none text-white">{pendingCount}</span>}
+                      </span>
+                    </NavItem>
+                  )}
+                  {(isHrAnalyst || isBudgetOfficer || isHrHead) &&
+                    (isHrAnalyst ? (
+                      <CollapsibleNavGroup to="/manpower" icon="manpower" label="Manpower Budget" defaultOpen>
+                        <ManpowerSubMenu />
+                      </CollapsibleNavGroup>
+                    ) : (
+                      <NavItem to="/manpower" icon="manpower">
+                        Manpower Budget
+                      </NavItem>
+                    ))}
+                  {isBudgetOfficer && (
+                    <>
+                      <div className="mb-1 mt-4 border-t border-slate-100 pt-4 text-xs font-semibold tracking-wide text-emerald-800/70">Budget Officer</div>
+                      <CollapsibleNavGroup to="/step5" icon="step5" label="Budget Finalization & Upload" defaultOpen>
+                        <Step5SubMenu />
+                      </CollapsibleNavGroup>
+                    </>
+                  )}
+                </>
+              )}
+              {!isAdminConsole && currentPhase.number === 2 && (
+                <>
+                  <UtilizationSidebarNav />
+                  {canViewApprovedBudget && (
+                    <>
+                      <div className="my-1 border-t border-slate-100" />
+                      <DashFlowSidebarNav />
+                    </>
+                  )}
+                </>
+              )}
+              {currentPhase.number === 3 && (
+                <>
+                  <TransferSidebarNav />
+                  <div className="my-1 border-t border-slate-100" />
+                  <InternalOrderSidebarNav />
+                </>
+              )}
+            </nav>
+          </aside>
         )}
-      </main>
+
+        <main className="min-w-0 flex-1 overflow-y-auto">
+          <div className="px-8 py-6">
+            <div className="mx-auto max-w-6xl">
+              <Outlet />
+            </div>
+          </div>
+        </main>
+      </div>
     </div>
   );
 }

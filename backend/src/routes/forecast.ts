@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
-import { RoleType } from "@prisma/client";
+import multer from "multer";
+import { RequestCategory, RoleType } from "@prisma/client";
 import { prisma } from "../prisma";
 import { asyncHandler } from "../asyncHandler";
 import { requireAuth } from "../middleware/auth";
@@ -8,18 +9,132 @@ import { HttpError } from "../httpError";
 import { isForecastCompleteForDepartment } from "../services/workflowService";
 import { sumMonthlyForecast } from "../services/budgetCalcService";
 import { budgetOfficerDecision, headDecision, submitForecast } from "../services/forecastWorkflowService";
+import { buildForecastTemplateWorkbook } from "../services/historicalActualsService";
+import { buildNpcForecastTemplateWorkbook, getNpcForecastRows, parseNpcForecastTemplate, setNpcForecastMonth } from "../services/npcForecastService";
 import { hasRole } from "../middleware/auth";
+import { CORE_CENTRALIZED_DEPARTMENT_NAMES } from "../lib/coreDepartments";
+import { getFiscalCycle } from "../lib/fiscalCycle";
+import { NPC_SBU_VALUES } from "../lib/npcSbu";
 
 export const forecastRouter = Router();
 
 forecastRouter.use(requireAuth);
 
-async function getAsOfMonth() {
-  const config = await prisma.fiscalCycleConfig.findUnique({ where: { id: "singleton" } });
-  return config?.asOfMonth2026 ?? 9;
+// Notes_7: "Forecast should be shown on centralized departments' dashboard
+// only" — restricted to the same core centralized department list that now
+// also gates the Home dashboard's Cap & Pool cards (see lib/coreDepartments.ts).
+// Every other centralized department (there are dozens more, imported from
+// the real Employee List roster) has no forecast feature.
+forecastRouter.get(
+  "/eligible-departments",
+  asyncHandler(async (_req, res) => {
+    const departments = await prisma.department.findMany({
+      where: { name: { in: CORE_CENTRALIZED_DEPARTMENT_NAMES } },
+      orderBy: { name: "asc" },
+    });
+    res.json(departments);
+  })
+);
+
+// Mirrors budget-requests' /reviewed-by-me — this user's own past forecast
+// decisions, most recent first. Registered before the single-segment
+// "/:departmentId" route below so the literal path wins the match.
+forecastRouter.get(
+  "/reviewed-by-me",
+  asyncHandler(async (req, res) => {
+    const submissions = await prisma.forecastSubmission.findMany({
+      where: { reviewDecisions: { some: { decidedById: req.user!.id } } },
+      include: {
+        department: true,
+        reviewDecisions: { include: { decidedBy: true }, orderBy: { timestamp: "asc" } },
+      },
+    });
+    const withMyDecision = submissions
+      .map((s) => {
+        const mine = s.reviewDecisions.filter((d) => d.decidedById === req.user!.id);
+        return { ...s, myDecision: mine[mine.length - 1] };
+      })
+      .sort((a, b) => b.myDecision.timestamp.getTime() - a.myDecision.timestamp.getTime())
+      .slice(0, 20);
+    res.json(withMyDecision);
+  })
+);
+
+// Note 11 §8 - NPC Forecast, SBU-scoped rather than department-scoped (NPC
+// has no single owning department the way GAE/DOE/Revenue do - see
+// backend-py's own _resolve_npc_sbu_scope, mirrored here). Budget Officer
+// may view/edit any of the 8 NPC SBUs; everyone else is pinned to their own
+// department's Department.sbu.
+async function resolveNpcSbuScope(user: { departmentId: string | null; roles: { roleType: RoleType }[] }, requestedSbu: string | undefined): Promise<string> {
+  const isBudgetOfficer = user.roles.some((r) => r.roleType === RoleType.BUDGET_OFFICER);
+  if (isBudgetOfficer) {
+    if (!requestedSbu || !(NPC_SBU_VALUES as readonly string[]).includes(requestedSbu)) {
+      throw new HttpError(400, "Select a valid NPC SBU.");
+    }
+    return requestedSbu;
+  }
+  const department = user.departmentId ? await prisma.department.findUnique({ where: { id: user.departmentId } }) : null;
+  if (!department?.sbu) {
+    throw new HttpError(403, "Your department has no NPC SBU assigned - ask the Budget Officer to set one in the Admin Console.");
+  }
+  return department.sbu;
 }
 
-function canViewDepartment(user: { departmentId: string | null; roles: { roleType: RoleType }[] }, departmentId: string) {
+forecastRouter.get(
+  "/npc/template",
+  asyncHandler(async (req, res) => {
+    const { targetCalendarYear } = await getFiscalCycle();
+    if (targetCalendarYear < 2027) {
+      throw new HttpError(404, "The live spreadsheet template is available starting the fiscal year 2027 cycle.");
+    }
+    const npcSbu = await resolveNpcSbuScope(req.user!, req.query.npcSbu as string | undefined);
+    const workbook = await buildNpcForecastTemplateWorkbook(npcSbu, req.header("authorization") ?? "");
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Disposition", `attachment; filename="npc-forecast-template-${npcSbu.toLowerCase()}-${targetCalendarYear}.xlsx"`);
+    await workbook.xlsx.write(res);
+    res.end();
+  })
+);
+
+const npcUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
+
+forecastRouter.post(
+  "/npc/upload",
+  npcUpload.single("file"),
+  asyncHandler(async (req, res) => {
+    if (!req.file) throw new HttpError(400, "No file uploaded.");
+    const { targetCalendarYear } = await getFiscalCycle();
+    if (targetCalendarYear < 2027) {
+      throw new HttpError(404, "The live spreadsheet template is available starting the fiscal year 2027 cycle.");
+    }
+    const npcSbu = await resolveNpcSbuScope(req.user!, req.body.npcSbu as string | undefined);
+    const result = await parseNpcForecastTemplate(req.file.buffer, npcSbu, req.user!.id);
+    res.status(result.ok ? 200 : 400).json(result);
+  })
+);
+
+forecastRouter.patch(
+  "/npc/entries/:budgetRequestId",
+  asyncHandler(async (req, res) => {
+    const { month, value } = forecastEntrySchema.parse(req.body);
+    const { targetCalendarYear } = await getFiscalCycle();
+    const updated = await setNpcForecastMonth(req.params.budgetRequestId, targetCalendarYear, month, value, req.user!.id);
+    res.json(updated);
+  })
+);
+
+forecastRouter.get(
+  "/npc/:npcSbu",
+  asyncHandler(async (req, res) => {
+    const npcSbu = await resolveNpcSbuScope(req.user!, req.params.npcSbu);
+    const result = await getNpcForecastRows(npcSbu, req.header("authorization") ?? "");
+    res.json(result);
+  })
+);
+
+async function canViewDepartment(user: { departmentId: string | null; roles: { roleType: RoleType }[] }, departmentId: string) {
+  const dept = await prisma.department.findUnique({ where: { id: departmentId }, select: { name: true } });
+  if (!dept || !CORE_CENTRALIZED_DEPARTMENT_NAMES.includes(dept.name)) return false;
   return user.departmentId === departmentId || user.roles.some((r) => r.roleType === RoleType.BUDGET_OFFICER);
 }
 
@@ -31,33 +146,63 @@ function canViewDepartment(user: { departmentId: string | null; roles: { roleTyp
 forecastRouter.get(
   "/:departmentId",
   asyncHandler(async (req, res) => {
-    if (!canViewDepartment(req.user!, req.params.departmentId)) {
+    if (!(await canViewDepartment(req.user!, req.params.departmentId))) {
       throw new HttpError(403, "You can only view your own department's forecast.");
     }
 
-    const [rows, asOfMonth] = await Promise.all([
-      prisma.historicalActuals.findMany({
-        where: { departmentId: req.params.departmentId },
-        orderBy: { glDescription: "asc" },
-      }),
-      getAsOfMonth(),
-    ]);
+    const cycle = await getFiscalCycle();
+    const rows = await prisma.historicalActuals.findMany({
+      where: { departmentId: req.params.departmentId, fiscalYear: cycle.targetCalendarYear },
+      orderBy: { glDescription: "asc" },
+    });
+    const asOfMonth = cycle.asOfMonth;
 
     const withComputedColumns = rows.map((r) => {
       const remainingMonthsForecast = sumMonthlyForecast(r.monthlyRemainingForecast2026);
       const availableBudget2026 = r.approvedBudget2026 - r.ytdActuals2026;
+      // Notes_9: matches "Budgeting System_Forecast Template.xlsx" exactly —
+      // its own "2026 Total Actual + Forecast" column is YTD + Total (col
+      // L = E5+K5), and "2026 Remaining Budget" is Approved - that same
+      // total (col M = D5-L5), which is algebraically identical to the
+      // pre-existing availableBudget2026 - remainingMonthsForecast.
+      const totalActualForecast = r.ytdActuals2026 + remainingMonthsForecast;
       const remainingBudget2026 = availableBudget2026 - remainingMonthsForecast;
-      return { ...r, remainingMonthsForecast, availableBudget2026, remainingBudget2026 };
+      return { ...r, remainingMonthsForecast, availableBudget2026, totalActualForecast, remainingBudget2026 };
     });
 
     res.json({ asOfMonth, rows: withComputedColumns });
   })
 );
 
+// Note 11 §9 - "Open Spreadsheet Template" for GAE/DOE/Revenue Forecast
+// (NPC has its own distinct shape - see the /npc/template route added
+// separately). Gated to fiscal year 2027+ (targetCalendarYear, the cycle
+// this reference data belongs to) - 2026 keeps only the existing plain
+// "Upload Forecast Template" flow.
+forecastRouter.get(
+  "/:departmentId/template",
+  asyncHandler(async (req, res) => {
+    if (!(await canViewDepartment(req.user!, req.params.departmentId))) {
+      throw new HttpError(403, "You can only view your own department's forecast.");
+    }
+    const category = z.nativeEnum(RequestCategory).parse(req.query.category);
+    const { targetCalendarYear } = await getFiscalCycle();
+    if (targetCalendarYear < 2027) {
+      throw new HttpError(404, "The live spreadsheet template is available starting the fiscal year 2027 cycle.");
+    }
+
+    const workbook = await buildForecastTemplateWorkbook(req.params.departmentId, category);
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Disposition", `attachment; filename="forecast-template-${category.toLowerCase()}-${targetCalendarYear}.xlsx"`);
+    await workbook.xlsx.write(res);
+    res.end();
+  })
+);
+
 forecastRouter.get(
   "/:departmentId/completion-status",
   asyncHandler(async (req, res) => {
-    if (!canViewDepartment(req.user!, req.params.departmentId)) {
+    if (!(await canViewDepartment(req.user!, req.params.departmentId))) {
       throw new HttpError(403, "You can only view your own department's forecast.");
     }
     const complete = await isForecastCompleteForDepartment(req.params.departmentId);
@@ -76,12 +221,12 @@ forecastRouter.patch(
   asyncHandler(async (req, res) => {
     const row = await prisma.historicalActuals.findUniqueOrThrow({ where: { id: req.params.id } });
 
-    if (!canViewDepartment(req.user!, row.departmentId)) {
+    if (!(await canViewDepartment(req.user!, row.departmentId))) {
       throw new HttpError(403, "Only the owning department or the Budget Officer can enter this forecast.");
     }
 
     const { month, value } = forecastEntrySchema.parse(req.body);
-    const asOfMonth = await getAsOfMonth();
+    const { asOfMonth } = await getFiscalCycle();
     if (month <= asOfMonth) {
       throw new HttpError(400, `Month ${month} is already in Actuals (as-of month is ${asOfMonth}).`);
     }
@@ -101,16 +246,15 @@ forecastRouter.patch(
 // submits -> Centralized Department Head (approve/return) -> Budget Officer
 // (approve/return). Only Budget Officer approval marks the department's
 // forecast "complete" and unblocks Step 3A.
-const FISCAL_YEAR = 2027;
-
 forecastRouter.get(
   "/:departmentId/submission",
   asyncHandler(async (req, res) => {
-    if (!canViewDepartment(req.user!, req.params.departmentId)) {
+    if (!(await canViewDepartment(req.user!, req.params.departmentId))) {
       throw new HttpError(403, "You can only view your own department's forecast.");
     }
+    const { targetCalendarYear } = await getFiscalCycle();
     const submission = await prisma.forecastSubmission.findUnique({
-      where: { departmentId_fiscalYear: { departmentId: req.params.departmentId, fiscalYear: FISCAL_YEAR } },
+      where: { departmentId_fiscalYear: { departmentId: req.params.departmentId, fiscalYear: targetCalendarYear } },
       include: { reviewDecisions: { include: { decidedBy: true }, orderBy: { timestamp: "asc" } } },
     });
     res.json(submission ?? { stage: "DRAFT", reviewDecisions: [] });
@@ -136,7 +280,10 @@ forecastRouter.get(
     }
     const submissions = await prisma.forecastSubmission.findMany({
       where: { OR: clauses },
-      include: { department: true },
+      include: {
+        department: true,
+        reviewDecisions: { include: { decidedBy: true }, orderBy: { timestamp: "asc" } },
+      },
       orderBy: { updatedAt: "asc" },
     });
     res.json(submissions);
@@ -146,10 +293,11 @@ forecastRouter.get(
 forecastRouter.post(
   "/:departmentId/submit",
   asyncHandler(async (req, res) => {
-    if (!canViewDepartment(req.user!, req.params.departmentId)) {
+    if (!(await canViewDepartment(req.user!, req.params.departmentId))) {
       throw new HttpError(403, "Only the owning department or the Budget Officer can submit this forecast.");
     }
-    const updated = await submitForecast(req.params.departmentId, FISCAL_YEAR, req.user!.id);
+    const { targetCalendarYear } = await getFiscalCycle();
+    const updated = await submitForecast(req.params.departmentId, targetCalendarYear, req.user!.id);
     res.json(updated);
   })
 );
@@ -163,7 +311,8 @@ forecastRouter.post(
     const { decision, comment } = z
       .object({ decision: z.enum(["APPROVE", "RETURN"]), comment: z.string().optional() })
       .parse(req.body);
-    const updated = await headDecision(req.params.departmentId, FISCAL_YEAR, req.user!.id, decision, comment);
+    const { targetCalendarYear } = await getFiscalCycle();
+    const updated = await headDecision(req.params.departmentId, targetCalendarYear, req.user!.id, decision, comment);
     res.json(updated);
   })
 );
@@ -177,7 +326,8 @@ forecastRouter.post(
     const { decision, comment } = z
       .object({ decision: z.enum(["APPROVE", "RETURN"]), comment: z.string().optional() })
       .parse(req.body);
-    const updated = await budgetOfficerDecision(req.params.departmentId, FISCAL_YEAR, req.user!.id, decision, comment);
+    const { targetCalendarYear } = await getFiscalCycle();
+    const updated = await budgetOfficerDecision(req.params.departmentId, targetCalendarYear, req.user!.id, decision, comment);
     res.json(updated);
   })
 );

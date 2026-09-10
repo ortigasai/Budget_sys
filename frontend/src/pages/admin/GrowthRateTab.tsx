@@ -36,8 +36,7 @@ export function GrowthRateTab() {
   const [defaultValue, setDefaultValue] = useState("");
   const [defaultReason, setDefaultReason] = useState("");
   const setDefault = useMutation({
-    mutationFn: async () =>
-      (await api.patch("/admin/growth-rate/default", { value: Number(defaultValue), reason: defaultReason })).data,
+    mutationFn: async () => (await api.patch("/admin/growth-rate/default", { value: Number(defaultValue), reason: defaultReason })).data,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["growth-rate"] });
       queryClient.invalidateQueries({ queryKey: ["growth-rate-audit-log"] });
@@ -82,29 +81,15 @@ export function GrowthRateTab() {
     <div className="space-y-6">
       <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
         <div className="mb-2 text-sm font-semibold">
-          Default Growth Rate: <span className="text-emerald-800">{data?.default ?? 0}%</span>{" "}
+          Default Growth Rate: <span className="text-emerald-800">{data?.default ?? 0}%</span>
+          {""}
           <span className="text-xs font-normal text-slate-500">(Budget Officer only — FR-1.7)</span>
         </div>
         {canEditDefault && (
           <div className="flex flex-wrap items-center gap-2 text-sm">
-            <input
-              type="number"
-              placeholder="New default %"
-              className="w-32 rounded border border-slate-300 px-2 py-1"
-              value={defaultValue}
-              onChange={(e) => setDefaultValue(e.target.value)}
-            />
-            <input
-              placeholder="Reason for change (mandatory)"
-              className="flex-1 rounded border border-slate-300 px-2 py-1"
-              value={defaultReason}
-              onChange={(e) => setDefaultReason(e.target.value)}
-            />
-            <button
-              onClick={() => setDefault.mutate()}
-              disabled={!defaultValue || !defaultReason}
-              className="rounded bg-emerald-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-600 disabled:opacity-50"
-            >
+            <input type="number" placeholder="New default %" className="w-32 rounded border border-slate-300 px-2 py-1" value={defaultValue} onChange={(e) => setDefaultValue(e.target.value)} />
+            <input placeholder="Reason for change (mandatory)" className="flex-1 rounded border border-slate-300 px-2 py-1" value={defaultReason} onChange={(e) => setDefaultReason(e.target.value)} />
+            <button onClick={() => setDefault.mutate()} disabled={!defaultValue || !defaultReason} className="rounded bg-emerald-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-600 disabled:opacity-50">
               Update
             </button>
           </div>
@@ -113,11 +98,11 @@ export function GrowthRateTab() {
 
       <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
         <div className="mb-2 text-sm font-semibold">
-          Departmental Exception Table{" "}
+          Departmental Exception Table{""}
           <span className="text-xs font-normal text-slate-500">(BC&amp;A or Budget Officer — FR-1.8)</span>
         </div>
         <table className="w-full text-sm">
-          <thead className="bg-emerald-50 text-left text-xs uppercase tracking-wide text-emerald-800">
+          <thead className="bg-emerald-50 text-left text-xs tracking-wide text-emerald-800">
             <tr>
               <th className="py-1">Department</th>
               <th className="py-1">Override %</th>
@@ -131,11 +116,7 @@ export function GrowthRateTab() {
                 <td className="py-1">{o.value}%</td>
                 {canEditOverride && (
                   <td className="py-1 text-right">
-                    <button
-                      onClick={() => removeOverride.mutate(o.departmentId)}
-                      disabled={removeOverride.isPending}
-                      className="rounded bg-red-50 px-2 py-1 text-xs font-medium text-red-600 hover:bg-red-100 disabled:opacity-50"
-                    >
+                    <button onClick={() => removeOverride.mutate(o.departmentId)} disabled={removeOverride.isPending} className="rounded bg-red-50 px-2 py-1 text-xs font-medium text-red-600 hover:bg-red-100 disabled:opacity-50">
                       Remove
                     </button>
                   </td>
@@ -146,11 +127,7 @@ export function GrowthRateTab() {
         </table>
         {canEditOverride && (
           <div className="mt-3 flex flex-wrap items-center gap-2 text-sm">
-            <select
-              className="rounded border border-slate-300 px-2 py-1"
-              value={overrideDept}
-              onChange={(e) => setOverrideDept(e.target.value)}
-            >
+            <select className="rounded border border-slate-300 px-2 py-1" value={overrideDept} onChange={(e) => setOverrideDept(e.target.value)}>
               <option value="">— Department —</option>
               {departments
                 .filter((d) => d.type === "CENTRALIZED")
@@ -160,24 +137,9 @@ export function GrowthRateTab() {
                   </option>
                 ))}
             </select>
-            <input
-              type="number"
-              placeholder="Override %"
-              className="w-24 rounded border border-slate-300 px-2 py-1"
-              value={overrideValue}
-              onChange={(e) => setOverrideValue(e.target.value)}
-            />
-            <input
-              placeholder="Reason (mandatory)"
-              className="flex-1 rounded border border-slate-300 px-2 py-1"
-              value={overrideReason}
-              onChange={(e) => setOverrideReason(e.target.value)}
-            />
-            <button
-              onClick={() => setOverride.mutate()}
-              disabled={!overrideDept || !overrideValue || !overrideReason}
-              className="rounded bg-emerald-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-600 disabled:opacity-50"
-            >
+            <input type="number" placeholder="Override %" className="w-24 rounded border border-slate-300 px-2 py-1" value={overrideValue} onChange={(e) => setOverrideValue(e.target.value)} />
+            <input placeholder="Reason (mandatory)" className="flex-1 rounded border border-slate-300 px-2 py-1" value={overrideReason} onChange={(e) => setOverrideReason(e.target.value)} />
+            <button onClick={() => setOverride.mutate()} disabled={!overrideDept || !overrideValue || !overrideReason} className="rounded bg-emerald-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-600 disabled:opacity-50">
               Set Override
             </button>
           </div>
@@ -189,8 +151,9 @@ export function GrowthRateTab() {
         <ul className="space-y-1 text-sm">
           {auditLog.map((entry) => (
             <li key={entry.id} className="border-t border-slate-100 pt-1 first:border-t-0 first:pt-0">
-              {entry.department?.name ?? "Default"}: {entry.oldValue ?? "—"}% → {entry.newValue}% —{" "}
-              <span className="italic text-slate-600">{entry.reason}</span>{" "}
+              {entry.department?.name ?? "Default"}: {entry.oldValue ?? "—"}% → {entry.newValue}% —{""}
+              <span className="italic text-slate-600">{entry.reason}</span>
+              {""}
               <span className="text-xs text-slate-400">{new Date(entry.timestamp).toLocaleString()}</span>
             </li>
           ))}

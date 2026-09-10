@@ -12,20 +12,63 @@ enum DepartmentType {
   CENTRALIZED
 }
 
+// Notes_7: the first 9 roles follow the "Role" tab of the real
+// "Budgeting System_Employee List" file exactly. DEPARTMENT_PREPARER
+// is new here — like CENTRALIZED_BUDGET_PREPARER it's assignable and shown in
+// Role Assignments but isn't gated by any route yet, since request creation
+// isn't currently restricted by role.
 enum RoleType {
   DEPARTMENT_HEAD
+  DEPARTMENT_PREPARER
   CENTRALIZED_FIRST_LEVEL_REVIEWER
   CENTRALIZED_DEPARTMENT_HEAD
-  BCA_HEAD
   CENTRALIZED_BUDGET_PREPARER
+  BCA_HEAD
   BUDGET_OFFICER
   HR_ANALYST
   CFO
+  // Phase 3 Transfer workflow revision — company-wide, unscoped, assigned
+  // via the plain RoleAssignment model same as CFO (see transfers.py's
+  // CFO_APPROVAL/CEO_APPROVAL stages).
+  CEO
+  // Phase 3 — SBU-scoped (SbuRoleAssignment below, not RoleAssignment),
+  // labeled "SBU Finance Head"/"SBU Head"/"SBU Finance Officer" in the UI.
+  BU_FINANCE_HEAD
+  BU_HEAD
+  BU_FINANCE_OFFICER
 }
 
 enum ExpenseLineItemStatus {
   STANDARD
   PENDING_REFINEMENT
+}
+
+// Notes_8: high-level classification the New Request menu is organized
+// around, on top of (not instead of) the existing granular ExpenseLineItem
+// category. NPC/Revenue have no real submission form yet (still placeholder
+// tabs — see NewRequestPage.tsx) so no BudgetRequest carries those values
+// today, but the enum reserves the slot for when they're built.
+enum RequestCategory {
+  GAE
+  DOE
+  NPC
+  REVENUE
+}
+
+// Notes_8: the Strategic Business Units DOE/NPC/Revenue requests are tagged
+// with; GAE requests have no SBU (null). CORPORATE (Note 11) is a real SBU
+// value so the Approved Budget report's Corporate tab and SbuRoleAssignment
+// can treat it like any other SBU, rather than a UI-only bucket - see the
+// "Corporate-GAE" report bucket label in backend-py/app/routers/reports.py,
+// which is a different, older, report-specific concept and unrelated to
+// this enum value.
+enum Sbu {
+  RESIDENTIAL
+  MALLS
+  OFFICES
+  ESTATES
+  LEISURE
+  CORPORATE
 }
 
 enum RequestStage {
@@ -40,6 +83,18 @@ enum RequestStage {
   RETURNED_TO_REQUESTOR
   REJECTED
   CANCELLED
+  // Spec item 16 - Revenue's own 4-stage chain (SBU-role-based, no
+  // Department Head step at all), reusing BU_FINANCE_OFFICER/BU_FINANCE_HEAD
+  // from Phase 3's existing SBU roles per user decision. Distinct stage
+  // names from the shared BCA_HEAD_REVIEW/BUDGET_OFFICER_REVIEW above since
+  // Revenue's order is reversed (Budget Officer reviews BEFORE BC&A Head,
+  // not after) - reusing those shared values would corrupt the existing
+  // GAE/DOE/NPC finalize/budget-cut/return-at-step5 handlers, which assume
+  // BUDGET_OFFICER_REVIEW is always the last stage before APPROVED.
+  REVENUE_BU_FINANCE_OFFICER_REVIEW
+  REVENUE_BU_FINANCE_HEAD_REVIEW
+  REVENUE_BUDGET_OFFICER_REVIEW
+  REVENUE_BCA_HEAD_REVIEW
 }
 
 enum HeadcountRequestStage {
@@ -48,6 +103,18 @@ enum HeadcountRequestStage {
   HR_HEAD_REVIEW
   APPROVED
   RETURNED
+}
+
+// Notes_14: the Office 365 / Mobile Phone follow-ons are now a fixed
+// two-stage chain — Centralized Department Reviewer first, then Centralized
+// Department Approver — mirroring the same Reviewer-then-Head pattern the
+// main BudgetRequest workflow already uses (CENTRALIZED_L1_REVIEW then
+// CENTRALIZED_HEAD_REVIEW). A REJECT at either stage is terminal.
+enum FollowOnRequestStage {
+  REVIEWER_REVIEW
+  APPROVER_REVIEW
+  APPROVED
+  REJECTED
 }
 
 enum ManpowerForecastSource {
@@ -111,6 +178,14 @@ model Department {
   name      String         @unique
   type      DepartmentType
   createdAt DateTime       @default(now())
+  // Spec item 13: which SBU this department belongs to, for Budget
+  // Utilization Tracking's NPC view ("users can only view the NPC approved
+  // for the SBU they belong to" - resolved via the caller's own department).
+  // Plain string rather than a Prisma enum, validated app-side against
+  // lib/npcSbu.ts's NPC_SBU_VALUES (8 values - the same superset the NPC
+  // request form uses), not the narrower 5-value Sbu enum DOE uses. Null for
+  // departments with no SBU affiliation (most CENTRALIZED-typed rows).
+  sbu       String?
 
   users                  User[]
   roleAssignments        RoleAssignment[]
@@ -121,6 +196,7 @@ model Department {
   bulkUploadBatches      BulkUploadBatch[]
   growthRateAuditLogs    GrowthRateAuditLog[]
   ownedExpenseLineItems  ExpenseLineItem[]
+  visibleExpenseLineItems ExpenseLineItem[] @relation("VisibleToDepartment")
   additionalHeadcountRequests AdditionalHeadcountRequest[]
   forecastSubmissions    ForecastSubmission[]
 }
@@ -132,18 +208,40 @@ model Company {
   id   String @id @default(cuid())
   code String @unique
   name String
+  // SAP Requirements integration - admin-editable (Admin Console), maps this
+  // company to the real SAP Cost Center whose KSSB V1 actuals fund Manpower's
+  // "Run Manpower Budget" pull (see manpowerService.ts's runManpowerRecompute).
+  // Null until mapped - that company's cells simply stay 0, same as any
+  // other unmapped GL-CC pair elsewhere in this app.
+  costCenter String?
 
   expenseLineItems           ExpenseLineItem[]
   additionalHeadcountRequests AdditionalHeadcountRequest[]
   manpowerEntries             ManpowerEntry[]
   manpowerRosterSummaries     ManpowerRosterSummary[]
   manpowerHeadcountByRank     ManpowerHeadcountByRank[]
+  manpowerHeadcountAdjustments ManpowerHeadcountAdjustment[]
+  bulkUploadBatches           BulkUploadBatch[]
+}
+
+// Distinct "Position" values from Budgeting System_Employee List.xlsx
+// (column I) - backs the Additional Headcount Request form's Position
+// dropdown (Notes_6), replacing free-text entry.
+model Position {
+  id    String @id @default(cuid())
+  title String @unique
 }
 
 model User {
   id        String   @id @default(cuid())
   name      String
   email     String   @unique
+  // Notes_6 ("Log in account - revise"): real email+password login,
+  // replacing the old "pick a user from a list" demo switcher. Every
+  // seeded/imported user shares one bcrypt hash of "Ortigas12345" - this is
+  // explicitly a testing-only credential per the notes, not meant to be
+  // production-secure.
+  passwordHash String?
   // Ties an imported row back to Budgeting System_Employee List.xlsx; null
   // for users that aren't real employees (shouldn't happen post-import, but
   // keeps the field optional for safety).
@@ -153,7 +251,10 @@ model User {
   createdAt DateTime @default(now())
 
   roleAssignments        RoleAssignment[] @relation("AssignedUser")
+  sbuRoleAssignments     SbuRoleAssignment[] @relation("SbuAssignedUser")
   createdBudgetRequests  BudgetRequest[]  @relation("CreatedBy")
+  finalizedBudgetLines   FinalizedBudgetLine[]
+  npcForecastEntries     NpcForecastEntry[]
   reviewDecisions        ReviewDecision[]
   attachments            Attachment[]
   bulkUploadBatches      BulkUploadBatch[]
@@ -162,6 +263,15 @@ model User {
   manpowerTemplateUploadBatches ManpowerTemplateUploadBatch[]
   manpowerRosterSummaries  ManpowerRosterSummary[]
   forecastReviewDecisions  ForecastReviewDecision[]
+  // Notes_14: "After the approval of Reggie (Reviewer), the request will
+  // route to Ronilo (Approver)" — two sequential decisions per request now,
+  // not one, so each needs its own named relation (a flat two-slot shape,
+  // not a decision-log table, since the chain is always exactly these two
+  // stages).
+  office365ReviewerDecisions   Office365AccountRequest[]   @relation("Office365ReviewerDecidedBy")
+  office365ApproverDecisions   Office365AccountRequest[]   @relation("Office365ApproverDecidedBy")
+  mobilePhoneReviewerDecisions MobilePhoneBudgetRequest[]  @relation("MobilePhoneReviewerDecidedBy")
+  mobilePhoneApproverDecisions MobilePhoneBudgetRequest[]  @relation("MobilePhoneApproverDecidedBy")
 }
 
 model RoleAssignment {
@@ -176,6 +286,25 @@ model RoleAssignment {
   createdAt      DateTime  @default(now())
 
   @@unique([departmentId, roleType, userId])
+}
+
+// Phase 3's DOE-stream roles (BU_FINANCE_HEAD/BU_HEAD/BU_FINANCE_OFFICER) are
+// scoped per-SBU rather than per-Department, so they're a sibling model
+// instead of overloading RoleAssignment.departmentId (a required hard-FK
+// consumed via `include: { department: true }` in several places) with a
+// nullable/mutually-exclusive branch.
+model SbuRoleAssignment {
+  id            String   @id @default(cuid())
+  sbu           Sbu
+  // App-layer constrained to BU_FINANCE_HEAD | BU_HEAD | BU_FINANCE_OFFICER.
+  roleType      RoleType
+  userId        String
+  user          User     @relation("SbuAssignedUser", fields: [userId], references: [id])
+  assignedById  String?
+  effectiveDate DateTime @default(now())
+  createdAt     DateTime @default(now())
+
+  @@unique([sbu, roleType, userId])
 }
 
 // Global — Notes_2: "Don't make it per department setting, due dates setting
@@ -195,6 +324,9 @@ model ExpenseLineItem {
   // a category first, then the line item, per the notes-driven two-level
   // dropdown requirement.
   category          String                 @default("Uncategorized")
+  // The real catalog's "Description" column — free-text clarification of
+  // what the line item covers, shown alongside the name.
+  description       String?
   glAccount         String
   costCenter        String
   // The centralized department (Admin Services/IS & IT/HR/Corporate
@@ -214,14 +346,33 @@ model ExpenseLineItem {
   // Free-text example charges shown to Requestors (the source catalog's
   // "Sample charges" column, e.g. "e.g., plates, air fryer").
   sampleCharges     String?
+  // The real catalog's "Spend Grid Computation" / "Spend Grid Frequency"
+  // columns — a free-text formula (e.g. "Headcount x Rate per Month (w/
+  // OT)") and its cadence (e.g. "Monthly"), shown as reference guidance to
+  // Requestors when filling in the line item's Additional Field(s).
+  spendGridComputation String?
+  spendGridFrequency   String?
+  // Notes_7: "limit the visibility of the departments for some expenses" —
+  // the real catalog's column L. Null means visible to every Requestor;
+  // set means only Requestors whose own department matches can select it
+  // in the Standard Request picker. The Admin Console's catalog table
+  // still shows every row regardless (management view, not the picker).
+  visibleToDepartmentId String?
+  visibleToDepartment   Department?           @relation("VisibleToDepartment", fields: [visibleToDepartmentId], references: [id])
   isCustom          Boolean                @default(false)
   status            ExpenseLineItemStatus  @default(STANDARD)
   extraFieldsConfig Json                   @default("[]")
+  // GAE's "CD-YY-Num" code (e.g. "AS-26-1") — pre-computed in the source
+  // catalog file (column D) and imported as-is; generated at import time via
+  // nextBudgetCode() only as a fallback for a row with no pre-computed value.
+  // Null for legacy/custom rows imported before this column existed.
+  budgetCode        String?
   managedBy         String?
   createdAt         DateTime               @default(now())
   updatedAt         DateTime               @updatedAt
 
   budgetRequests BudgetRequest[]
+  historicalActuals HistoricalActuals[]
 }
 
 model GrowthRateConfig {
@@ -251,15 +402,49 @@ model GrowthRateAuditLog {
   timestamp    DateTime    @default(now())
 }
 
-// Stand-in for the live SAP pull (2025 Actuals / 2026 Approved Budget / 2026 YTD
-// Actuals). Admin-editable reference data until a real SAP read replaces it.
+// Stand-in for the live SAP pull (prior-prior-year Actuals / prior-year
+// Approved Budget / prior-year YTD Actuals, relative to `fiscalYear` -
+// e.g. for fiscalYear 2027 this is 2025 Actuals / 2026 Approved Budget /
+// 2026 YTD Actuals). Admin-editable reference data until a real SAP read
+// replaces it.
+//
+// The "2025"/"2026" in these column names are legacy from before the
+// Target Calendar Year became admin-editable - they're not a literal
+// promise about which calendar year the data is for (that's what
+// `fiscalYear` is for now). Kept as-is rather than renamed to avoid
+// touching the Excel-upload parser (historicalActualsService.ts) and the
+// admin PATCH schema for a cosmetic-only change.
 model HistoricalActuals {
   id                     String     @id @default(cuid())
   departmentId           String
   department             Department @relation(fields: [departmentId], references: [id])
+  // Which Target Calendar Year this reference-data row was compiled for -
+  // lets a later cycle (e.g. 2028) get its own row instead of overwriting
+  // this cycle's.
+  fiscalYear             Int        @default(2027)
+  // Which catalog line item this forecast row is for. Nullable so rows
+  // uploaded before this FK existed aren't force-migrated.
+  expenseLineItemId      String?
+  expenseLineItem        ExpenseLineItem? @relation(fields: [expenseLineItemId], references: [id])
   glAccount              String
   costCenter             String
   glDescription          String
+  // FY2026-frozen Budget Code from the upload template, stored as-uploaded.
+  // Distinct from ExpenseLineItem.budgetCode, which is dynamically
+  // year-stamped to the CURRENT Target Calendar Year and would be wrong for
+  // a row pinned to FY2026. The template's own sample row leaves this
+  // blank (2026 predates Budget Code existing in SAP), so it's optional -
+  // never blocks a row from uploading.
+  budgetCode             String?
+  // Template's own "Expense Category" column, stored as-uploaded - not
+  // derived from ExpenseLineItem.category. Optional for the same reason as
+  // budgetCode above.
+  expenseCategory        String?
+  // Derived at upload time from ForecastCategoryMapping[glAccount,
+  // costCenter], defaulting to GAE when nothing matches. Drives the
+  // Forecast sub-menu's GAE/DOE/NPC/Revenue filter (client-side, same
+  // pattern as Step5DashboardPage's requestCategory filter).
+  requestCategory        RequestCategory @default(GAE)
   actuals2025            Float      @default(0)
   approvedBudget2026     Float      @default(0)
   ytdActuals2026         Float      @default(0)
@@ -270,17 +455,62 @@ model HistoricalActuals {
   forecastCompletedAt    DateTime?
   updatedAt              DateTime   @updatedAt
 
-  @@unique([departmentId, glAccount, costCenter])
+  // Per-line-item now, not per-CC-GL - two catalog rows may legitimately
+  // share a GL/CC (e.g. Driver/Messenger/Operator already do).
+  // expenseLineItemId is nullable, so Postgres treats each NULL as
+  // distinct, meaning pre-migration rows never collide with new ones.
+  @@unique([expenseLineItemId, fiscalYear])
+}
+
+// Note 11 §8: NPC's Forecast tab has its own live "Open Spreadsheet
+// Template" flow, distinct from HistoricalActuals-backed GAE/DOE/Revenue
+// forecasting - NPC's real data (budget code, project title, IO linkage)
+// lives on BudgetRequest/InternalOrderRequest, never in HistoricalActuals,
+// so it needs its own small entry table rather than reusing that model.
+model NpcForecastEntry {
+  id                String        @id @default(cuid())
+  budgetRequestId    String       @unique
+  budgetRequest      BudgetRequest @relation(fields: [budgetRequestId], references: [id])
+  fiscalYear         Int
+  // Same shape/convention as HistoricalActuals.monthlyRemainingForecast2026
+  // - keyed by calendar month (1-12), only months after the fiscal cycle's
+  // asOfMonth are meaningful/editable.
+  monthlyRemainingForecast Json   @default("{}")
+  updatedById        String?
+  updatedBy          User?         @relation(fields: [updatedById], references: [id])
+  updatedAt          DateTime      @updatedAt
+
+  @@unique([budgetRequestId, fiscalYear])
+}
+
+// Admin-configurable GL+CC -> Forecast sub-menu category. Starts empty; the
+// Budget Officer populates DOE/NPC/REVENUE pairs later. A HistoricalActuals
+// row whose (glAccount, costCenter) has no entry here defaults to GAE at
+// upload time (see historicalActualsService.ts) - GAE never needs a row.
+model ForecastCategoryMapping {
+  id         String          @id @default(cuid())
+  glAccount  String
+  costCenter String
+  category   RequestCategory
+  createdAt  DateTime        @default(now())
+  updatedAt  DateTime        @updatedAt
+
+  @@unique([glAccount, costCenter])
 }
 
 // Singleton: which month the 2026 fiscal cycle is "as of" right now, so
 // past-vs-remaining-months forecast entry isn't tied to the server's actual
 // wall-clock date (which won't line up with the fictional 2026/2027 cycle).
+// Also FR-1.15 #2's "Target Calendar Year" + open/close control - the
+// Budget Officer's manual gate on new budget requests, enforced in
+// POST /budget-requests.
 model FiscalCycleConfig {
-  id            String   @id @default("singleton")
-  asOfMonth2026 Int      @default(9)
-  updatedBy     String?
-  updatedAt     DateTime @updatedAt
+  id                 String   @id @default("singleton")
+  asOfMonth2026      Int      @default(9)
+  targetCalendarYear Int      @default(2027)
+  cycleOpen          Boolean  @default(true)
+  updatedBy          String?
+  updatedAt          DateTime @updatedAt
 }
 
 model DepartmentalBudgetCap {
@@ -318,12 +548,53 @@ model ReasonCode {
   active Boolean @default(true)
 }
 
+// The two admin-editable Budget Code prefix lists: GAE's Centralized
+// Department abbreviations (CENTRALIZED_DEPARTMENT - only used as an
+// import-time fallback, since GAE codes are normally pre-computed in the
+// source catalog file) and NPC's Head-per-SBU abbreviations (NPC_HEAD, used
+// at request-creation time by lib/budgetCode.ts). DOE's SBU->code map is a
+// small hardcoded constant instead (tied 1:1 to the Sbu enum already).
+enum BudgetCodePrefixKind {
+  CENTRALIZED_DEPARTMENT
+  NPC_HEAD
+}
+
+model BudgetCodePrefix {
+  id        String               @id @default(cuid())
+  kind      BudgetCodePrefixKind
+  label     String
+  code      String
+  sortOrder Int                  @default(0)
+  createdAt DateTime             @default(now())
+  updatedAt DateTime             @updatedAt
+
+  @@unique([kind, label])
+}
+
+// Atomic per-prefix-per-year counter behind lib/budgetCode.ts's
+// nextBudgetCode() - one row per (prefixCode, year) combo, so each Budget
+// Cycle's codes (and each prefix within it) restart their own count.
+model BudgetCodeSequence {
+  id         String @id @default(cuid())
+  prefixCode String
+  year       Int
+  lastNumber Int    @default(0)
+
+  @@unique([prefixCode, year])
+}
+
 model BoardApprovedBudget {
-  id         String   @id @default(cuid())
-  fiscalYear Int
-  amount     Float
-  setBy      String
-  setAt      DateTime @default(now())
+  id              String          @id @default(cuid())
+  fiscalYear      Int
+  // Notes_8: "put separate fields for" GAE (no sbu), DOE x 5 SBUs, and
+  // Revenue x 5 SBUs — 11 independently-tracked figures instead of one flat
+  // number. Append-only per (fiscalYear, requestCategory, sbu): latest setAt
+  // wins, same history-log pattern as before.
+  requestCategory RequestCategory @default(GAE)
+  sbu             Sbu?
+  amount          Float
+  setBy           String
+  setAt           DateTime        @default(now())
 }
 
 model BudgetRequest {
@@ -337,6 +608,33 @@ model BudgetRequest {
   proposedAmount        Float
   businessJustification String
   otherRequiredFields   Json          @default("{}")
+  // Notes_8: which New Request menu section this came through — GAE (the
+  // original "Expense" form) or DOE (same form, tagged with an SBU). NPC/
+  // REVENUE are reserved for when those forms exist (see RequestCategory).
+  requestCategory        RequestCategory @default(GAE)
+  sbu                    Sbu?
+  // Which BudgetCodePrefix (kind=NPC_HEAD) code the requestor picked for an
+  // NPC request - e.g. "JLC" for "Malls GH". Superseded by npcSbu below for
+  // requests created after spec item 12's revision; kept populated-but-frozen
+  // on older rows rather than migrated, since the two lists don't line up
+  // 1:1 (NPC_HEAD splits Malls into GH/NonGH, npcSbu's list doesn't).
+  npcHeadCode            String?
+  // NPC (spec item 12 revision) - distinct required fields from GAE/DOE,
+  // no longer the same shared form. npcSbu is one of a fixed 8-value list
+  // (Malls/Offices/Estates/Residential/Leisure/Corporate IT/Corporate HR/
+  // Corporate Admin - see lib/npcSbu.ts), not the 5-value Sbu enum DOE uses
+  // (kept as a plain string rather than widening that enum, so DOE's own
+  // picker never has to filter out the 3 Corporate entries that don't apply
+  // to it). npcLocation is one of a fixed 4-value list (OE/CC/GH/CV).
+  npcSbu                 String?
+  npcLocation            String?
+  projectTitle           String?
+  projectStartDate       DateTime?
+  projectEndDate         DateTime?
+  // DOE/NPC's generated "SBU-YY-Num" / "HEAD-YY-Num" code, set once at
+  // creation (see lib/budgetCode.ts). Null for GAE (read
+  // expenseLineItem.budgetCode instead) and Revenue (not applicable).
+  budgetCode             String?
   currentStage          RequestStage  @default(DRAFT)
   status                RequestStatus @default(DRAFT)
   budgetCutAmount        Float        @default(0)
@@ -355,6 +653,43 @@ model BudgetRequest {
 
   attachments      Attachment[]
   reviewDecisions  ReviewDecision[]
+  finalizedLine    FinalizedBudgetLine?
+  npcForecastEntry NpcForecastEntry?
+}
+
+// Note 11: "Budget Finalization & Upload" now writes one of these per
+// finalized BudgetRequest instead of (only) flipping currentStage to
+// APPROVED - this is a deliberately independent, denormalized snapshot (no
+// FK-driven join back to ExpenseLineItem for glAccount/costCenter), not a
+// live view, so it stays exactly what was finalized even if something about
+// the original request's catalog linkage could ever change later. This
+// table - mirrored read-only into backend-py/app/models_phase1.py - is now
+// the one place every "what's the approved/current budget for this CC-GL"
+// reader in the system queries (compute_gl_cc_breakdown, utilization.py's
+// _approved_budget_by_gl_cc/_approved_budget_by_line_item, reports.py's
+// _approved_budget_by_cc_gl), replacing their old BudgetRequest
+// (currentStage=APPROVED) + ExpenseLineItem join - see Note 11 plan §2.
+model FinalizedBudgetLine {
+  id                String          @id @default(cuid())
+  budgetRequestId   String          @unique
+  budgetRequest     BudgetRequest   @relation(fields: [budgetRequestId], references: [id])
+  fiscalYear        Int
+  requestCategory   RequestCategory
+  sbu               Sbu?
+  // Plain string, not the Sbu enum - matches BudgetRequest.npcSbu's own
+  // convention exactly (see the comment there for why NPC's 8-value SBU
+  // list isn't the same as DOE's 5(now 6)-value Sbu enum).
+  npcSbu            String?
+  glAccount         String
+  costCenter        String
+  amount            Float
+  sapDocumentNumber String?
+  finalizedAt       DateTime        @default(now())
+  finalizedById     String
+  finalizedBy       User            @relation(fields: [finalizedById], references: [id])
+
+  @@index([fiscalYear, glAccount, costCenter])
+  @@index([fiscalYear, requestCategory, sbu])
 }
 
 model Attachment {
@@ -392,6 +727,18 @@ model BulkUploadBatch {
   validationErrors Json              @default("[]")
   status           BulkUploadStatus  @default(PROCESSING)
   createdAt        DateTime          @default(now())
+  // Spec item 16 - Revenue's own per-CC-GL template upload (spec item 16).
+  // Every row this batch creates travels the SBU-role approval chain
+  // together as one unit (see workflowService.ts's revenue* functions),
+  // scoped by the SBU/Company picked at upload time. Null for any other use
+  // of this shared batch model.
+  sbu                          Sbu?
+  companyId                    String?
+  company                      Company?  @relation(fields: [companyId], references: [id])
+  // The Board-Approved Budget figure this upload's grand total (template's
+  // O1 cell) was validated against - kept for an audit trail even if the
+  // Budget Officer later changes the figure.
+  boardApprovedAmountAtUpload  Float?
 
   budgetRequests BudgetRequest[]
 }
@@ -402,6 +749,12 @@ model BulkUploadBatch {
 // Headcount Request" column for the target company.
 model AdditionalHeadcountRequest {
   id                String                @id @default(cuid())
+  // Notes_8: "Submitted request will generate a code - MR-'YY'-001. This
+  // will reflect on the list of employees for Mobile Phone and other
+  // sections that need employee list." Assigned at creation, sequential per
+  // calendar year — stands in for a real employee record until this hire is
+  // actually imported into the roster.
+  code              String                @unique
   position          String
   rank              Int
   companyId         String
@@ -417,6 +770,57 @@ model AdditionalHeadcountRequest {
   updatedAt         DateTime              @updatedAt
 
   reviewDecisions HeadcountReviewDecision[]
+  office365AccountRequest Office365AccountRequest?
+  mobilePhoneBudgetRequest MobilePhoneBudgetRequest?
+}
+
+// Notes_8: "Request of Additional Headcount will also automatically trigger
+// request for Mobile Phone budget once the Additional Headcount is
+// approved. This will route to Admin Services for review and approval."
+// Mirrors Office365AccountRequest exactly (same trigger point, same two-
+// stage chain) — kept as its own model rather than a shared "follow-on
+// request" table since each has its own reviewing department resolved a
+// different way and the two are independently small.
+// Notes_14: "After the approval of Reggie (Reviewer), the request will
+// route to Ronilo (Approver)" — Reviewer decides first; only on their
+// APPROVE does it move to APPROVER_REVIEW for the Approver's decision. A
+// REJECT at either stage is terminal.
+model MobilePhoneBudgetRequest {
+  id                            String                     @id @default(cuid())
+  additionalHeadcountRequestId  String                     @unique
+  additionalHeadcountRequest    AdditionalHeadcountRequest @relation(fields: [additionalHeadcountRequestId], references: [id])
+  stage                         FollowOnRequestStage       @default(REVIEWER_REVIEW)
+  reviewerDecidedById           String?
+  reviewerDecidedBy             User?                      @relation("MobilePhoneReviewerDecidedBy", fields: [reviewerDecidedById], references: [id])
+  reviewerComment               String?
+  reviewerDecidedAt             DateTime?
+  approverDecidedById           String?
+  approverDecidedBy             User?                      @relation("MobilePhoneApproverDecidedBy", fields: [approverDecidedById], references: [id])
+  approverComment               String?
+  approverDecidedAt             DateTime?
+  createdAt                     DateTime                   @default(now())
+}
+
+// Notes_8: "Request of Additional Headcount will automatically trigger
+// request for additional Office 365 Account. This will route to IS & IT for
+// review and approval." Created once the headcount request reaches HR Head
+// approval (the hire is confirmed at that point) — runs alongside the
+// headcount request without gating it. See MobilePhoneBudgetRequest above
+// for the two-stage Reviewer-then-Approver chain (Notes_14).
+model Office365AccountRequest {
+  id                            String                     @id @default(cuid())
+  additionalHeadcountRequestId  String                     @unique
+  additionalHeadcountRequest    AdditionalHeadcountRequest @relation(fields: [additionalHeadcountRequestId], references: [id])
+  stage                         FollowOnRequestStage       @default(REVIEWER_REVIEW)
+  reviewerDecidedById           String?
+  reviewerDecidedBy             User?                      @relation("Office365ReviewerDecidedBy", fields: [reviewerDecidedById], references: [id])
+  reviewerComment               String?
+  reviewerDecidedAt             DateTime?
+  approverDecidedById           String?
+  approverDecidedBy             User?                      @relation("Office365ApproverDecidedBy", fields: [approverDecidedById], references: [id])
+  approverComment               String?
+  approverDecidedAt             DateTime?
+  createdAt                     DateTime                   @default(now())
 }
 
 model HeadcountReviewDecision {
@@ -441,6 +845,10 @@ model PayComponent {
   isHeadcountDriven   Boolean                @default(false)
   appliesMeritIncrease Boolean               @default(false)
   forecastSource      ManpowerForecastSource @default(MANUAL)
+  // SAP Requirements integration - admin-editable (Admin Console), maps this
+  // pay component to the real SAP GL Account whose KSSB V1 actuals fund
+  // Manpower's "Run Manpower Budget" pull. Null until mapped.
+  glAccount           String?
 
   entries ManpowerEntry[]
 }
@@ -527,6 +935,22 @@ model ManpowerHeadcountByRank {
   updatedAt  DateTime @updatedAt
 
   @@unique([level, companyId, fiscalYear])
+}
+
+// Notes_6: a Budget-Officer-only manual add/deduct override at the company
+// level (not tied to a specific rank) - flows into the Headcount table's
+// Total Headcount and, via a company average per-head rate, into the
+// Dashboard Report's Salary-section budgets.
+model ManpowerHeadcountAdjustment {
+  id          String   @id @default(cuid())
+  companyId   String
+  company     Company  @relation(fields: [companyId], references: [id])
+  fiscalYear  Int
+  adjustment  Int      @default(0)
+  updatedBy   String?
+  updatedAt   DateTime @updatedAt
+
+  @@unique([companyId, fiscalYear])
 }
 
 model ManpowerTemplateUploadBatch {

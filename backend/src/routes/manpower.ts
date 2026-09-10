@@ -8,18 +8,18 @@ import { asyncHandler } from "../asyncHandler";
 import { hasRole, requireAuth } from "../middleware/auth";
 import { HttpError } from "../httpError";
 import {
+  buildHeadcountSalaryTemplateWorkbook,
   budgetOfficerDecideManpowerBudget,
   getManpowerDashboardSummary,
   getManpowerGrid,
-  getManpowerHeadcountByRank,
   hrHeadDecideManpowerBudget,
-  parseManpowerTemplate,
+  parseHeadcountSalaryTemplate,
   runManpowerRecompute,
-  setHeadcountByRank,
+  setHeadcountAdjustment,
   setMeritRate,
-  setSalaryLevel,
   submitManpowerBudget,
 } from "../services/manpowerService";
+import { getFiscalCycle } from "../lib/fiscalCycle";
 
 export const manpowerRouter = Router();
 
@@ -54,7 +54,8 @@ manpowerRouter.get(
   "/grid",
   requireManpowerViewer,
   asyncHandler(async (req, res) => {
-    const fiscalYear = Number(req.query.fiscalYear ?? 2027);
+    const { targetCalendarYear } = await getFiscalCycle();
+    const fiscalYear = Number(req.query.fiscalYear ?? targetCalendarYear);
     res.json(await getManpowerGrid(fiscalYear));
   })
 );
@@ -63,7 +64,8 @@ manpowerRouter.get(
   "/submission",
   requireManpowerViewer,
   asyncHandler(async (req, res) => {
-    const fiscalYear = Number(req.query.fiscalYear ?? 2027);
+    const { targetCalendarYear } = await getFiscalCycle();
+    const fiscalYear = Number(req.query.fiscalYear ?? targetCalendarYear);
     const submission = await prisma.manpowerBudgetSubmission.findUnique({ where: { fiscalYear } });
     res.json(submission ?? { fiscalYear, stage: "HR_ANALYST_DRAFT" });
   })
@@ -73,7 +75,8 @@ manpowerRouter.get(
   "/merit-rate",
   requireManpowerViewer,
   asyncHandler(async (req, res) => {
-    const fiscalYear = Number(req.query.fiscalYear ?? 2027);
+    const { targetCalendarYear } = await getFiscalCycle();
+    const fiscalYear = Number(req.query.fiscalYear ?? targetCalendarYear);
     const config = await prisma.manpowerMeritRateConfig.findUnique({ where: { fiscalYear } });
     res.json(config ?? { fiscalYear, ratePercent: 0 });
   })
@@ -90,69 +93,32 @@ manpowerRouter.put(
   })
 );
 
-manpowerRouter.get(
-  "/salary-levels",
-  requireManpowerViewer,
-  asyncHandler(async (_req, res) => {
-    const levels = await prisma.manpowerSalaryLevel.findMany({ orderBy: { level: "asc" } });
-    res.json(levels);
-  })
-);
-
-// Notes_5: "Fill Average Salary & Gov't Contributions" button - manual
-// per-rank counterpart to the bulk Template upload.
-manpowerRouter.put(
-  "/salary-levels",
-  requireHrAnalyst,
-  asyncHandler(async (req, res) => {
-    const body = z
-      .object({
-        level: z.number().int().min(1).max(12),
-        avgSalary: z.number(),
-        sssER: z.number(),
-        pagibigER: z.number(),
-        philhealthER: z.number(),
-      })
-      .parse(req.body);
-    res.json(await setSalaryLevel(body.level, body));
-  })
-);
-
-// Notes_5: "Fill Headcount per Company" button.
-manpowerRouter.get(
-  "/headcount-by-rank",
-  requireManpowerViewer,
-  asyncHandler(async (req, res) => {
-    const fiscalYear = Number(req.query.fiscalYear ?? 2027);
-    res.json(await getManpowerHeadcountByRank(fiscalYear));
-  })
-);
-
-manpowerRouter.put(
-  "/headcount-by-rank",
-  requireHrAnalyst,
-  asyncHandler(async (req, res) => {
-    const body = z
-      .object({
-        level: z.number().int().min(1).max(12),
-        companyId: z.string(),
-        fiscalYear: z.number().int(),
-        headcount: z.number().int().min(0),
-      })
-      .parse(req.body);
-    res.json(await setHeadcountByRank(body.level, body.companyId, body.fiscalYear, body.headcount, req.user!.id));
-  })
-);
-
-// Notes_5: simplified Dashboard Report summary (Salary category only),
-// optionally scoped to one company via the company filter dropdown.
+// Notes_6: the Dashboard Report (Salary + Other Manpower Benefits
+// sections), optionally scoped to one company via the company filter
+// dropdown.
 manpowerRouter.get(
   "/dashboard-summary",
   requireManpowerViewer,
   asyncHandler(async (req, res) => {
-    const fiscalYear = Number(req.query.fiscalYear ?? 2027);
+    const { targetCalendarYear } = await getFiscalCycle();
+    const fiscalYear = Number(req.query.fiscalYear ?? targetCalendarYear);
     const companyId = typeof req.query.companyId === "string" && req.query.companyId ? req.query.companyId : undefined;
     res.json(await getManpowerDashboardSummary(fiscalYear, companyId));
+  })
+);
+
+// Notes_6: Budget-Officer-only manual add/deduct override on the Headcount
+// table, per company (not tied to a specific rank).
+manpowerRouter.put(
+  "/headcount-adjustment",
+  asyncHandler(async (req, res) => {
+    if (!hasRole(req.user, RoleType.BUDGET_OFFICER)) {
+      throw new HttpError(403, "Only the Budget Officer can adjust headcount.");
+    }
+    const body = z
+      .object({ companyId: z.string(), fiscalYear: z.number().int(), adjustment: z.number().int() })
+      .parse(req.body);
+    res.json(await setHeadcountAdjustment(body.companyId, body.fiscalYear, body.adjustment, req.user!.id));
   })
 );
 
@@ -160,8 +126,69 @@ manpowerRouter.post(
   "/run",
   requireHrAnalyst,
   asyncHandler(async (req, res) => {
-    const fiscalYear = Number(req.body.fiscalYear ?? 2027);
+    const { targetCalendarYear } = await getFiscalCycle();
+    const fiscalYear = Number(req.body.fiscalYear ?? targetCalendarYear);
     res.json(await runManpowerRecompute(fiscalYear));
+  })
+);
+
+// Notes_6: "In 'View Full Report', allow export to excel" - mirrors exactly
+// what the Detailed Report modal shows (Salary + Other Manpower Benefits
+// sections, every column), respecting the current company filter.
+manpowerRouter.get(
+  "/export-dashboard-report",
+  requireManpowerViewer,
+  asyncHandler(async (req, res) => {
+    const { targetCalendarYear } = await getFiscalCycle();
+    const fiscalYear = Number(req.query.fiscalYear ?? targetCalendarYear);
+    const companyId = typeof req.query.companyId === "string" && req.query.companyId ? req.query.companyId : undefined;
+    const summary = await getManpowerDashboardSummary(fiscalYear, companyId);
+
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet("Manpower Budget Detailed Report");
+    const headers = [
+      "Account",
+      "YTD Actual",
+      "Remaining Forecast",
+      "Actual + Forecast",
+      "Merit Increase",
+      "Additional Manpower",
+      "Headcount Adjustment",
+      "Proposed Budget",
+      "Inc/Dec (Amount)",
+      "Inc/Dec (%)",
+    ];
+    sheet.addRow(headers).font = { bold: true };
+
+    const addRow = (row: (typeof summary.salaryRows)[number], bold?: boolean) => {
+      const r = sheet.addRow([
+        row.payComponentName,
+        row.ytdActual,
+        row.remainingForecast,
+        row.totalActualForecast,
+        row.meritAmount,
+        row.additionalHeadcountAmount,
+        row.headcountAdjustmentAmount,
+        row.budget,
+        row.budgetVsPriorAmount,
+        row.budgetVsPriorPercent,
+      ]);
+      if (bold) r.font = { bold: true };
+    };
+
+    sheet.addRow(["Salary"]).font = { bold: true };
+    summary.salaryRows.forEach((r) => addRow(r));
+    addRow(summary.salaryTotal, true);
+    sheet.addRow(["Other Manpower Benefits"]).font = { bold: true };
+    summary.otherRows.forEach((r) => addRow(r));
+    addRow(summary.otherTotal, true);
+
+    sheet.columns.forEach((col, i) => (col.width = i === 0 ? 45 : 20));
+
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Disposition", `attachment; filename="manpower-budget-detailed-report-${fiscalYear}.xlsx"`);
+    await workbook.xlsx.write(res);
+    res.end();
   })
 );
 
@@ -212,71 +239,32 @@ manpowerRouter.patch(
 );
 
 // ---- Manpower Template (Employee List + Average Salary sheets) ----
+// ---- Headcount and Salary Template (Notes_6: replaces the old
+// Employee-List-based Manpower Template) ----
 manpowerRouter.get(
-  "/template",
+  "/headcount-salary-template",
   requireHrAnalyst,
-  asyncHandler(async (_req, res) => {
-    const workbook = new ExcelJS.Workbook();
-
-    const employeeSheet = workbook.addWorksheet("Employee List");
-    employeeSheet.addRow(["Ortigas Group (OLC, OCC, OCLP)"]);
-    employeeSheet.addRow(["Employee List"]);
-    employeeSheet.addRow([]);
-    employeeSheet.addRow([]);
-    employeeSheet.addRow([]);
-    employeeSheet.addRow(["to be filled-out by HR", "to be filled-out by HR", "xlookup", "xlookup", "xlookup", "xlookup"]).font = { italic: true };
-    employeeSheet.addRow([
-      "Company",
-      "Level",
-      "Basic Pay",
-      "Government Contributions (ER) - SSS",
-      "Government Contributions (ER) - Pag-Ibig",
-      "Government Contributions (ER) - Philhealth",
-    ]).font = { bold: true };
-    for (let r = 8; r <= 57; r++) {
-      employeeSheet.addRow([
-        "",
-        "",
-        { formula: `IFERROR(XLOOKUP(B${r},'Average Salary'!A:A,'Average Salary'!B:B),"")` },
-        { formula: `IFERROR(XLOOKUP(B${r},'Average Salary'!A:A,'Average Salary'!C:C),"")` },
-        { formula: `IFERROR(XLOOKUP(B${r},'Average Salary'!A:A,'Average Salary'!D:D),"")` },
-        { formula: `IFERROR(XLOOKUP(B${r},'Average Salary'!A:A,'Average Salary'!E:E),"")` },
-      ]);
-    }
-    employeeSheet.getColumn(1).width = 40;
-    employeeSheet.columns.forEach((col, i) => {
-      if (i > 0) col.width = 24;
-    });
-
-    const salarySheet = workbook.addWorksheet("Average Salary");
-    salarySheet.addRow(["Ortigas Group (OLC, OCC, OCLP)"]);
-    salarySheet.addRow(["Average Salary per Employee Level"]);
-    salarySheet.addRow([]);
-    salarySheet.addRow(["", "to be filled-out by HR", "to be filled-out by HR", "to be filled-out by HR", "to be filled-out by HR"]).font = { italic: true };
-    salarySheet.addRow(["Level", "Average Salary", "Government Contributions (ER) - SSS", "Government Contributions (ER) - Pag-Ibig", "Government Contributions (ER) - Philhealth"]).font = {
-      bold: true,
-    };
-    for (let level = 1; level <= 12; level++) {
-      salarySheet.addRow([level, "", "", "", ""]);
-    }
-    salarySheet.columns.forEach((col) => (col.width = 30));
-
+  asyncHandler(async (req, res) => {
+    const { targetCalendarYear } = await getFiscalCycle();
+    const fiscalYear = Number(req.query.fiscalYear ?? targetCalendarYear);
+    const workbook = await buildHeadcountSalaryTemplateWorkbook(fiscalYear);
     res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-    res.setHeader("Content-Disposition", 'attachment; filename="manpower-template.xlsx"');
+    res.setHeader("Content-Disposition", 'attachment; filename="headcount-and-salary-template.xlsx"');
     await workbook.xlsx.write(res);
     res.end();
   })
 );
 
 manpowerRouter.post(
-  "/template-upload",
+  "/headcount-salary-template-upload",
   requireHrAnalyst,
   upload.single("file"),
   asyncHandler(async (req, res) => {
     if (!req.file) throw new HttpError(400, "No file uploaded.");
-    const fiscalYear = Number(req.body.fiscalYear ?? 2027);
+    const { targetCalendarYear } = await getFiscalCycle();
+    const fiscalYear = Number(req.body.fiscalYear ?? targetCalendarYear);
 
-    const result = await parseManpowerTemplate(req.file.buffer, fiscalYear, req.user!.id, req.file.originalname);
+    const result = await parseHeadcountSalaryTemplate(req.file.buffer, fiscalYear, req.user!.id, req.file.originalname);
     if (!result.ok) {
       res.status(400).json(result);
       return;
@@ -290,7 +278,8 @@ manpowerRouter.post(
   "/submit",
   requireHrAnalyst,
   asyncHandler(async (req, res) => {
-    const fiscalYear = Number(req.body.fiscalYear ?? 2027);
+    const { targetCalendarYear } = await getFiscalCycle();
+    const fiscalYear = Number(req.body.fiscalYear ?? targetCalendarYear);
     res.json(await submitManpowerBudget(fiscalYear, req.user!.id));
   })
 );
@@ -326,7 +315,8 @@ manpowerRouter.get(
   "/export",
   requireManpowerViewer,
   asyncHandler(async (req, res) => {
-    const fiscalYear = Number(req.query.fiscalYear ?? 2027);
+    const { targetCalendarYear } = await getFiscalCycle();
+    const fiscalYear = Number(req.query.fiscalYear ?? targetCalendarYear);
     const grid = await getManpowerGrid(fiscalYear);
 
     const workbook = new ExcelJS.Workbook();
@@ -339,7 +329,7 @@ manpowerRouter.get(
       "Total Actual + Forecast",
       "Merit Increase",
       "Other Increase",
-      "Additional Headcount Request",
+      "Additional Manpower Request",
       "Budget",
       "Budget vs Prior Year Actual + Forecast (Amount)",
       "Budget vs Prior Year Actual + Forecast (%)",
@@ -370,7 +360,7 @@ manpowerRouter.get(
       { title: "Total Actual + Forecast", valueOf: (c) => c.totalActualForecast },
       { title: "Merit Increase", valueOf: (c) => c.meritAmount },
       { title: "Other Increase", valueOf: (c) => c.otherIncrease },
-      { title: "Additional Headcount Request", valueOf: (c) => c.additionalHeadcountAmount },
+      { title: "Additional Manpower Request", valueOf: (c) => c.additionalHeadcountAmount },
       { title: "Budget", valueOf: (c) => c.budget },
       { title: "Budget vs Prior Year Actual + Forecast (Amount)", valueOf: (c) => c.budgetVsPriorAmount },
       { title: "Budget vs Prior Year Actual + Forecast (%)", valueOf: (c) => c.budgetVsPriorPercent },
@@ -379,7 +369,7 @@ manpowerRouter.get(
     const colHeader: string[] = [""];
     for (const group of metricGroups) {
       groupHeader.push(group.title, ...Array(grid.companies.length).fill(null), null);
-      colHeader.push(...grid.companies.map((c) => c.code), "Total 2026", "");
+      colHeader.push(...grid.companies.map((c) => c.code), `Total ${fiscalYear}`, "");
     }
     excelReport.addRow(groupHeader).font = { bold: true };
     excelReport.addRow(colHeader).font = { bold: true };

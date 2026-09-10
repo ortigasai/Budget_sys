@@ -40,7 +40,7 @@ export async function resolveGrowthRate(departmentId: string): Promise<number> {
  * isForecastComplete separately.
  */
 export async function computeDepartmentalCap(departmentId: string, fiscalYear: number) {
-  const rows = await prisma.historicalActuals.findMany({ where: { departmentId } });
+  const rows = await prisma.historicalActuals.findMany({ where: { departmentId, fiscalYear } });
 
   const actualsYtd2026 = rows.reduce((sum, r) => sum + r.ytdActuals2026, 0);
   const remainingForecast2026 = rows.reduce((sum, r) => sum + sumMonthlyForecast(r.monthlyRemainingForecast2026), 0);
@@ -96,5 +96,24 @@ export async function computeRemainingPool(departmentId: string, fiscalYear: num
   const remainingPool = cap.value - totalPortalRequests;
 
   return { ...cap, totalPortalRequests, remainingPool };
+}
+
+// The individual requests behind computeRemainingPool's totalPortalRequests
+// figure — backs the "Portal Requests" stat tile's drill-down list, so a
+// reviewer can see exactly what's consuming their department's pool.
+export async function listPoolConsumingRequests(departmentId: string, fiscalYear: number) {
+  return prisma.budgetRequest.findMany({
+    where: {
+      fiscalYear,
+      expenseLineItem: { ownerDepartmentId: departmentId },
+      currentStage: { in: POOL_CONSUMING_STAGES },
+    },
+    include: {
+      expenseLineItem: true,
+      department: true,
+      createdBy: true,
+    },
+    orderBy: { updatedAt: "desc" },
+  });
 }
 

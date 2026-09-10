@@ -3,13 +3,20 @@ import { z } from "zod";
 import multer from "multer";
 import path from "node:path";
 import fs from "node:fs";
-import { Prisma, RequestStage, RoleType } from "@prisma/client";
+import ExcelJS from "exceljs";
+import { Prisma, RequestCategory, RequestStage, RoleType, Sbu } from "@prisma/client";
 import { prisma } from "../prisma";
 import { asyncHandler } from "../asyncHandler";
 import { hasRole, requireAuth, requireRole } from "../middleware/auth";
 import { HttpError } from "../httpError";
+import { getFiscalCycle } from "../lib/fiscalCycle";
+import { getFinalizedBudgetReport } from "../services/finalizedBudgetReportService";
+import { nextBudgetCode, sbuBudgetCodePrefix } from "../lib/budgetCode";
+import { NPC_LOCATION_VALUES, NPC_SBU_VALUES, npcSbuBudgetCodePrefix } from "../lib/npcSbu";
+import { resolveBudgetRequestPendingReviewers } from "../lib/pendingReviewers";
 import {
   applyBudgetCut,
+  assertCycleOpen,
   bcaHeadDecision,
   cancelRequest,
   centralizedHeadDecision,
@@ -45,15 +52,35 @@ const createSchema = z.object({
   fiscalYear: z.number().int(),
   expenseLineItemId: z.string().optional(),
   customExpenseName: z.string().optional(),
-  monthlyAmounts: z.array(z.number()).length(12),
-  businessJustification: z.string().min(1),
+  // NPC's form has no 12-month spend grid or Business Justification field
+  // (see StandardRequestTab.tsx vs the new NpcRequestTab.tsx) - both are
+  // optional here and auto-derived server-side for that category below.
+  monthlyAmounts: z.array(z.number()).length(12).optional(),
+  businessJustification: z.string().min(1).optional(),
   otherRequiredFields: z.record(z.string()).optional(),
+  // Notes_8: GAE is the original "Expense" form; DOE is the same form
+  // tagged with a required SBU (see StandardRequestTab.tsx).
+  requestCategory: z.nativeEnum(RequestCategory).optional(),
+  sbu: z.nativeEnum(Sbu).optional(),
+  // NPC: superseded by npcSbu below for requests created after spec item
+  // 12's revision - kept for back-compat with older rows/clients only.
+  npcHeadCode: z.string().optional(),
+  // NPC (spec item 12 revision) - distinct required fields from GAE/DOE.
+  npcSbu: z.enum(NPC_SBU_VALUES).optional(),
+  npcLocation: z.enum(NPC_LOCATION_VALUES).optional(),
+  projectTitle: z.string().min(1).optional(),
+  projectStartDate: z.coerce.date().optional(),
+  projectEndDate: z.coerce.date().optional(),
+  costCenter: z.string().min(1).optional(),
+  amount: z.number().positive().optional(), // VAT exclusive
 });
 
 budgetRequestsRouter.post(
   "/",
   asyncHandler(async (req, res) => {
     const body = createSchema.parse(req.body);
+
+    await assertCycleOpen();
 
     // FR-1.15 #1 — Originating Department is read-only and auto-defaults to
     // the Requestor's assigned unit based on system login; it is never
@@ -63,8 +90,81 @@ budgetRequestsRouter.post(
       throw new HttpError(400, "Your account has no assigned department to originate a request from.");
     }
 
+    const requestCategory = body.requestCategory ?? RequestCategory.GAE;
+
+    // NPC (spec item 12 revision): its own required-fields set, distinct
+    // from GAE/DOE - no expense line item picker, spend grid, or business
+    // justification collected from the requestor.
+    if (requestCategory === RequestCategory.NPC) {
+      if (!body.npcSbu) throw new HttpError(400, "Select an SBU for this Non-Project Capex request.");
+      if (!body.npcLocation) throw new HttpError(400, "Select a Location for this Non-Project Capex request.");
+      if (!body.projectTitle) throw new HttpError(400, "Enter a Project Title.");
+      if (!body.projectStartDate || !body.projectEndDate) throw new HttpError(400, "Enter both a Project Start and Project End date.");
+      if (!body.costCenter) throw new HttpError(400, "Enter a Cost Center.");
+      if (!body.amount) throw new HttpError(400, "Enter an Amount.");
+
+      const { targetCalendarYear } = await getFiscalCycle();
+      const budgetCode = await nextBudgetCode(npcSbuBudgetCodePrefix(body.npcSbu), targetCalendarYear);
+
+      const expenseLineItem = await prisma.expenseLineItem.create({
+        data: {
+          name: body.projectTitle,
+          glAccount: "PENDING",
+          costCenter: body.costCenter,
+          category: "Non-Project Capex",
+          ownerDepartmentId: departmentId,
+          isCustom: true,
+          status: "PENDING_REFINEMENT",
+        },
+      });
+
+      const monthlyAmounts = Array(12).fill(0);
+      monthlyAmounts[0] = body.amount; // VAT-exclusive flat amount, no monthly spread collected
+
+      const created = await prisma.budgetRequest.create({
+        data: {
+          departmentId,
+          fiscalYear: body.fiscalYear,
+          expenseLineItemId: expenseLineItem.id,
+          monthlyAmounts,
+          proposedAmount: body.amount,
+          businessJustification: `NPC Project: ${body.projectTitle}`,
+          otherRequiredFields: {},
+          requestCategory,
+          npcSbu: body.npcSbu,
+          npcLocation: body.npcLocation,
+          projectTitle: body.projectTitle,
+          projectStartDate: body.projectStartDate,
+          projectEndDate: body.projectEndDate,
+          budgetCode,
+          createdById: req.user!.id,
+        },
+        include: DETAIL_INCLUDE,
+      });
+
+      res.status(201).json(created);
+      return;
+    }
+
     if (!body.expenseLineItemId && !body.customExpenseName) {
       throw new HttpError(400, "Select an expense line item or provide a custom expense name.");
+    }
+    if (!body.monthlyAmounts) {
+      throw new HttpError(400, "Provide the monthly spend grid.");
+    }
+    if (!body.businessJustification) {
+      throw new HttpError(400, "Provide a business justification.");
+    }
+    if (requestCategory === RequestCategory.DOE && !body.sbu) {
+      throw new HttpError(400, "Select an SBU for this Direct Operating Expenses request.");
+    }
+
+    // DOE gets a fresh "SBU-YY-Num" Budget Code at creation (GAE's is read
+    // from expenseLineItem.budgetCode instead - see lib/budgetCode.ts).
+    let budgetCode: string | undefined;
+    if (requestCategory === RequestCategory.DOE) {
+      const { targetCalendarYear } = await getFiscalCycle();
+      budgetCode = await nextBudgetCode(sbuBudgetCodePrefix(body.sbu!), targetCalendarYear);
     }
 
     let expenseLineItemId = body.expenseLineItemId;
@@ -98,6 +198,9 @@ budgetRequestsRouter.post(
         proposedAmount,
         businessJustification: body.businessJustification,
         otherRequiredFields: body.otherRequiredFields ?? {},
+        requestCategory,
+        sbu: requestCategory === RequestCategory.DOE ? body.sbu : undefined,
+        budgetCode,
         createdById: req.user!.id,
       },
       include: DETAIL_INCLUDE,
@@ -191,7 +294,10 @@ budgetRequestsRouter.get(
       include: DETAIL_INCLUDE,
       orderBy: { createdAt: "desc" },
     });
-    res.json(requests);
+    const withPendingReviewers = await Promise.all(
+      requests.map(async (r) => ({ ...r, pendingReviewers: await resolveBudgetRequestPendingReviewers(r) }))
+    );
+    res.json(withPendingReviewers);
   })
 );
 
@@ -219,12 +325,12 @@ budgetRequestsRouter.get(
       if (!stage) continue;
 
       if (role.roleType === RoleType.DEPARTMENT_HEAD) {
-        clauses.push({ currentStage: stage, departmentId: role.departmentId });
+        clauses.push({ currentStage: stage, departmentId: role.departmentId! });
       } else if (
         role.roleType === RoleType.CENTRALIZED_FIRST_LEVEL_REVIEWER ||
         role.roleType === RoleType.CENTRALIZED_DEPARTMENT_HEAD
       ) {
-        clauses.push({ currentStage: stage, expenseLineItem: { ownerDepartmentId: role.departmentId } });
+        clauses.push({ currentStage: stage, expenseLineItem: { ownerDepartmentId: role.departmentId! } });
       } else {
         clauses.push({ currentStage: stage });
       }
@@ -244,6 +350,26 @@ budgetRequestsRouter.get(
   })
 );
 
+// Requests this user has personally decided on, most-recent decision first —
+// so an approval/return isn't a dead end once it leaves the inbox queue.
+budgetRequestsRouter.get(
+  "/reviewed-by-me",
+  asyncHandler(async (req, res) => {
+    const requests = await prisma.budgetRequest.findMany({
+      where: { reviewDecisions: { some: { decidedById: req.user!.id } } },
+      include: DETAIL_INCLUDE,
+    });
+    const withMyDecision = requests
+      .map((r) => {
+        const mine = r.reviewDecisions.filter((d) => d.decidedById === req.user!.id);
+        return { ...r, myDecision: mine[mine.length - 1] };
+      })
+      .sort((a, b) => b.myDecision.timestamp.getTime() - a.myDecision.timestamp.getTime())
+      .slice(0, 20);
+    res.json(withMyDecision);
+  })
+);
+
 // FR-1.27 — Step 5 dashboard: Budget Officer's queue grouped by centralized
 // department, GL category, and expense line item.
 budgetRequestsRouter.get(
@@ -258,18 +384,83 @@ budgetRequestsRouter.get(
   })
 );
 
-// Finalized requests still awaiting the Budget Officer's manual SAP upload
-// trigger (FR-1.33).
+// Phase 3's Internal Order Request form (spec item 9) needs a plain list of
+// approved NPC budget codes to fund an IO from - open to any authenticated
+// user (like the expense catalog), not Budget-Officer-gated the way the
+// finalized-budget report is, since any requestor can create an IO request.
 budgetRequestsRouter.get(
-  "/approved-pending-sap",
-  requireRole(RoleType.BUDGET_OFFICER),
+  "/approved-npc-codes",
   asyncHandler(async (_req, res) => {
     const requests = await prisma.budgetRequest.findMany({
-      where: { currentStage: RequestStage.APPROVED, sapDocumentNumber: null },
-      include: DETAIL_INCLUDE,
-      orderBy: { updatedAt: "asc" },
+      where: { requestCategory: RequestCategory.NPC, currentStage: RequestStage.APPROVED, budgetCode: { not: null } },
+      include: { expenseLineItem: { select: { name: true } } },
+      orderBy: { budgetCode: "asc" },
     });
-    res.json(requests);
+    res.json(
+      requests.map((r) => ({
+        id: r.id,
+        budgetCode: r.budgetCode,
+        npcHeadCode: r.npcHeadCode,
+        npcSbu: r.npcSbu,
+        expenseLineItemName: r.expenseLineItem.name,
+      })),
+    );
+  })
+);
+
+// Note 11 §3 - Budget-Officer-only report over FinalizedBudgetLine (the
+// "finalize & upload" snapshot). Mounted before the "/:id" catch-all below
+// so this literal path is never shadowed by it, same ordering care already
+// documented for bulkUploadRouter in app.ts.
+const finalizedBudgetReportQuerySchema = z.object({
+  fiscalYear: z.coerce.number().int(),
+  requestCategory: z.nativeEnum(RequestCategory).optional(),
+  sbu: z.nativeEnum(Sbu).optional(),
+  npcSbu: z.string().optional(),
+  search: z.string().optional(),
+});
+
+budgetRequestsRouter.get(
+  "/finalized-budget-report",
+  requireRole(RoleType.BUDGET_OFFICER),
+  asyncHandler(async (req, res) => {
+    const filter = finalizedBudgetReportQuerySchema.parse(req.query);
+    res.json(await getFinalizedBudgetReport(filter));
+  })
+);
+
+budgetRequestsRouter.get(
+  "/finalized-budget-report/export",
+  requireRole(RoleType.BUDGET_OFFICER),
+  asyncHandler(async (req, res) => {
+    const filter = finalizedBudgetReportQuerySchema.parse(req.query);
+    const report = await getFinalizedBudgetReport(filter);
+
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet(`Finalized Budget ${filter.fiscalYear}`);
+    sheet.addRow(["Category", "SBU", "NPC SBU", "Cost Center", "Cost Center Name", "GL Account", "GL Account Name", "Amount", "# Requests"]);
+    sheet.getRow(1).font = { bold: true };
+    for (const line of report.lines) {
+      sheet.addRow([
+        line.requestCategory,
+        line.sbu ?? "",
+        line.npcSbu ?? "",
+        line.costCenter,
+        line.costCenterName ?? "",
+        line.glAccount,
+        line.glAccountName ?? "",
+        line.amount,
+        line.lineCount,
+      ]);
+    }
+    sheet.columns.forEach((col) => {
+      col.width = 18;
+    });
+
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Disposition", `attachment; filename="finalized-budget-${filter.fiscalYear}.xlsx"`);
+    await workbook.xlsx.write(res);
+    res.end();
   })
 );
 

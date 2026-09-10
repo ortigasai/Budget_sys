@@ -5,6 +5,9 @@ import {
   parseExpenseLineItemsFile as parseExpenseLineItemsFileShared,
   type ParsedExpenseLineItemRow,
 } from "../src/lib/expenseLineItemCatalog";
+import { BudgetCodePrefixKind } from "@prisma/client";
+import { formatBudgetCode, getBudgetCodePrefixCode, nextBudgetCode } from "../src/lib/budgetCode";
+import { getFiscalCycle } from "../src/lib/fiscalCycle";
 
 // Re-runnable importer for the real "Budgeting System_Expense Line Items"
 // catalog (notes item 3: "the list is not yet complete, will add more line
@@ -16,9 +19,9 @@ import {
 const SOURCE_FILE = path.resolve(__dirname, "data/expense-line-items.xlsx");
 
 // The full company/business-unit set implied by the Manpower workbook's
-// column headers, plus "OLCP" as literally found in one Expense Line Items
-// row (likely a source typo for OCLP, kept verbatim rather than silently
-// "corrected").
+// column headers. "OLCP" (a source-file typo for "OCLP") is normalized away
+// in expenseLineItemCatalog.ts before rows ever reach this list, so it's
+// intentionally not a company of its own here.
 const COMPANIES: { code: string; name: string }[] = [
   { code: "OCC", name: "OCC" },
   { code: "OCLP", name: "OCLP" },
@@ -26,7 +29,6 @@ const COMPANIES: { code: string; name: string }[] = [
   { code: "OLC", name: "OLC" },
   { code: "OLC_PROJECT", name: "OLC Project" },
   { code: "OUTSOURCED", name: "Outsourced" },
-  { code: "OLCP", name: "OLCP" },
 ];
 
 export function parseExpenseLineItemsFile(filePath: string = SOURCE_FILE): Promise<ParsedExpenseLineItemRow[]> {
@@ -45,19 +47,29 @@ export async function importExpenseLineItems(prisma: PrismaClient, budgetOfficer
   const rows = await parseExpenseLineItemsFile();
   const departmentCache = new Map<string, string>();
   const companyCache = new Map<string, string>();
+  const { targetCalendarYear } = await getFiscalCycle();
+  const cdPrefixCache = new Map<string, string | null>();
+
+  const resolveDepartmentId = async (name: string) => {
+    let id = departmentCache.get(name);
+    if (!id) {
+      const dept = await prisma.department.upsert({
+        where: { name },
+        update: {},
+        create: { name, type: "CENTRALIZED" },
+      });
+      id = dept.id;
+      departmentCache.set(name, id);
+    }
+    return id;
+  };
 
   let imported = 0;
   for (const row of rows) {
-    let departmentId = departmentCache.get(row.departmentName);
-    if (!departmentId) {
-      const dept = await prisma.department.upsert({
-        where: { name: row.departmentName },
-        update: {},
-        create: { name: row.departmentName, type: "CENTRALIZED" },
-      });
-      departmentId = dept.id;
-      departmentCache.set(row.departmentName, departmentId);
-    }
+    const departmentId = await resolveDepartmentId(row.departmentName);
+    const visibleToDepartmentId = row.visibleToDepartmentName
+      ? await resolveDepartmentId(row.visibleToDepartmentName)
+      : null;
 
     let companyId: string | undefined;
     if (row.companyCode) {
@@ -71,28 +83,61 @@ export async function importExpenseLineItems(prisma: PrismaClient, budgetOfficer
 
     const id = buildExpenseLineItemId(row.category, row.name, row.companyCode);
 
+    // Normally the file's own CD+Num (row.budgetCodePrefix/budgetCodeNum)
+    // combined with the *current* Target Calendar Year - not the file's own
+    // YY, which is frozen to whichever year it was last edited in. A row
+    // missing CD/Num (e.g. an unrecognized department, or a fresh row added
+    // without the CD/Num formulas filled in) falls back to the department's
+    // configured CD prefix (Admin Console > Budget Codes) + a generated
+    // sequence number instead, so it still gets a code.
+    let budgetCode: string | null = null;
+    if (row.budgetCodePrefix && row.budgetCodeNum != null) {
+      budgetCode = formatBudgetCode(row.budgetCodePrefix, targetCalendarYear, row.budgetCodeNum);
+    } else {
+      if (!cdPrefixCache.has(row.departmentName)) {
+        cdPrefixCache.set(
+          row.departmentName,
+          await getBudgetCodePrefixCode(BudgetCodePrefixKind.CENTRALIZED_DEPARTMENT, row.departmentName)
+        );
+      }
+      const prefixCode = cdPrefixCache.get(row.departmentName);
+      if (prefixCode) budgetCode = await nextBudgetCode(prefixCode, targetCalendarYear);
+    }
+
     await prisma.expenseLineItem.upsert({
       where: { id },
       update: {
         category: row.category,
+        description: row.description,
         glAccount: row.glAccount,
         costCenter: row.costCenter,
         ownerDepartmentId: departmentId,
         companyId,
         extraFieldsConfig: row.extraFieldsConfig as any,
         requiresMobilePolicy: row.requiresMobilePolicy,
+        spendGridComputation: row.spendGridComputation,
+        spendGridFrequency: row.spendGridFrequency,
+        sampleCharges: row.sampleCharges,
+        visibleToDepartmentId,
+        budgetCode: budgetCode ?? undefined,
       },
       create: {
         id,
         name: row.name,
         category: row.category,
+        description: row.description,
         glAccount: row.glAccount,
         costCenter: row.costCenter,
         ownerDepartmentId: departmentId,
         companyId,
         extraFieldsConfig: row.extraFieldsConfig as any,
         requiresMobilePolicy: row.requiresMobilePolicy,
+        spendGridComputation: row.spendGridComputation,
+        spendGridFrequency: row.spendGridFrequency,
+        sampleCharges: row.sampleCharges,
+        visibleToDepartmentId,
         managedBy: budgetOfficerId,
+        budgetCode,
       },
     });
     imported++;

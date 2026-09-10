@@ -4,8 +4,17 @@ build/
 .env
 .env.*
 !.env.example
+!deploy/.env.server.example
 uploads/
 *.log
 .DS_Store
 backend/prisma/dev.db
 *.tsbuildinfo
+
+# Live SAP broker API keys - plaintext credential dump, never commit.
+API/API_KEY_Budgeting_System.txt
+Budgeting_System_API.zip
+
+# Local machine/session state, not meant to be shared via the repo.
+.claude/settings.local.json
+.claude/scheduled_tasks.lock

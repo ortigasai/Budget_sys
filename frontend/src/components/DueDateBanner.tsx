@@ -29,19 +29,14 @@ export function DueDateBanner() {
 
   return (
     <div className="rounded-lg border border-emerald-100 bg-emerald-50 p-3">
-      <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-emerald-800">Stage Due Dates</div>
+      <div className="mb-1.5 text-xs font-semibold tracking-wide text-emerald-800">Stage Due Dates</div>
       <div className="flex flex-wrap gap-2 text-sm">
         {sorted.map((c) => {
           const isPastDue = new Date(c.dueDate).getTime() < Date.now();
           return (
-            <span
-              key={c.id}
-              className={`rounded-full px-2.5 py-1 text-xs font-medium ${
-                isPastDue ? "bg-red-100 text-red-700" : "bg-white text-emerald-800 ring-1 ring-emerald-200"
-              }`}
-            >
+            <span key={c.id} className={`rounded-full px-2.5 py-1 text-xs font-medium ${isPastDue ? "bg-red-100 text-red-700" : "bg-white text-emerald-800 ring-1 ring-emerald-200"}`}>
               {STAGE_LABELS[c.stage] ?? c.stage}: {new Date(c.dueDate).toLocaleDateString()}
-              {isPastDue && " ⚠ past due"}
+              {isPastDue && "⚠ past due"}
             </span>
           );
         })}

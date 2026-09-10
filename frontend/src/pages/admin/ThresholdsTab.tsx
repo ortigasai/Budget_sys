@@ -1,9 +1,11 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../../api/client";
+import { useFiscalYear } from "../../lib/fiscalCycle";
 
 export function ThresholdsTab() {
   const queryClient = useQueryClient();
+  const { targetYear } = useFiscalYear();
   const { data: docThreshold } = useQuery({
     queryKey: ["documentation-threshold"],
     queryFn: async () => (await api.get<{ amount: number }>("/admin/documentation-threshold")).data,
@@ -25,7 +27,7 @@ export function ThresholdsTab() {
           Documentation Threshold: <span className="text-emerald-800">₱{(docThreshold?.amount ?? 0).toLocaleString()}</span>
         </div>
         <p className="mb-2 text-xs text-slate-500">
-          Attachments are mandatory once the 2027 Proposed Amount exceeds this figure (Field 7).
+          Attachments are mandatory once the {targetYear} Proposed Amount exceeds this figure (Field 7).
         </p>
         <div className="flex items-center gap-2 text-sm">
           <input

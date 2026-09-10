@@ -34,25 +34,3 @@ export async function uploadCostCenterPlanning(
     postedAt: new Date().toISOString(),
   };
 }
-
-// Rough monthly per-head rates used only to generate a plausible mock YTD
-// pull for the Manpower Budgeting module — there is no real SAP source to
-// read from yet. Swap this function for a real SAP read without touching
-// manpowerService.ts, which only depends on this interface.
-const MOCK_MONTHLY_RATE_PER_HEAD: Record<string, number> = {
-  "Basic Pay": 30000,
-  "Guaranteed Bonus": 2500,
-  "Government Contributions (ER) - SSS": 1200,
-  "Government Contributions (ER) - Pag-Ibig": 200,
-  "Government Contributions (ER) - Philhealth": 900,
-};
-const MOCK_DEFAULT_MONTHLY_RATE_PER_HEAD = 300;
-
-export async function pullManpowerActuals(
-  payComponentName: string,
-  headcount: number,
-  monthsElapsed: number
-): Promise<number> {
-  const rate = MOCK_MONTHLY_RATE_PER_HEAD[payComponentName] ?? MOCK_DEFAULT_MONTHLY_RATE_PER_HEAD;
-  return Math.round(headcount * rate * monthsElapsed);
-}

@@ -1,6 +1,6 @@
 import { PrismaClient, DepartmentType, RoleType } from "@prisma/client";
 import { importExpenseLineItems } from "./importExpenseLineItems";
-import { importEmployees } from "./importEmployees";
+import { importEmployees, testPasswordHash } from "./importEmployees";
 
 const prisma = new PrismaClient();
 
@@ -23,6 +23,9 @@ const CENTRALIZED_DEPARTMENTS = [
 async function main() {
   console.log("Seeding...");
 
+  // Notes_6: every demo/role user shares the same testing password.
+  const passwordHash = await testPasswordHash();
+
   const departments = await Promise.all(
     [
       { name: "Sales", type: DepartmentType.REQUESTING },
@@ -42,31 +45,34 @@ async function main() {
 
   const budgetOfficer = await prisma.user.upsert({
     where: { email: "budget.officer@ortigas.com.ph" },
-    update: {},
+    update: { passwordHash },
     create: {
       name: "Bea Officer",
       email: "budget.officer@ortigas.com.ph",
       departmentId: byName["Corporate Finance"].id,
+      passwordHash,
     },
   });
 
   const bcaHead = await prisma.user.upsert({
     where: { email: "bca.head@ortigas.com.ph" },
-    update: {},
+    update: { passwordHash },
     create: {
       name: "Carlos BCA",
       email: "bca.head@ortigas.com.ph",
       departmentId: byName["Corporate Finance"].id,
+      passwordHash,
     },
   });
 
   const cfo = await prisma.user.upsert({
     where: { email: "cfo@ortigas.com.ph" },
-    update: {},
+    update: { passwordHash },
     create: {
       name: "Cesar CFO",
       email: "cfo@ortigas.com.ph",
       departmentId: byName["Corporate Finance"].id,
+      passwordHash,
     },
   });
   await prisma.roleAssignment.upsert({
@@ -93,20 +99,22 @@ async function main() {
     const dept = byName[deptName];
     const requestor = await prisma.user.upsert({
       where: { email: `${deptName.toLowerCase()}.requestor@ortigas.com.ph` },
-      update: {},
+      update: { passwordHash },
       create: {
         name: `${deptName} Requestor`,
         email: `${deptName.toLowerCase()}.requestor@ortigas.com.ph`,
         departmentId: dept.id,
+        passwordHash,
       },
     });
     const head = await prisma.user.upsert({
       where: { email: `${deptName.toLowerCase()}.head@ortigas.com.ph` },
-      update: {},
+      update: { passwordHash },
       create: {
         name: `${deptName} Head`,
         email: `${deptName.toLowerCase()}.head@ortigas.com.ph`,
         departmentId: dept.id,
+        passwordHash,
       },
     });
     await prisma.roleAssignment.upsert({
@@ -134,29 +142,32 @@ async function main() {
     const slug = deptName.toLowerCase().replace(/[^a-z0-9]+/g, "");
     const preparer = await prisma.user.upsert({
       where: { email: `${slug}.preparer@ortigas.com.ph` },
-      update: {},
+      update: { passwordHash },
       create: {
         name: `${deptName} Preparer`,
         email: `${slug}.preparer@ortigas.com.ph`,
         departmentId: dept.id,
+        passwordHash,
       },
     });
     const l1 = await prisma.user.upsert({
       where: { email: `${slug}.reviewer@ortigas.com.ph` },
-      update: {},
+      update: { passwordHash },
       create: {
         name: `${deptName} L1 Reviewer`,
         email: `${slug}.reviewer@ortigas.com.ph`,
         departmentId: dept.id,
+        passwordHash,
       },
     });
     const head = await prisma.user.upsert({
       where: { email: `${slug}.head@ortigas.com.ph` },
-      update: {},
+      update: { passwordHash },
       create: {
         name: `${deptName} Head`,
         email: `${slug}.head@ortigas.com.ph`,
         departmentId: dept.id,
+        passwordHash,
       },
     });
 
@@ -217,11 +228,12 @@ async function main() {
   // workflows reuses Human Resources' CENTRALIZED_DEPARTMENT_HEAD above.
   const hrAnalyst = await prisma.user.upsert({
     where: { email: "hr.analyst@ortigas.com.ph" },
-    update: {},
+    update: { passwordHash },
     create: {
       name: "Hannah Analyst",
       email: "hr.analyst@ortigas.com.ph",
       departmentId: byName["Human Resources"].id,
+      passwordHash,
     },
   });
   await prisma.roleAssignment.upsert({
@@ -313,6 +325,46 @@ async function main() {
     });
   }
 
+  // Budget Code prefixes: GAE's Centralized Department abbreviations
+  // (import-time fallback only - GAE codes are normally pre-computed in the
+  // source catalog file) and NPC's Head-per-SBU abbreviations (used by the
+  // NPC request form's Head picker).
+  const CENTRALIZED_DEPARTMENT_CODES: [string, string][] = [
+    ["Admin Services", "AS"],
+    ["Corporate Finance", "CF"],
+    ["External Affairs", "EA"],
+    ["Human Resources", "HR"],
+    ["IS & IT", "IT"],
+    ["Legal", "LG"],
+    ["Office of the CFO", "CF"],
+    ["Tax", "TX"],
+    ["Budget, Controls & Analysis", "BCA"],
+    ["Corporate Marketing", "CM"],
+    ["OMD Operations", "OM"],
+    ["Procurement", "PR"],
+  ];
+  const NPC_HEAD_CODES: [string, string][] = [
+    ["Malls GH", "JLC"],
+    ["Malls NonGH", "RFT"],
+    ["Estates", "BCB"],
+    ["Offices", "WPD"],
+    ["Corporate IT", "RBQ"],
+    ["Corporate HR", "MGM"],
+    ["Corporate Admin", "LPA"],
+  ];
+  for (const [kind, entries] of [
+    ["CENTRALIZED_DEPARTMENT", CENTRALIZED_DEPARTMENT_CODES],
+    ["NPC_HEAD", NPC_HEAD_CODES],
+  ] as const) {
+    for (const [label, code] of entries) {
+      await prisma.budgetCodePrefix.upsert({
+        where: { kind_label: { kind, label } },
+        update: { code },
+        create: { kind, label, code },
+      });
+    }
+  }
+
   // Mobile phone rank -> monthly budget-limit tiers (notes item 7). Over the
   // limit for the requestor's rank routes the request through CFO_APPROVAL.
   const existingMobileTiers = await prisma.mobilePhonePolicyTier.count();
@@ -360,10 +412,11 @@ async function main() {
   for (const row of historicalRows) {
     await prisma.historicalActuals.upsert({
       where: {
-        departmentId_glAccount_costCenter: {
+        departmentId_glAccount_costCenter_fiscalYear: {
           departmentId: byName[row.department].id,
           glAccount: row.glAccount,
           costCenter: row.costCenter,
+          fiscalYear: FISCAL_YEAR,
         },
       },
       update: {},
@@ -371,6 +424,7 @@ async function main() {
         departmentId: byName[row.department].id,
         glAccount: row.glAccount,
         costCenter: row.costCenter,
+        fiscalYear: FISCAL_YEAR,
         glDescription: row.glDescription,
         actuals2025: row.actuals2025,
         approvedBudget2026: row.approved2026,
@@ -405,10 +459,13 @@ async function main() {
     "Government Contributions (ER) - Philhealth",
   ]);
   const HEADCOUNT_DRIVEN_COMPONENTS = HR_PORTAL_COMPONENTS;
-  // Merit Increase eligibility per the real Manpower Report.xlsx formulas
-  // (ground truth - see Amendment 3 plan): Basic Pay, Guaranteed Bonus, OT
-  // Pay, and OT Meal Reimbursement, excluding the Outsourced company.
-  const MERIT_INCREASE_COMPONENTS = new Set(["Basic Pay", "Guaranteed Bonus", "OT Pay", "OT Meal Reimbursement"]);
+  // Merit Increase eligibility per the "Manpower Budget Report" tab's ground
+  // truth (Notes_6): only the Salary section (Basic Pay, Guaranteed Bonus)
+  // is merit-eligible - OT Pay and OT Meal Reimbursement moved to "Other
+  // Employee Benefits", which the same file marks "N/A - should be Zero"
+  // for Merit Increase (supersedes Amendment 3's wider set that included
+  // them), excluding the Outsourced company.
+  const MERIT_INCREASE_COMPONENTS = new Set(["Basic Pay", "Guaranteed Bonus"]);
 
   const payComponentNames = [
     "Basic Pay",
