@@ -296,8 +296,13 @@ def salr_options(fiscalYear: int, user: AuthedUser = Depends(get_current_user)):
     source (spec: "IO Budget should have a dropdown list of the created IO
     in SAP... This needs an automatic pull of data from SAP") - each Internal
     Order's own live Budget/Available, one row per AUFNR, no caching.
+
+    `fiscalYear` is the target/ask year the frontend is otherwise scoped to;
+    real SALR postings only exist for a year that's actually happened, so the
+    broker is queried against `fiscalYear - 1` instead (same relationship as
+    the Forecast GAE/DOE sync and the Utilization SAP sync).
     """
-    rows = fetch_salr_rows(fiscalYear)
+    rows = fetch_salr_rows(fiscalYear - 1)
     options = [
         SalrOptionOut(
             aufnr=row["AUFNR"],
@@ -311,7 +316,11 @@ def salr_options(fiscalYear: int, user: AuthedUser = Depends(get_current_user)):
 
 
 def _find_salr_row(fiscal_year: int, aufnr: str) -> dict | None:
-    rows = fetch_salr_rows(fiscal_year)
+    """`fiscal_year` is the IO's own target/ask year - same target-year-vs-
+    real-year offset as salr_options() above, queried against the broker at
+    `fiscal_year - 1`.
+    """
+    rows = fetch_salr_rows(fiscal_year - 1)
     stripped = aufnr.lstrip("0") or "0"
     for row in rows:
         if row["AUFNR"] == aufnr or (row["AUFNR"].lstrip("0") or "0") == stripped:

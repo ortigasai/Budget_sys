@@ -355,7 +355,11 @@ export async function runManpowerRecompute(fiscalYear: number) {
 
   const glAccounts = [...new Set(payComponents.filter((p) => p.glAccount).map((p) => `00${p.glAccount}`))];
   const costCenters = [...new Set(companies.filter((c) => c.costCenter).map((c) => `00${c.costCenter}`))];
-  const sapRows = glAccounts.length > 0 && costCenters.length > 0 ? await fetchKssbV1Rows(costCenters, glAccounts, fiscalYear) : [];
+  // fiscalYear - 1, not fiscalYear: real KSSB V1 postings can only exist for
+  // a year that's actually happened, not the future year still being
+  // budgeted for (same "target year - 1" relationship as the Forecast
+  // GAE/DOE sync) - ManpowerEntry itself still stays keyed on fiscalYear.
+  const sapRows = glAccounts.length > 0 && costCenters.length > 0 ? await fetchKssbV1Rows(costCenters, glAccounts, fiscalYear - 1) : [];
 
   const ytdActualByGlCc = new Map<string, number>();
   for (const row of sapRows) {

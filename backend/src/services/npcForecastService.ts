@@ -42,7 +42,7 @@ function sumMonthly(forecast: Record<string, number>, months: number[]): number 
 }
 
 export async function getNpcForecastRows(npcSbu: string, authorizationHeader: string): Promise<{ asOfMonth: number; rows: NpcForecastRow[] }> {
-  const { targetCalendarYear, asOfMonth } = await getFiscalCycle();
+  const { targetCalendarYear, forecastYear, asOfMonth } = await getFiscalCycle();
   const remainingMonths = Array.from({ length: 12 - asOfMonth }, (_, i) => asOfMonth + 1 + i);
 
   const finalizedLines = await prisma.finalizedBudgetLine.findMany({
@@ -55,10 +55,13 @@ export async function getNpcForecastRows(npcSbu: string, authorizationHeader: st
     prisma.npcForecastEntry.findMany({
       where: { fiscalYear: targetCalendarYear, budgetRequestId: { in: finalizedLines.map((l) => l.budgetRequestId) } },
     }),
-    // Best-effort: an NPC Forecast view shouldn't 500 just because the
-    // broker is briefly unreachable - IO Actual just falls back to null
-    // (same as "no matching SALR row") for every row in that case.
-    fetchSalrRows(targetCalendarYear).catch(() => [] as SalrRow[]),
+    // forecastYear, not targetCalendarYear - real SALR postings can only
+    // exist for a year that's actually happened (same "target year - 1"
+    // relationship as the Forecast GAE/DOE sync), not the future year still
+    // being budgeted for. Best-effort: an NPC Forecast view shouldn't 500
+    // just because the broker is briefly unreachable - IO Actual just falls
+    // back to null (same as "no matching SALR row") for every row in that case.
+    fetchSalrRows(forecastYear).catch(() => [] as SalrRow[]),
   ]);
   const ioByBudgetCode = new Map(ioRows.map((r) => [r.budgetCode, r]));
   const forecastByRequestId = new Map(forecastEntries.map((e) => [e.budgetRequestId, e]));
