@@ -13,6 +13,7 @@ rows first, then insert fresh ones from the broker.
 
 from __future__ import annotations
 
+import threading
 from datetime import datetime
 
 from sqlmodel import Session, delete, select
@@ -136,3 +137,66 @@ def sync_sap(session: Session, fiscal_year: int) -> dict[str, int]:
     commitment_count = sync_commitments_from_kssb_v2(session, fiscal_year)
     session.commit()
     return {"actualsSynced": actual_count, "commitmentsSynced": commitment_count}
+
+
+# ---------------------------------------------------------------------------
+# Background-job wrapper. A full sync easily takes several minutes (hundreds
+# of paginated broker requests, deliberately paced under its 120/min rate
+# limit - see sap_broker.py) - far too long to run inline on the HTTP request
+# a "Sync from SAP" click makes, since it would sit past IIS/ARR's own
+# reverse-proxy timeout long before finishing. So the route only ever starts
+# this in a background thread and returns immediately; the frontend polls
+# GET /utilization/sync-sap/status for the result instead.
+#
+# Module-level, in-memory state - fine for this app's actual deployment (one
+# uvicorn worker process via NSSM, no multi-process/multi-machine scaling),
+# and there's no product requirement for this to survive a service restart -
+# worst case, a restart mid-sync just needs a fresh click to retry.
+# ---------------------------------------------------------------------------
+
+_sync_lock = threading.Lock()
+_sync_state: dict = {
+    "status": "idle",  # "idle" | "running" | "success" | "error"
+    "fiscalYear": None,
+    "startedAt": None,
+    "finishedAt": None,
+    "result": None,
+    "error": None,
+}
+
+
+def get_sync_status() -> dict:
+    with _sync_lock:
+        return dict(_sync_state)
+
+
+def start_sync_in_background(fiscal_year: int) -> bool:
+    """Returns False (and starts nothing) if a sync is already running."""
+    with _sync_lock:
+        if _sync_state["status"] == "running":
+            return False
+        _sync_state.update(
+            status="running",
+            fiscalYear=fiscal_year,
+            startedAt=datetime.utcnow().isoformat(),
+            finishedAt=None,
+            result=None,
+            error=None,
+        )
+
+    def _run() -> None:
+        # A fresh engine/session, not the request's own - the HTTP request
+        # this was spawned from has already returned by the time this runs.
+        from ..db import engine
+
+        try:
+            with Session(engine) as bg_session:
+                result = sync_sap(bg_session, fiscal_year)
+            with _sync_lock:
+                _sync_state.update(status="success", finishedAt=datetime.utcnow().isoformat(), result=result, error=None)
+        except Exception as exc:  # noqa: BLE001 - deliberately broad: surface any failure to the polling frontend rather than losing it in a background thread
+            with _sync_lock:
+                _sync_state.update(status="error", finishedAt=datetime.utcnow().isoformat(), error=str(exc))
+
+    threading.Thread(target=_run, daemon=True).start()
+    return True

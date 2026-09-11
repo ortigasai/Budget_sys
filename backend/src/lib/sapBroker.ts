@@ -11,12 +11,24 @@ const MAX_ROWS_PER_PAGE = 100;
 // and the broker's own docs don't state a length cap, so this stays
 // conservative.
 const CHUNK_SIZE = 40;
+// The broker's own rate limit (confirmed via /whoami/: rate_limit_per_minute
+// 120) - a full sync against many cost centers, each paginated through real
+// (large) result sets, easily exceeds this without either pacing requests or
+// retrying on 429.
+const MIN_MS_BETWEEN_REQUESTS = 550; // keeps steady-state throughput under 120/min
+const MAX_RETRIES_429 = 8;
+const DEFAULT_RETRY_AFTER_SECONDS = 3;
 
 function sapClient(apiKey: string | undefined) {
   return axios.create({
     baseURL: SAP_BROKER_BASE_URL,
     headers: { "X-API-Key": apiKey ?? "" },
     timeout: 15_000,
+    // 429 (rate limited) and 5xx (a transient hiccup on the broker's own
+    // end, not something retrying at the same pace would make worse -
+    // confirmed live: a 502 mid-sync that succeeded on retry) are both
+    // handled by getWithRateLimit below instead of throwing here.
+    validateStatus: (status) => status < 400 || status === 429 || status >= 500,
   });
 }
 
@@ -24,11 +36,31 @@ interface RowsResponse<T> {
   rows: T[];
 }
 
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function getWithRateLimit<T>(client: ReturnType<typeof sapClient>, path: string, params: Record<string, unknown>): Promise<RowsResponse<T>> {
+  await sleep(MIN_MS_BETWEEN_REQUESTS);
+  let lastStatus = 0;
+  for (let attempt = 0; attempt < MAX_RETRIES_429; attempt++) {
+    const res = await client.get<RowsResponse<T>>(path, { params });
+    if (res.status < 400) return res.data;
+    lastStatus = res.status;
+    const retryAfter = res.headers["retry-after"];
+    const waitSeconds = retryAfter ? Number(retryAfter) : DEFAULT_RETRY_AFTER_SECONDS * (attempt + 1);
+    await sleep(waitSeconds * 1000);
+  }
+  // Retries exhausted and still failing - surface it as a real error instead
+  // of silently returning a response our own validateStatus let through.
+  throw new Error(`SAP broker request failed after ${MAX_RETRIES_429} retries (${path}), last status ${lastStatus}`);
+}
+
 async function paginate<T>(client: ReturnType<typeof sapClient>, path: string, params: Record<string, unknown>): Promise<T[]> {
   const rows: T[] = [];
   let offset = 0;
   for (;;) {
-    const { data } = await client.get<RowsResponse<T>>(path, { params: { ...params, limit: MAX_ROWS_PER_PAGE, offset } });
+    const data = await getWithRateLimit<T>(client, path, { ...params, limit: MAX_ROWS_PER_PAGE, offset });
     rows.push(...data.rows);
     if (data.rows.length < MAX_ROWS_PER_PAGE) break;
     offset += MAX_ROWS_PER_PAGE;

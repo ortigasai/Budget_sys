@@ -10,6 +10,8 @@ bridging overhead for no benefit here.
 
 from __future__ import annotations
 
+import time
+
 import httpx
 
 from ..settings import settings
@@ -18,18 +20,50 @@ MAX_ROWS_PER_PAGE = 100
 # Mirrors sapBroker.ts's KOSTL_CHUNK_SIZE - keeps each request's `*__in`
 # filter a reasonable length; the broker's own docs don't state a length cap.
 CHUNK_SIZE = 40
+# The broker's own rate limit (confirmed via /whoami/: rate_limit_per_minute
+# 120) - a full sync against hundreds of cost centers, each paginated
+# through real (large) result sets, easily exceeds this without either
+# pacing requests or retrying on 429. MAX_RETRIES_429 is a hard ceiling so a
+# persistently-misbehaving broker fails loudly instead of hanging forever.
+MIN_SECONDS_BETWEEN_REQUESTS = 0.55  # keeps steady-state throughput under 120/min
+MAX_RETRIES_429 = 8
+DEFAULT_RETRY_AFTER_SECONDS = 3.0
 
 
 def _client(api_key: str) -> httpx.Client:
     return httpx.Client(base_url=settings.sap_broker_base_url, headers={"X-API-Key": api_key}, timeout=15.0)
 
 
+def _get_with_rate_limit(client: httpx.Client, path: str, params: dict) -> httpx.Response:
+    """GET with basic self-pacing (a small delay before every request) plus
+    retry/backoff on both 429 (rate limited - honors a Retry-After header
+    when the broker sends one) and 5xx (a transient server-side hiccup on
+    the broker's end, not something retrying at the same pace would make
+    worse) - the self-pacing keeps steady-state traffic under the broker's
+    own rate limit, the retry is the safety net for the bursts a hard
+    chunk-by-chunk loop still produces, and for the broker just having a bad
+    moment (confirmed live: a 502 mid-sync that succeeded on retry).
+    """
+    time.sleep(MIN_SECONDS_BETWEEN_REQUESTS)
+    for attempt in range(MAX_RETRIES_429):
+        resp = client.get(path, params=params)
+        if resp.status_code < 500 and resp.status_code != 429:
+            resp.raise_for_status()
+            return resp
+        retry_after = resp.headers.get("Retry-After")
+        wait_seconds = float(retry_after) if retry_after else DEFAULT_RETRY_AFTER_SECONDS * (attempt + 1)
+        time.sleep(wait_seconds)
+    # Retries exhausted - make one final attempt and let its error surface.
+    resp = client.get(path, params=params)
+    resp.raise_for_status()
+    return resp
+
+
 def _paginate(client: httpx.Client, path: str, params: dict) -> list[dict]:
     rows: list[dict] = []
     offset = 0
     while True:
-        resp = client.get(path, params={**params, "limit": MAX_ROWS_PER_PAGE, "offset": offset})
-        resp.raise_for_status()
+        resp = _get_with_rate_limit(client, path, {**params, "limit": MAX_ROWS_PER_PAGE, "offset": offset})
         page = resp.json()["rows"]
         rows.extend(page)
         if len(page) < MAX_ROWS_PER_PAGE:

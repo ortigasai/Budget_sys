@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api2 } from "../api/client";
@@ -78,6 +78,16 @@ function peso(n: number) {
   return `₱${n.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
 }
 
+interface SapSyncStatus {
+  status: "idle" | "running" | "success" | "error";
+  fiscalYear: number | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+  actualsSynced?: number | null;
+  commitmentsSynced?: number | null;
+  error?: string | null;
+}
+
 export function UtilizationPage() {
   const { hasRole } = useAuth();
   const isBudgetOfficer = hasRole("BUDGET_OFFICER");
@@ -144,16 +154,45 @@ export function UtilizationPage() {
     enabled: !!effectiveNpcSbu && tab === "npc",
   });
 
+  // A full sync takes several minutes (hundreds of paginated, rate-limited
+  // broker requests - see sap_sync_service.py), so the button only starts it
+  // in the background and this polls GET /sync-sap/status for the result
+  // instead of waiting on one long-lived POST that IIS's reverse proxy would
+  // time out on long before it finished.
   const [syncStatus, setSyncStatus] = useState<{ ok: boolean; message: string } | null>(null);
-  const syncMutation = useMutation({
-    mutationFn: async () => (await api2.post<{ actualsSynced: number; commitmentsSynced: number }>("/utilization/sync-sap", null, { params: { fiscalYear: FISCAL_YEAR } })).data,
-    onSuccess: (data) => {
-      setSyncStatus({ ok: true, message: `Synced ${data.actualsSynced} actual(s), ${data.commitmentsSynced} commitment(s).` });
+  const [isPolling, setIsPolling] = useState(false);
+
+  const startSyncMutation = useMutation({
+    mutationFn: async () => (await api2.post("/utilization/sync-sap", null, { params: { fiscalYear: FISCAL_YEAR } })).data,
+    onSuccess: () => {
+      setSyncStatus({ ok: true, message: "Sync started - this can take several minutes, feel free to keep working elsewhere and check back." });
+      setIsPolling(true);
+    },
+    onError: (err: any) => setSyncStatus({ ok: false, message: err.response?.data?.detail ?? "Could not start sync." }),
+  });
+
+  const { data: syncPollData } = useQuery({
+    queryKey: ["utilization", "sync-sap-status"],
+    queryFn: async () => (await api2.get<SapSyncStatus>("/utilization/sync-sap/status")).data,
+    enabled: isPolling,
+    refetchInterval: isPolling ? 5000 : false,
+  });
+
+  useEffect(() => {
+    if (!syncPollData) return;
+    if (syncPollData.status === "success") {
+      setIsPolling(false);
+      setSyncStatus({ ok: true, message: `Synced ${syncPollData.actualsSynced} actual(s), ${syncPollData.commitmentsSynced} commitment(s).` });
       queryClient.invalidateQueries({ queryKey: ["utilization", "overview", effectiveDeptId] });
       queryClient.invalidateQueries({ queryKey: reconciliationKey });
-    },
-    onError: (err: any) => setSyncStatus({ ok: false, message: err.response?.data?.detail ?? "Sync failed." }),
-  });
+    } else if (syncPollData.status === "error") {
+      setIsPolling(false);
+      setSyncStatus({ ok: false, message: syncPollData.error ?? "Sync failed." });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [syncPollData?.status, syncPollData?.finishedAt]);
+
+  const syncInProgress = isPolling || syncPollData?.status === "running";
 
   const [mappingId, setMappingId] = useState<number | null>(null);
   const mapMutation = useMutation({
@@ -173,12 +212,12 @@ export function UtilizationPage() {
               <button
                 onClick={() => {
                   setSyncStatus(null);
-                  syncMutation.mutate();
+                  startSyncMutation.mutate();
                 }}
-                disabled={syncMutation.isPending}
+                disabled={startSyncMutation.isPending || syncInProgress}
                 className="rounded-md border border-emerald-300 bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-800 hover:bg-emerald-100 disabled:opacity-50"
               >
-                {syncMutation.isPending ? "Syncing…" : "Sync from SAP"}
+                {startSyncMutation.isPending || syncInProgress ? "Syncing…" : "Sync from SAP"}
               </button>
             )}
             {tab !== "npc" && departments.length > 1 && (

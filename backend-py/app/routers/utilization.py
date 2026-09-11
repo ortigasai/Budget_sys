@@ -22,7 +22,7 @@ from ..models_phase1 import BudgetRequest, Department, ExpenseLineItem, Finalize
 from ..models_phase2 import SapActualTransaction, SapCommitment
 from ..models_phase3 import InternalOrderRequest
 from ..npc_sbu import NPC_SBU_LABELS
-from ..services.sap_sync_service import sync_sap
+from ..services.sap_sync_service import get_sync_status, start_sync_in_background
 
 router = APIRouter(prefix="/utilization", tags=["utilization"])
 
@@ -207,26 +207,57 @@ def _approved_budget_by_line_item(session: Session, department_id: str, fiscal_y
     return totals
 
 
-class SapSyncOut(BaseModel):
-    actualsSynced: int
-    commitmentsSynced: int
+class SapSyncStartOut(BaseModel):
+    status: str  # "started"
 
 
-@router.post("/sync-sap", response_model=SapSyncOut)
+class SapSyncStatusOut(BaseModel):
+    status: str  # "idle" | "running" | "success" | "error"
+    fiscalYear: int | None
+    startedAt: str | None
+    finishedAt: str | None
+    actualsSynced: int | None = None
+    commitmentsSynced: int | None = None
+    error: str | None = None
+
+
+@router.post("/sync-sap", response_model=SapSyncStartOut, status_code=status.HTTP_202_ACCEPTED)
 def sync_sap_route(
     fiscalYear: int,
     user: AuthedUser = Depends(require_role("BUDGET_OFFICER")),
-    session: Session = Depends(get_session),
 ):
     """Real-SAP-data replacement for app/seed_mock_sap.py's manual CLI seed -
     see services/sap_sync_service.py. Populates SapActualTransaction (from
     FBL3N) and SapCommitment (from KSSB V2's Commitment field) for
     `fiscalYear`; Overview, Reconciliation, Transfer's balance check, Dash
     Flow's budget check, and Reports' Budget vs Actual all read those tables
-    live and pick up the synced figures with no further action.
+    live and pick up the synced figures once it finishes.
+
+    A full sync easily takes several minutes (hundreds of paginated broker
+    requests, deliberately paced under the broker's own rate limit) - too
+    long to run inline on this request without sitting past IIS/ARR's
+    reverse-proxy timeout, so this only starts the sync in the background
+    and returns immediately. Poll GET /sync-sap/status for the result.
     """
-    result = sync_sap(session, fiscalYear)
-    return SapSyncOut(actualsSynced=result["actualsSynced"], commitmentsSynced=result["commitmentsSynced"])
+    started = start_sync_in_background(fiscalYear)
+    if not started:
+        raise HTTPException(status.HTTP_409_CONFLICT, "A SAP sync is already in progress.")
+    return SapSyncStartOut(status="started")
+
+
+@router.get("/sync-sap/status", response_model=SapSyncStatusOut)
+def sync_sap_status_route(user: AuthedUser = Depends(_require_utilization_access)):
+    state = get_sync_status()
+    result = state.get("result") or {}
+    return SapSyncStatusOut(
+        status=state["status"],
+        fiscalYear=state["fiscalYear"],
+        startedAt=state["startedAt"],
+        finishedAt=state["finishedAt"],
+        actualsSynced=result.get("actualsSynced"),
+        commitmentsSynced=result.get("commitmentsSynced"),
+        error=state.get("error"),
+    )
 
 
 @router.get("/overview", response_model=list[OverviewRow])
