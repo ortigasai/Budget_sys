@@ -83,7 +83,9 @@ function BalanceBreakdown({ current, isLoading, amount, sign }: { current: Trans
 
 function NewTransferForm() {
   const queryClient = useQueryClient();
-  const { targetYear: FISCAL_YEAR } = useFiscalYear();
+  // forecastYear, not targetYear - a Transfer reallocates already-in-force
+  // (current-year) budget between GL/CC lines, not next year's ask.
+  const { forecastYear: FISCAL_YEAR } = useFiscalYear();
   const { data: ccGlOptions = { costCenters: [], glAccounts: [] } } = useQuery({
     queryKey: ["transfers", "cc-gl-options"],
     queryFn: async () => (await api2.get<CcGlOptions>("/transfers/cc-gl-options")).data,

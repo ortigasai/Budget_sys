@@ -81,7 +81,11 @@ function peso(n: number) {
 export function UtilizationPage() {
   const { hasRole } = useAuth();
   const isBudgetOfficer = hasRole("BUDGET_OFFICER");
-  const { targetYear: FISCAL_YEAR } = useFiscalYear();
+  // forecastYear, not targetYear - Budget Utilization Tracking follows the
+  // current (already-in-force) calendar year, tracking actual spend against
+  // the budget already finalized for it - not the next year's ask still
+  // being prepared (that's targetYear, used by New Request/Approved Budget).
+  const { forecastYear: FISCAL_YEAR } = useFiscalYear();
   // Which view is active lives in `?view=`, driven by Layout.tsx's
   // UtilizationSidebarNav (spec item 17 - moved out of this page's own
   // in-page TabBar into the sidebar, same pattern Phase 3 already uses).

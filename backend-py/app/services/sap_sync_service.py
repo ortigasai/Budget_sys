@@ -49,19 +49,14 @@ def sync_actuals_from_fbl3n(session: Session, fiscal_year: int) -> int:
     (the realistic behavior a live GL feed should have, not a gap to paper
     over).
 
-    `fiscal_year` here is the *target* calendar year Utilization/Transfer/
-    Reports already key everything on (matching FinalizedBudgetLine's own
-    convention - the budget being asked for/approved this cycle). Real SAP
-    postings can only exist for a year that has actually happened, i.e.
-    `fiscal_year - 1` (same "forecastYear = target - 1" relationship
-    historicalActualsService.ts's Forecast sync already uses) - so the
-    broker is queried against that prior year, while the resulting rows are
-    still stored/tagged under `fiscal_year` itself so every existing reader
-    (Overview, Reconciliation, budget_balance.py, Reports, Dash Flow) keeps
-    finding them without any change on their end.
+    `fiscal_year` here is the *current* calendar year Utilization is scoped
+    to (the frontend passes forecastYear, not targetCalendarYear - Budget
+    Utilization Tracking tracks actual spend against the already-finalized
+    budget for the year in force, not the next year's ask still being
+    prepared), which is also the only year real SAP postings can exist for.
     """
     cost_centers = _padded_cost_centers(session)
-    rows = fetch_fbl3n_rows(cost_centers, fiscal_year - 1) if cost_centers else []
+    rows = fetch_fbl3n_rows(cost_centers, fiscal_year) if cost_centers else []
 
     session.exec(delete(SapActualTransaction).where(SapActualTransaction.fiscal_year == fiscal_year))
 
@@ -97,12 +92,11 @@ def sync_commitments_from_kssb_v2(session: Session, fiscal_year: int) -> int:
     (status="OPEN"); it also carries no PO number field, so one is
     synthesized as a stable placeholder.
 
-    Same target-year-vs-prior-year distinction as sync_actuals_from_fbl3n
-    above: queries the broker against `fiscal_year - 1` (the year that's
-    actually happened), stores/tags the result under `fiscal_year` itself.
+    Same "current year, not target year" framing as sync_actuals_from_fbl3n
+    above - `fiscal_year` is the frontend's forecastYear.
     """
     cost_centers = _padded_cost_centers(session)
-    rows = fetch_kssb_v2_rows(cost_centers, fiscal_year - 1) if cost_centers else []
+    rows = fetch_kssb_v2_rows(cost_centers, fiscal_year) if cost_centers else []
 
     totals: dict[tuple[str, str], float] = {}
     for row in rows:

@@ -38,7 +38,9 @@ export function InternalOrderRequestsPage() {
 
 function NewInternalOrderForm() {
   const queryClient = useQueryClient();
-  const { targetYear: FISCAL_YEAR } = useFiscalYear();
+  // forecastYear, not targetYear - Internal Order Request (Module 3) reallocates
+  // already-in-force (current-year) budget, not next year's ask.
+  const { forecastYear: FISCAL_YEAR } = useFiscalYear();
 
   const { data: locations = [] } = useQuery({
     queryKey: ["io-locations"],
