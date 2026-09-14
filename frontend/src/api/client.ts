@@ -671,6 +671,29 @@ export interface ReportSeriesPoint {
   variancePct: number | null;
 }
 
+// Note 12 revision - "Monthly Comparison"/"Quarterly Comparison" Primary
+// Comparison modes: the full Expense Category x period grid (Budget vs
+// Actual + variance $/%), not a company-wide total.
+export interface PeriodGridCell {
+  budget: number;
+  actual: number;
+  variance: number;
+  variancePct: number | null;
+}
+
+export interface PeriodGridRow {
+  expenseGroup: string;
+  financialScope: FinancialScope | "";
+  cells: PeriodGridCell[];
+  total: PeriodGridCell;
+}
+
+export interface PeriodGridResult {
+  periods: string[];
+  rows: PeriodGridRow[];
+  totals: PeriodGridRow;
+}
+
 export interface ReportNote {
   id: number;
   fiscalYear: number;

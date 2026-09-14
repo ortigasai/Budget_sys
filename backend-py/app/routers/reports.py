@@ -166,6 +166,33 @@ def _actuals_by_cc_gl(session: Session, fiscal_year: int, months: set[int]) -> d
     return out
 
 
+def _actuals_by_cc_gl_by_month(session: Session, fiscal_year: int) -> dict[int, dict[tuple[str, str], float]]:
+    """Every actual for `fiscal_year`, fetched once and pre-bucketed by month
+    (1-12). Callers that need several different month-subsets of the same
+    year (a per-period grid or chart, one bucket per month/quarter) should
+    use this instead of calling `_actuals_by_cc_gl` once per bucket - that
+    re-queries and re-deserializes the *entire* table every time, which is
+    fine for a single call but was measured to hang for several minutes once
+    this table held real synced SAP data (180K+ rows) and a caller needed it
+    12 times over (one per month).
+    """
+    rows = session.exec(select(SapActualTransaction).where(SapActualTransaction.fiscal_year == fiscal_year)).all()
+    out: dict[int, dict[tuple[str, str], float]] = {m: {} for m in range(1, 13)}
+    for r in rows:
+        bucket = out.setdefault(r.month, {})
+        key = (r.cost_center, r.gl_account)
+        bucket[key] = bucket.get(key, 0.0) + r.amount
+    return out
+
+
+def _rolled_actuals_for_months(actuals_by_month: dict[int, dict[tuple[str, str], float]], months: set[int]) -> dict[tuple[str, str], float]:
+    combined: dict[tuple[str, str], float] = {}
+    for m in months:
+        for key, amt in actuals_by_month.get(m, {}).items():
+            combined[key] = combined.get(key, 0.0) + amt
+    return combined
+
+
 def _forecast_by_cc_gl(session: Session, fiscal_year: int) -> dict[tuple[str, str], float]:
     """Current-cycle-only (see spec decision) - HistoricalActuals' value
     columns are frozen to whichever Target Calendar Year the row was built
@@ -571,7 +598,7 @@ class TrendPointOut(BaseModel):
 
 @router.get("/trend", response_model=list[TrendPointOut])
 def trend(
-    years: int = 5,
+    currentYear: int,
     costCenter: str | None = None,
     glAccount: str | None = None,
     expenseGroup: str | None = None,
@@ -580,22 +607,19 @@ def trend(
     user: AuthedUser = Depends(require_report_access),
     session: Session = Depends(get_session),
 ):
-    """FR-4.3: 5/10-year Budget vs Actual trend, per Expense Category (same
-    roll-up as the main report). Only years that actually have BudgetRequest
-    or SapActualTransaction rows are returned - never fabricated to pad out
-    to `years` entries (see the "multi-year trend data" scope decision:
-    Forecast doesn't participate here, it isn't a real year-series). Note 12:
-    this is also what the dashboard's Comparison Chart renders when Primary
-    Comparison = "5-Year Trend" (one of five comparison modes now, not a
-    separate page).
+    """FR-4.3 (Note 12 revision): "5-Year Trend" - a fixed, predictable
+    5-point window (`currentYear` and the 4 years before it), Budget vs
+    Actual per Expense Category (same roll-up as the main report). Unlike
+    the old "5/10-year, whichever years happen to have data" behavior, every
+    point in this window is always returned even if a given year has no
+    data yet (0, not omitted) - a stable x-axis the accompanying data table
+    can rely on, not one that silently reshapes around whatever's in the
+    database. Note 12: this is also what the dashboard renders when Primary
+    Comparison = "5-Year Trend" (reachable only via that Saved View, not the
+    Primary Comparison dropdown - see ReportsPage.tsx).
     """
-    if years not in (5, 10):
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "years must be 5 or 10.")
-
     scope_list = financialScope.split(",") if financialScope else None
-    budget_years = {r.fiscalYear for r in session.exec(select(BudgetRequest).where(enum_eq(BudgetRequest.currentStage, "APPROVED"))).all()}
-    actual_years = {r.fiscal_year for r in session.exec(select(SapActualTransaction)).all()}
-    all_years = sorted(budget_years | actual_years, reverse=True)[:years]
+    all_years = list(range(currentYear - 4, currentYear + 1))
     group_by_cc_gl = _group_by_cc_gl(session)
     sbu_by_cc_gl = _sbu_by_cc_gl(session) if sbu else None
 
@@ -669,9 +693,16 @@ def series(
     budget_share = annual_budget / len(buckets)
     forecast_share = (annual_forecast / len(buckets)) if annual_forecast else None
 
+    # Fetch SapActualTransaction once for the year and slice it per bucket in
+    # memory, rather than re-querying/re-deserializing the whole (possibly
+    # very large - confirmed live: 180K+ rows once real SAP data is synced)
+    # table once per bucket (12x for Monthly) - see
+    # _actuals_by_cc_gl_by_month's own docstring for why that matters.
+    actuals_by_month = _actuals_by_cc_gl_by_month(session, fiscalYear)
+
     points: list[SeriesPointOut] = []
     for label, months in buckets:
-        actual = _grouped_total(_actuals_by_cc_gl(session, fiscalYear, months))
+        actual = _grouped_total(_rolled_actuals_for_months(actuals_by_month, months))
         variance = budget_share - actual
         points.append(
             SeriesPointOut(
@@ -683,6 +714,109 @@ def series(
             )
         )
     return points
+
+
+class PeriodGridCellOut(BaseModel):
+    budget: float
+    actual: float
+    variance: float
+    variancePct: float | None
+
+
+class PeriodGridRowOut(BaseModel):
+    expenseGroup: str
+    financialScope: str
+    cells: list[PeriodGridCellOut]  # one per period, same order as `periods`
+    total: PeriodGridCellOut
+
+
+class PeriodGridOut(BaseModel):
+    periods: list[str]
+    rows: list[PeriodGridRowOut]
+    totals: PeriodGridRowOut
+
+
+def _period_grid_cell(budget: float, actual: float) -> PeriodGridCellOut:
+    variance = budget - actual
+    return PeriodGridCellOut(budget=budget, actual=actual, variance=variance, variancePct=(variance / budget * 100) if budget else None)
+
+
+@router.get("/period-grid", response_model=PeriodGridOut)
+def period_grid(
+    fiscalYear: int,
+    granularity: str = "MONTHLY",
+    costCenter: str | None = None,
+    glAccount: str | None = None,
+    expenseGroup: str | None = None,
+    sbu: str | None = None,
+    financialScope: str | None = None,
+    user: AuthedUser = Depends(require_report_access),
+    session: Session = Depends(get_session),
+):
+    """"Monthly Comparison" / "Quarterly Comparison" (Note 12 revision) - the
+    full Expense Category x period grid, not a company-wide total: Budget vs
+    Actual (+ variance $/%) for every category, broken out per month or
+    quarter instead of collapsed to one annual figure. Same even-split
+    simplification /series already uses for Budget (no real monthly phasing
+    anywhere in this app) - each period gets an even share of that
+    category's annual budget.
+    """
+    if granularity not in ("MONTHLY", "QUARTERLY"):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "granularity must be MONTHLY or QUARTERLY.")
+
+    scope_list = financialScope.split(",") if financialScope else None
+    group_by_cc_gl = _group_by_cc_gl(session)
+    sbu_by_cc_gl = _sbu_by_cc_gl(session) if sbu else None
+    financial_scope_by_cc_gl = _financial_scope_by_cc_gl(session, fiscalYear)
+
+    def filt(m: dict[tuple[str, str], float]) -> dict[tuple[str, str], float]:
+        return _filter_cc_gl_map(m, costCenter, glAccount, sbu, sbu_by_cc_gl, scope_list, financial_scope_by_cc_gl)
+
+    budget_annual_by_group = _roll_up_by_group(filt(_approved_budget_by_cc_gl(session, fiscalYear)), group_by_cc_gl)
+
+    if granularity == "MONTHLY":
+        buckets = [("Jan", {1}), ("Feb", {2}), ("Mar", {3}), ("Apr", {4}), ("May", {5}), ("Jun", {6}), ("Jul", {7}), ("Aug", {8}), ("Sep", {9}), ("Oct", {10}), ("Nov", {11}), ("Dec", {12})]
+    else:
+        buckets = [("Q1", MONTHS_BY_PERIOD["Q1"]), ("Q2", MONTHS_BY_PERIOD["Q2"]), ("Q3", MONTHS_BY_PERIOD["Q3"]), ("Q4", MONTHS_BY_PERIOD["Q4"])]
+
+    actuals_by_month = _actuals_by_cc_gl_by_month(session, fiscalYear)
+    actual_by_bucket = [_roll_up_by_group(filt(_rolled_actuals_for_months(actuals_by_month, months)), group_by_cc_gl) for _, months in buckets]
+
+    financial_scope_by_group: dict[str, str] = {}
+    for (cc, gl), scope in financial_scope_by_cc_gl.items():
+        group = group_by_cc_gl.get((cc, gl))
+        if group is not None:
+            financial_scope_by_group.setdefault(group, scope)
+
+    groups = set(budget_annual_by_group)
+    for m in actual_by_bucket:
+        groups |= set(m)
+    if expenseGroup:
+        groups &= {expenseGroup}
+
+    rows: list[PeriodGridRowOut] = []
+    for group in sorted(groups):
+        annual_budget = budget_annual_by_group.get(group, 0.0)
+        budget_share = annual_budget / len(buckets)
+        cells = [_period_grid_cell(budget_share, actual_by_bucket[i].get(group, 0.0)) for i in range(len(buckets))]
+        total_actual = sum(c.actual for c in cells)
+        rows.append(
+            PeriodGridRowOut(
+                expenseGroup=group,
+                financialScope=financial_scope_by_group.get(group, "OPEX"),
+                cells=cells,
+                total=_period_grid_cell(annual_budget, total_actual),
+            )
+        )
+
+    totals_cells = [_period_grid_cell(sum(r.cells[i].budget for r in rows), sum(r.cells[i].actual for r in rows)) for i in range(len(buckets))]
+    totals_total = _period_grid_cell(sum(r.total.budget for r in rows), sum(r.total.actual for r in rows))
+
+    return PeriodGridOut(
+        periods=[label for label, _ in buckets],
+        rows=rows,
+        totals=PeriodGridRowOut(expenseGroup="TOTAL", financialScope="", cells=totals_cells, total=totals_total),
+    )
 
 
 # ---------------------------------------------------------------------------

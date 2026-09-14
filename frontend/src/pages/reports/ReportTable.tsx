@@ -7,18 +7,37 @@ function peso(n: number) {
 function pesoOrDash(n: number | null) {
   return n != null ? peso(n) : "—";
 }
+function pctOrDash(n: number | null) {
+  return n != null ? `${n.toFixed(1)}%` : "—";
+}
 
-export type MetricKey = "budgetCurrent" | "actualCurrent" | "forecastCurrent" | "actualPrior" | "variance" | "varianceBudgetForecast" | "varianceActualForecast" | "varianceActualYoY";
+export type MetricKey =
+  | "budgetCurrent"
+  | "actualCurrent"
+  | "forecastCurrent"
+  | "actualPrior"
+  | "variance"
+  | "varianceBudgetForecast"
+  | "varianceActualForecast"
+  | "varianceActualYoY"
+  | "varianceLYActualCYForecast"
+  | "varianceLYActualCYBudget";
 
 // budgetCurrent/actualCurrent/forecastCurrent/actualPrior/variance exist on
 // both ReportRow and its nested lineItems; the derived variances only exist
 // on ReportRow from the backend - cheap to derive client-side from figures
 // every row already has, so there's no need to widen the line-item response
-// shape for them.
+// shape for them. Sign convention: the two "Last Year Actual vs Current
+// Year X" variants mirror varianceActualYoY's own established direction
+// (current-year figure minus last-year actual, not the other way around) -
+// they're the same "LY vs CY" family, so they share its convention rather
+// than the Budget/Forecast family's "first-named-quantity-minus-second" one.
 function metricValue(row: ReportRow | ReportLineItem, key: MetricKey): number | null {
   if (key === "varianceBudgetForecast") return row.forecastCurrent != null ? row.budgetCurrent - row.forecastCurrent : null;
   if (key === "varianceActualForecast") return row.forecastCurrent != null ? row.actualCurrent - row.forecastCurrent : null;
   if (key === "varianceActualYoY") return "actualPrior" in row ? row.actualCurrent - row.actualPrior : null;
+  if (key === "varianceLYActualCYForecast") return "actualPrior" in row && row.forecastCurrent != null ? row.forecastCurrent - row.actualPrior : null;
+  if (key === "varianceLYActualCYBudget") return "actualPrior" in row ? row.budgetCurrent - row.actualPrior : null;
   if (key === "actualPrior") return "actualPrior" in row ? row.actualPrior : null;
   return row[key];
 }
@@ -127,14 +146,15 @@ export function ReportTable({
               <th className="px-2 py-1">Expense Category</th>
               <th className="px-2 py-1">{meta.leftLabel}</th>
               <th className="px-2 py-1">{meta.rightLabel}</th>
-              <th className="px-2 py-1">{meta.varianceLabel}</th>
+              <th className="px-2 py-1">{meta.varianceLabel} (₱)</th>
+              <th className="px-2 py-1">{meta.varianceLabel} (%)</th>
               <th className="px-2 py-1">Notes</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
             {sorted.length === 0 ? (
               <tr>
-                <td colSpan={5} className="px-2 py-4 text-center text-slate-400">
+                <td colSpan={6} className="px-2 py-4 text-center text-slate-400">
                   No data for this selection.
                 </td>
               </tr>
@@ -154,6 +174,7 @@ export function ReportTable({
                       <td className="px-2 py-1">{pesoOrDash(metricValue(r, meta.leftKey))}</td>
                       <td className="px-2 py-1">{pesoOrDash(metricValue(r, meta.rightKey))}</td>
                       <td className={`px-2 py-1 font-medium ${(metricValue(r, meta.varianceKey) ?? 0) < 0 ? "text-red-600" : "text-slate-700"}`}>{pesoOrDash(metricValue(r, meta.varianceKey))}</td>
+                      <td className={`px-2 py-1 font-medium ${(metricValue(r, meta.varianceKey) ?? 0) < 0 ? "text-red-600" : "text-slate-700"}`}>{pctOrDash(variancePct)}</td>
                       <td className="px-2 py-1">
                         <button onClick={() => onToggleNotes(r.expenseGroup)} className="rounded-full border border-slate-300 px-1.5 py-0.5 text-[11px] text-slate-600 hover:bg-slate-100">
                           {r.noteCount} {r.noteCount === 1 ? "note" : "notes"}
@@ -169,6 +190,7 @@ export function ReportTable({
                             <td className="px-2 py-1 text-slate-600">{pesoOrDash(metricValue(li, meta.leftKey))}</td>
                             <td className="px-2 py-1 text-slate-600">{pesoOrDash(metricValue(li, meta.rightKey))}</td>
                             <td className={`px-2 py-1 ${(metricValue(li, meta.varianceKey) ?? 0) < 0 ? "text-red-600" : "text-slate-600"}`}>{pesoOrDash(metricValue(li, meta.varianceKey))}</td>
+                            <td className={`px-2 py-1 ${(metricValue(li, meta.varianceKey) ?? 0) < 0 ? "text-red-600" : "text-slate-600"}`}>{pctOrDash(liVariancePct)}</td>
                             <td className="px-2 py-1" />
                           </tr>
                         );
