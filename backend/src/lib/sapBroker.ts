@@ -4,7 +4,12 @@ import axios from "axios";
 // pyBackendClient.ts's Node-to-Python call. Each report has its own API key
 // (see .env.example); the broker's own base URL is shared across all of
 // them. See backend-py/app/services/sap_broker.py for the Python mirror of
-// this same client (used by Phase 2/3's own SAP touchpoints).
+// this same client (used by Phase 2/3's own SAP touchpoints) - same
+// concurrent-fetch-under-a-shared-rate-limiter design as this file, for the
+// same reason: a naive "wait, then request, then await the response" loop
+// wastes each response's own round-trip time as dead time between requests,
+// which measured out to roughly half the broker's real throughput in
+// practice on the Python side before this was fixed there.
 const SAP_BROKER_BASE_URL = process.env.SAP_BROKER_BASE_URL ?? "https://paba.ortigasland.com.ph/api/v1";
 const MAX_ROWS_PER_PAGE = 100;
 // Keeps each request's query string short - a `*__in` filter is comma-joined,
@@ -12,12 +17,45 @@ const MAX_ROWS_PER_PAGE = 100;
 // conservative.
 const CHUNK_SIZE = 40;
 // The broker's own rate limit (confirmed via /whoami/: rate_limit_per_minute
-// 120) - a full sync against many cost centers, each paginated through real
-// (large) result sets, easily exceeds this without either pacing requests or
-// retrying on 429.
-const MIN_MS_BETWEEN_REQUESTS = 550; // keeps steady-state throughput under 120/min
-const MAX_RETRIES_429 = 8;
+// 120). A small safety margin under it, since our clock and the broker's
+// aren't perfectly synchronized and a burst right at the boundary could
+// still trip a 429.
+const EFFECTIVE_RATE_PER_MINUTE = 110;
+// How many requests can be in flight at once - purely about overlapping
+// network round-trip time; the shared RateLimiter below is what actually
+// caps the dispatch rate no matter how many are concurrent.
+const MAX_CONCURRENT_REQUESTS = 8;
+const MAX_RETRIES = 8;
 const DEFAULT_RETRY_AFTER_SECONDS = 3;
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Token-bucket pacing: `acquire()` resolves once it's this caller's turn,
+ * spaced `60000/ratePerMinute` ms apart from the previous caller - shared
+ * across every concurrent fetch so the *aggregate* dispatch rate stays
+ * under the broker's limit, regardless of how many requests are in flight.
+ */
+class RateLimiter {
+  private intervalMs: number;
+  private nextAvailable: number;
+
+  constructor(ratePerMinute: number) {
+    this.intervalMs = 60_000 / ratePerMinute;
+    this.nextAvailable = Date.now();
+  }
+
+  async acquire(): Promise<void> {
+    const now = Date.now();
+    const wait = Math.max(0, this.nextAvailable - now);
+    this.nextAvailable = Math.max(now, this.nextAvailable) + this.intervalMs;
+    if (wait > 0) await sleep(wait);
+  }
+}
+
+const rateLimiter = new RateLimiter(EFFECTIVE_RATE_PER_MINUTE);
 
 function sapClient(apiKey: string | undefined) {
   return axios.create({
@@ -34,16 +72,14 @@ function sapClient(apiKey: string | undefined) {
 
 interface RowsResponse<T> {
   rows: T[];
+  total?: number;
 }
 
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
+/** One rate-limited GET with retry/backoff on 429 and 5xx. */
 async function getWithRateLimit<T>(client: ReturnType<typeof sapClient>, path: string, params: Record<string, unknown>): Promise<RowsResponse<T>> {
-  await sleep(MIN_MS_BETWEEN_REQUESTS);
   let lastStatus = 0;
-  for (let attempt = 0; attempt < MAX_RETRIES_429; attempt++) {
+  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    await rateLimiter.acquire();
     const res = await client.get<RowsResponse<T>>(path, { params });
     if (res.status < 400) return res.data;
     lastStatus = res.status;
@@ -53,17 +89,52 @@ async function getWithRateLimit<T>(client: ReturnType<typeof sapClient>, path: s
   }
   // Retries exhausted and still failing - surface it as a real error instead
   // of silently returning a response our own validateStatus let through.
-  throw new Error(`SAP broker request failed after ${MAX_RETRIES_429} retries (${path}), last status ${lastStatus}`);
+  throw new Error(`SAP broker request failed after ${MAX_RETRIES} retries (${path}), last status ${lastStatus}`);
 }
 
-async function paginate<T>(client: ReturnType<typeof sapClient>, path: string, params: Record<string, unknown>): Promise<T[]> {
+/** Runs `tasks` with at most `limit` in flight at once, in any order. */
+async function runWithConcurrency<T>(tasks: (() => Promise<T>)[], limit: number): Promise<T[]> {
+  const results: T[] = new Array(tasks.length);
+  let next = 0;
+  async function worker() {
+    for (;;) {
+      const i = next++;
+      if (i >= tasks.length) return;
+      results[i] = await tasks[i]();
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, tasks.length) }, worker));
+  return results;
+}
+
+/**
+ * Every row across every chunk in `chunkParamsList` (one params object per
+ * cost-center chunk, or a single-element array for an unchunked report like
+ * SALR). First page of each chunk is fetched sequentially (with
+ * `count: true`, to learn that chunk's total row count) - genuinely
+ * sequential since there's nothing to parallelize yet - then every
+ * remaining page across every chunk is dispatched at once through one
+ * shared bounded pool, rate-limited the same way.
+ */
+async function fetchAll<T>(client: ReturnType<typeof sapClient>, path: string, chunkParamsList: Record<string, unknown>[]): Promise<T[]> {
   const rows: T[] = [];
-  let offset = 0;
-  for (;;) {
-    const data = await getWithRateLimit<T>(client, path, { ...params, limit: MAX_ROWS_PER_PAGE, offset });
-    rows.push(...data.rows);
-    if (data.rows.length < MAX_ROWS_PER_PAGE) break;
-    offset += MAX_ROWS_PER_PAGE;
+  const remainingRequests: Record<string, unknown>[] = [];
+  for (const params of chunkParamsList) {
+    const first = await getWithRateLimit<T>(client, path, { ...params, limit: MAX_ROWS_PER_PAGE, offset: 0, count: true });
+    rows.push(...first.rows);
+    const total = first.total;
+    if (total === undefined || first.rows.length < MAX_ROWS_PER_PAGE) continue;
+    for (let offset = MAX_ROWS_PER_PAGE; offset < total; offset += MAX_ROWS_PER_PAGE) {
+      remainingRequests.push({ ...params, limit: MAX_ROWS_PER_PAGE, offset });
+    }
+  }
+
+  if (remainingRequests.length > 0) {
+    const pages = await runWithConcurrency(
+      remainingRequests.map((params) => () => getWithRateLimit<T>(client, path, params)),
+      MAX_CONCURRENT_REQUESTS
+    );
+    for (const page of pages) rows.push(...page.rows);
   }
   return rows;
 }
@@ -88,18 +159,13 @@ export interface Fbl3nRow {
  * rows on this string field, while `__startswith` works.
  */
 export async function fetchFbl3nRows(profitCenters: string[], year: number): Promise<Fbl3nRow[]> {
+  if (profitCenters.length === 0) return [];
   const client = sapClient(process.env.FBL3N_API_KEY);
-  const rows: Fbl3nRow[] = [];
+  const chunkParamsList = [];
   for (let i = 0; i < profitCenters.length; i += CHUNK_SIZE) {
-    const chunk = profitCenters.slice(i, i + CHUNK_SIZE);
-    rows.push(
-      ...(await paginate<Fbl3nRow>(client, "/sap/budget_fbl3n/rows/", {
-        ProfitCenter__in: chunk.join(","),
-        YearMonth__startswith: String(year),
-      }))
-    );
+    chunkParamsList.push({ ProfitCenter__in: profitCenters.slice(i, i + CHUNK_SIZE).join(","), YearMonth__startswith: String(year) });
   }
-  return rows;
+  return fetchAll<Fbl3nRow>(client, "/sap/budget_fbl3n/rows/", chunkParamsList);
 }
 
 export interface SalrRow {
@@ -122,7 +188,7 @@ export interface SalrRow {
  */
 export async function fetchSalrRows(fiscalYear: number): Promise<SalrRow[]> {
   const client = sapClient(process.env.SALR_API_KEY);
-  return paginate<SalrRow>(client, "/sap/budget_salr/rows/", { GJAHR: fiscalYear });
+  return fetchAll<SalrRow>(client, "/sap/budget_salr/rows/", [{ GJAHR: fiscalYear }]);
 }
 
 export interface KssbV1Row {
@@ -147,20 +213,13 @@ export interface KssbV1Row {
 export async function fetchKssbV1Rows(profitCenters: string[], glAccounts: string[], gjahr: number): Promise<KssbV1Row[]> {
   if (profitCenters.length === 0 || glAccounts.length === 0) return [];
   const client = sapClient(process.env.KSSB_V1_API_KEY);
-  const rows: KssbV1Row[] = [];
+  const chunkParamsList = [];
   for (let i = 0; i < profitCenters.length; i += CHUNK_SIZE) {
     const ccChunk = profitCenters.slice(i, i + CHUNK_SIZE);
     for (let j = 0; j < glAccounts.length; j += CHUNK_SIZE) {
       const glChunk = glAccounts.slice(j, j + CHUNK_SIZE);
-      rows.push(
-        ...(await paginate<KssbV1Row>(client, "/sap/budget_kssb_v1/rows/", {
-          ProfitCenter__in: ccChunk.join(","),
-          KSTAR__in: glChunk.join(","),
-          GJAHR: gjahr,
-          PostingPeriod__lte: 12,
-        }))
-      );
+      chunkParamsList.push({ ProfitCenter__in: ccChunk.join(","), KSTAR__in: glChunk.join(","), GJAHR: gjahr, PostingPeriod__lte: 12 });
     }
   }
-  return rows;
+  return fetchAll<KssbV1Row>(client, "/sap/budget_kssb_v1/rows/", chunkParamsList);
 }
