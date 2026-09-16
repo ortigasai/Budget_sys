@@ -2,7 +2,7 @@ import ExcelJS from "exceljs";
 import { prisma } from "../prisma";
 import { HttpError } from "../httpError";
 import { getFiscalCycle } from "../lib/fiscalCycle";
-import { fetchNpcUtilization } from "../lib/pyBackendClient";
+import { fetchNpcUtilization, type NpcIoDetail } from "../lib/pyBackendClient";
 import { fetchSalrRows, type SalrRow } from "../lib/sapBroker";
 
 // Note 11 §8 - NPC Forecast is genuinely new: NPC's real data (budget code,
@@ -23,11 +23,20 @@ import { fetchSalrRows, type SalrRow } from "../lib/sapBroker";
 // deduction basis, same as before this integration existed.
 
 export interface NpcForecastRow {
-  budgetRequestId: string;
+  // Informational only now - NpcForecastEntry is keyed by budgetCode (see
+  // its own schema comment), not this, so every row's Remaining Months
+  // Forecast is editable regardless of whether a real BudgetRequest backs
+  // it (a row sourced only from the NPC Monitoring import, see
+  // models_npc_monitoring.py, never has one).
+  budgetRequestId: string | null;
   budgetCode: string;
   projectTitle: string;
   npcBudget: number;
   ioCodes: string[];
+  // Per-IO breakdown backing ioCodes above - one entry per IO, not lumped
+  // into the summed ioBudget/ioActual totals below (see NpcForecastView.tsx,
+  // which shows each on its own line).
+  ios: { code: string; description: string; budget: number; actual: number | null }[];
   ioBudget: number;
   ioActual: number | null; // live SALR Actual, summed across this budget code's uploaded IOs - null if none have a matching live SALR row yet
   npcAvailableBudget: number; // npcBudget - ioBudget
@@ -35,6 +44,13 @@ export interface NpcForecastRow {
   remainingMonthsForecast: number;
   totalActualForecast: number; // (ioActual ?? ioBudget) + remainingMonthsForecast
   npcSurplus: number; // npcBudget - totalActualForecast
+  // True only for a standalone "Carry-over" IO row (no Budget Code, no
+  // NPC-approved project behind it - see Python's npc_utilization).
+  // npcBudget is set equal to ioBudget for these (confirmed with the user),
+  // so npcAvailableBudget/npcSurplus net to a real, meaningful value
+  // instead of reading as a fabricated deficit against a budget that never
+  // existed.
+  isCarryOver: boolean;
 }
 
 function sumMonthly(forecast: Record<string, number>, months: number[]): number {
@@ -42,29 +58,40 @@ function sumMonthly(forecast: Record<string, number>, months: number[]): number 
 }
 
 export async function getNpcForecastRows(npcSbu: string, authorizationHeader: string): Promise<{ asOfMonth: number; rows: NpcForecastRow[] }> {
-  const { targetCalendarYear, forecastYear, asOfMonth } = await getFiscalCycle();
-  const remainingMonths = Array.from({ length: 12 - asOfMonth }, (_, i) => asOfMonth + 1 + i);
+  // npcAsOfMonth, not asOfMonth - NPC Forecast's own "YTD Actual through"
+  // cutoff, independent of GAE/DOE's (see fiscalCycle.ts's own comment).
+  const { forecastYear, npcAsOfMonth } = await getFiscalCycle();
+  const remainingMonths = Array.from({ length: 12 - npcAsOfMonth }, (_, i) => npcAsOfMonth + 1 + i);
 
+  // forecastYear (the real current year, e.g. 2026), not targetCalendarYear
+  // (the future year still being budgeted for, e.g. 2027) - NPC Forecast
+  // follows "current year" like every other Forecast view (Notes_6/Note 11),
+  // a rule this one query trio had been missing (only the SALR call below
+  // already used forecastYear). Real NPC IOs/actuals for a project can only
+  // exist once that project's own real calendar year has happened.
   const finalizedLines = await prisma.finalizedBudgetLine.findMany({
-    where: { requestCategory: "NPC", npcSbu, fiscalYear: targetCalendarYear },
+    where: { requestCategory: "NPC", npcSbu, fiscalYear: forecastYear },
     include: { budgetRequest: true },
   });
 
   const [ioRows, forecastEntries, salrRows] = await Promise.all([
-    fetchNpcUtilization(targetCalendarYear, npcSbu, authorizationHeader),
-    prisma.npcForecastEntry.findMany({
-      where: { fiscalYear: targetCalendarYear, budgetRequestId: { in: finalizedLines.map((l) => l.budgetRequestId) } },
-    }),
-    // forecastYear, not targetCalendarYear - real SALR postings can only
-    // exist for a year that's actually happened (same "target year - 1"
-    // relationship as the Forecast GAE/DOE sync), not the future year still
-    // being budgeted for. Best-effort: an NPC Forecast view shouldn't 500
-    // just because the broker is briefly unreachable - IO Actual just falls
-    // back to null (same as "no matching SALR row") for every row in that case.
+    fetchNpcUtilization(forecastYear, npcSbu, authorizationHeader, npcAsOfMonth),
+    // Keyed by budgetCode, not budgetRequestId (see NpcForecastEntry's own
+    // schema comment) - fetched for the whole fiscal year rather than
+    // pre-filtered to this SBU's budget codes, since that set isn't known
+    // until ioRows/finalizedLines are both in hand below; the extra rows
+    // for other SBUs are just unused map entries, not a correctness issue.
+    prisma.npcForecastEntry.findMany({ where: { fiscalYear: forecastYear } }),
+    // Best-effort: an NPC Forecast view shouldn't 500 just because the
+    // broker is briefly unreachable - IO Actual just falls back to null
+    // (same as "no matching SALR row") for every row in that case.
     fetchSalrRows(forecastYear).catch(() => [] as SalrRow[]),
   ]);
   const ioByBudgetCode = new Map(ioRows.map((r) => [r.budgetCode, r]));
-  const forecastByRequestId = new Map(forecastEntries.map((e) => [e.budgetRequestId, e]));
+  const forecastByBudgetCode = new Map(forecastEntries.map((e) => [e.budgetCode, e]));
+  const finalizedByBudgetCode = new Map(
+    finalizedLines.filter((line) => line.budgetRequest.budgetCode).map((line) => [line.budgetRequest.budgetCode!, line])
+  );
   // AUFNR is a 12-digit zero-padded Internal Order number; indexed both as-is
   // and with leading zeros stripped so a sap_document_number stored either
   // way still resolves.
@@ -74,54 +101,92 @@ export async function getNpcForecastRows(npcSbu: string, authorizationHeader: st
     salrByAufnr.set(row.AUFNR.replace(/^0+/, ""), row);
   }
 
-  const rows: NpcForecastRow[] = finalizedLines
-    .filter((line) => line.budgetRequest.budgetCode)
-    .map((line) => {
-      const budgetCode = line.budgetRequest.budgetCode!;
+  // The set of rows to show is the union of real finalized NPC lines and
+  // whatever Python's /utilization/npc returns - normally the same live
+  // workflow data, but for a fiscal year the NPC Monitoring import covers
+  // (see models_npc_monitoring.py), Python returns import-only projects
+  // that have no BudgetRequest/FinalizedBudgetLine on this side at all.
+  const budgetCodes = new Set<string>([...finalizedByBudgetCode.keys(), ...ioByBudgetCode.keys()]);
+
+  const rows: NpcForecastRow[] = Array.from(budgetCodes)
+    .map((budgetCode) => {
+      const line = finalizedByBudgetCode.get(budgetCode);
       const io = ioByBudgetCode.get(budgetCode);
-      const forecastEntry = forecastByRequestId.get(line.budgetRequestId);
+      // Informational only now (see NpcForecastRow's own comment) - null
+      // for an import-only row, which is fine since nothing keys off it.
+      const budgetRequestId = line?.budgetRequestId ?? null;
+      const forecastEntry = forecastByBudgetCode.get(budgetCode);
       const monthlyRemainingForecast = (forecastEntry?.monthlyRemainingForecast as Record<string, number>) ?? {};
       const ioBudget = io?.ioAmount ?? 0;
+      const npcBudget = line?.amount ?? io?.amount ?? 0;
 
-      const matchedSalr = (io?.ioCodes ?? [])
-        .map((code) => salrByAufnr.get(code) ?? salrByAufnr.get(code.replace(/^0+/, "")))
-        .filter((r): r is SalrRow => Boolean(r));
-      const ioActual = matchedSalr.length > 0 ? matchedSalr.reduce((sum, r) => sum + (Number(r.Actual) || 0), 0) : null;
+      // Python already supplies a summed Actual when this row came from the
+      // NPC Monitoring import; only fall back to matching the broker's own
+      // SALR pull by AUFNR for the live-workflow path (io.actual is always
+      // null there - see NpcUtilizationRow's own comment).
+      let ioActual: number | null;
+      if (io?.actual != null) {
+        ioActual = io.actual;
+      } else {
+        const matchedSalr = (io?.ioCodes ?? [])
+          .map((code) => salrByAufnr.get(code) ?? salrByAufnr.get(code.replace(/^0+/, "")))
+          .filter((r): r is SalrRow => Boolean(r));
+        ioActual = matchedSalr.length > 0 ? matchedSalr.reduce((sum, r) => sum + (Number(r.Actual) || 0), 0) : null;
+      }
+
+      // Per-IO breakdown, not lumped - each entry keeps its own
+      // description/budget/actual instead of only feeding the summed
+      // ioBudget/ioActual above. Same broker-match fallback as ioActual
+      // above, just applied per IO instead of summed across all of them.
+      const ios = (io?.ios ?? []).map((detail: NpcIoDetail) => {
+        let actual = detail.actual;
+        if (actual == null) {
+          const matched = salrByAufnr.get(detail.aufnr) ?? salrByAufnr.get(detail.aufnr.replace(/^0+/, ""));
+          actual = matched ? Number(matched.Actual) || 0 : null;
+        }
+        return { code: detail.aufnr, description: detail.description, budget: detail.budget, actual };
+      });
 
       const remainingMonthsForecast = sumMonthly(monthlyRemainingForecast, remainingMonths);
       const totalActualForecast = (ioActual ?? ioBudget) + remainingMonthsForecast;
       return {
-        budgetRequestId: line.budgetRequestId,
+        budgetRequestId,
         budgetCode,
-        projectTitle: line.budgetRequest.projectTitle ?? "",
-        npcBudget: line.amount,
+        projectTitle: line?.budgetRequest.projectTitle ?? io?.projectTitle ?? "",
+        npcBudget,
         ioCodes: io?.ioCodes ?? [],
+        ios,
         ioBudget,
         ioActual,
-        npcAvailableBudget: line.amount - ioBudget,
+        npcAvailableBudget: npcBudget - ioBudget,
         monthlyRemainingForecast,
         remainingMonthsForecast,
         totalActualForecast,
-        npcSurplus: line.amount - totalActualForecast,
+        npcSurplus: npcBudget - totalActualForecast,
+        isCarryOver: io?.isCarryOver ?? false,
       };
     })
-    .sort((a, b) => a.budgetCode.localeCompare(b.budgetCode));
+    // Carry-over rows always sort after every real project row, regardless
+    // of where their synthetic budgetCode would otherwise land
+    // alphabetically - a real project's own budget code sort still applies
+    // within each group.
+    .sort((a, b) => Number(a.isCarryOver) - Number(b.isCarryOver) || a.budgetCode.localeCompare(b.budgetCode));
 
-  return { asOfMonth, rows };
+  return { asOfMonth: npcAsOfMonth, rows };
 }
 
-export async function setNpcForecastMonth(budgetRequestId: string, fiscalYear: number, month: number, value: number, userId: string) {
-  const { asOfMonth } = await getFiscalCycle();
-  if (month <= asOfMonth) {
-    throw new HttpError(400, `Month ${month} is already in Actuals (as-of month is ${asOfMonth}).`);
+export async function setNpcForecastMonth(budgetCode: string, fiscalYear: number, month: number, value: number, userId: string) {
+  const { npcAsOfMonth } = await getFiscalCycle();
+  if (month <= npcAsOfMonth) {
+    throw new HttpError(400, `Month ${month} is already in Actuals (as-of month is ${npcAsOfMonth}).`);
   }
-  const existing = await prisma.npcForecastEntry.findUnique({ where: { budgetRequestId_fiscalYear: { budgetRequestId, fiscalYear } } });
+  const existing = await prisma.npcForecastEntry.findUnique({ where: { budgetCode_fiscalYear: { budgetCode, fiscalYear } } });
   const current = (existing?.monthlyRemainingForecast as Record<string, number>) ?? {};
   const updated = { ...current, [String(month)]: value };
   return prisma.npcForecastEntry.upsert({
-    where: { budgetRequestId_fiscalYear: { budgetRequestId, fiscalYear } },
+    where: { budgetCode_fiscalYear: { budgetCode, fiscalYear } },
     update: { monthlyRemainingForecast: updated, updatedById: userId },
-    create: { budgetRequestId, fiscalYear, monthlyRemainingForecast: updated, updatedById: userId },
+    create: { budgetCode, fiscalYear, monthlyRemainingForecast: updated, updatedById: userId },
   });
 }
 
@@ -130,9 +195,9 @@ function monthColumns(asOfMonth: number): number[] {
 }
 
 export async function buildNpcForecastTemplateWorkbook(npcSbu: string, authorizationHeader: string) {
-  const { targetCalendarYear, forecastYear, asOfMonth } = await getFiscalCycle();
+  const { forecastYear, npcAsOfMonth } = await getFiscalCycle();
   const { rows } = await getNpcForecastRows(npcSbu, authorizationHeader);
-  const remainingMonths = monthColumns(asOfMonth);
+  const remainingMonths = monthColumns(npcAsOfMonth);
   const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
   // Column layout: A-C NPC(Code/Project Title/Budget), D gap, E-H IO(Code/
@@ -218,8 +283,8 @@ interface NpcForecastParseError {
 }
 
 export async function parseNpcForecastTemplate(buffer: Buffer, npcSbu: string, userId: string) {
-  const { targetCalendarYear, asOfMonth } = await getFiscalCycle();
-  const remainingMonths = monthColumns(asOfMonth);
+  const { forecastYear, npcAsOfMonth } = await getFiscalCycle();
+  const remainingMonths = monthColumns(npcAsOfMonth);
   const monthStartCol = 12;
 
   const workbook = new ExcelJS.Workbook();
@@ -227,8 +292,12 @@ export async function parseNpcForecastTemplate(buffer: Buffer, npcSbu: string, u
   const sheet = workbook.worksheets[0];
   if (!sheet) throw new HttpError(400, "The uploaded file has no worksheet.");
 
+  // forecastYear, not targetCalendarYear - matches getNpcForecastRows' own
+  // budget-code universe (see its comment) so an uploaded template's Budget
+  // Codes actually resolve against the same set of finalized NPC lines the
+  // Forecast view itself reads.
   const finalizedLines = await prisma.finalizedBudgetLine.findMany({
-    where: { requestCategory: "NPC", npcSbu, fiscalYear: targetCalendarYear },
+    where: { requestCategory: "NPC", npcSbu, fiscalYear: forecastYear },
     include: { budgetRequest: true },
   });
   const lineByBudgetCode = new Map(finalizedLines.filter((l) => l.budgetRequest.budgetCode).map((l) => [l.budgetRequest.budgetCode!, l]));
@@ -262,9 +331,9 @@ export async function parseNpcForecastTemplate(buffer: Buffer, npcSbu: string, u
     }
 
     await prisma.npcForecastEntry.upsert({
-      where: { budgetRequestId_fiscalYear: { budgetRequestId: line.budgetRequestId, fiscalYear: targetCalendarYear } },
+      where: { budgetCode_fiscalYear: { budgetCode, fiscalYear: forecastYear } },
       update: { monthlyRemainingForecast, updatedById: userId },
-      create: { budgetRequestId: line.budgetRequestId, fiscalYear: targetCalendarYear, monthlyRemainingForecast, updatedById: userId },
+      create: { budgetCode, budgetRequestId: line.budgetRequestId, fiscalYear: forecastYear, monthlyRemainingForecast, updatedById: userId },
     });
     updated++;
   }

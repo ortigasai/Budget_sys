@@ -15,28 +15,42 @@ import { BudgetCycleTab } from "./BudgetCycleTab";
 import { BudgetCodesTab } from "./BudgetCodesTab";
 import { ForecastCategoryMappingsTab } from "./ForecastCategoryMappingsTab";
 import { ManpowerGlCcTab } from "./ManpowerGlCcTab";
+import { NpcMonitoringImportTab } from "./NpcMonitoringImportTab";
 
 // Shared with Layout.tsx's AdminConsoleSidebarNav, which renders this same
-// list as real `?tab=` links in the leftmost sidebar (spec: "place the
-// sidebar to the leftmost part of the page - same as the other sidebars in
-// other modules") - exported from here so the two never drift apart.
+// list as real `?tab=` links in the leftmost sidebar, grouped by `group`
+// (spec: "place the sidebar to the leftmost part of the page - same as the
+// other sidebars in other modules") - exported from here so the two never
+// drift apart. `group` classifies each tab by which module's data it
+// actually edits (checked against each tab's own API calls/comments, not
+// guessed from its label) - "General" is for a tab that's genuinely
+// cross-module (applies to more than one, or the whole app) rather than
+// owned by one.
+export const ADMIN_GROUPS = ["General", "GAE", "DOE", "NPC", "Transfers", "Manpower", "Reports"] as const;
+export type AdminGroup = (typeof ADMIN_GROUPS)[number];
+
 export const ADMIN_TABS = [
-  { id: "budget-cycle", label: "Budget Cycle" },
-  { id: "due-dates", label: "Stage Due Dates" },
-  { id: "expense-items", label: "Expense Line Items" },
-  { id: "budget-codes", label: "Budget Codes" },
-  { id: "forecast-categories", label: "Forecast Categories" },
-  { id: "growth-rate", label: "Growth Rate" },
-  { id: "thresholds", label: "Thresholds" },
-  { id: "reason-codes", label: "Reason Codes" },
-  { id: "roles", label: "Role Assignments" },
-  { id: "sbu-roles", label: "SBU Roles" },
-  { id: "io-locations", label: "IO Locations" },
-  { id: "cc-gl-codes", label: "CC-GL Codes" },
-  { id: "manpower-gl-cc", label: "Manpower GL/CC Mapping" },
-  { id: "department-sbu", label: "Department SBU" },
-  { id: "report-access", label: "Report Access" },
-  { id: "period-sign-off", label: "Period Sign-off" },
+  { id: "budget-cycle", label: "Budget Cycle", group: "General" },
+  { id: "due-dates", label: "Stage Due Dates", group: "General" },
+  // Spans GAE's CENTRALIZED_DEPARTMENT prefix and NPC's NPC_HEAD prefix.
+  { id: "budget-codes", label: "Budget Codes", group: "General" },
+  // Classifies Forecast rows across GAE/DOE/NPC/Revenue - not one module's.
+  { id: "forecast-categories", label: "Forecast Categories", group: "General" },
+  { id: "reason-codes", label: "Reason Codes", group: "General" },
+  { id: "roles", label: "Role Assignments", group: "General" },
+  // Assigns each Department to an NPC SBU, which also scopes Utilization's
+  // NPC view - spans two modules, not owned by either alone.
+  { id: "department-sbu", label: "Department SBU", group: "General" },
+  { id: "expense-items", label: "Expense Line Items", group: "GAE" },
+  { id: "growth-rate", label: "Growth Rate", group: "GAE" },
+  { id: "thresholds", label: "Thresholds", group: "GAE" },
+  { id: "sbu-roles", label: "SBU Roles", group: "DOE" },
+  { id: "npc-monitoring", label: "NPC Monitoring Import", group: "NPC" },
+  { id: "io-locations", label: "IO Locations", group: "Transfers" },
+  { id: "cc-gl-codes", label: "CC-GL Codes", group: "Transfers" },
+  { id: "manpower-gl-cc", label: "Manpower GL/CC Mapping", group: "Manpower" },
+  { id: "report-access", label: "Report Access", group: "Reports" },
+  { id: "period-sign-off", label: "Period Sign-off", group: "Reports" },
 ] as const;
 
 export type AdminTabId = (typeof ADMIN_TABS)[number]["id"];
@@ -63,6 +77,7 @@ export function AdminConsolePage() {
       {tab === "sbu-roles" && <SbuRoleAssignmentsTab />}
       {tab === "io-locations" && <IoLocationsTab />}
       {tab === "cc-gl-codes" && <CcGlCodesTab />}
+      {tab === "npc-monitoring" && <NpcMonitoringImportTab />}
       {tab === "manpower-gl-cc" && <ManpowerGlCcTab />}
       {tab === "department-sbu" && <DepartmentSbuTab />}
       {tab === "report-access" && <ReportAccessTab />}

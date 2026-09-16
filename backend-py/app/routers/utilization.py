@@ -21,6 +21,7 @@ from ..db import enum_eq, get_session
 from ..models_phase1 import BudgetRequest, Department, ExpenseLineItem, FinalizedBudgetLine
 from ..models_phase2 import SapActualTransaction, SapCommitment
 from ..models_phase3 import InternalOrderRequest
+from ..models_npc_monitoring import NpcMonitoringIo, NpcMonitoringProject
 from ..npc_sbu import NPC_SBU_LABELS
 from ..services.sap_sync_service import get_sync_status, start_sync_in_background
 
@@ -105,6 +106,20 @@ class NpcSbuOut(BaseModel):
     label: str
 
 
+class NpcIoDetail(BaseModel):
+    """One row's worth of per-IO figures - a Budget Code can fund more than
+    one Internal Order, and the frontend shows each one on its own line
+    (not lumped into a single summed figure) - see NpcForecastView.tsx.
+    """
+
+    aufnr: str
+    description: str
+    budget: float
+    # None when no live/imported Actual exists yet for this specific IO -
+    # same "unknown, not zero" semantics as NpcUtilizationRow.actual below.
+    actual: float | None = None
+
+
 class NpcUtilizationRow(BaseModel):
     budgetCode: str
     projectTitle: str
@@ -116,8 +131,23 @@ class NpcUtilizationRow(BaseModel):
     # document number (blank until BUDGET_OFFICER_SAP_UPLOAD - see
     # routers/internal_orders.py), joined for display on the frontend.
     ioCodes: list[str]
+    # Per-IO breakdown backing ioCodes above - same list, but with each IO's
+    # own description/budget/actual instead of only the summed totals below.
+    ios: list[NpcIoDetail] = []
     ioAmount: float
     balance: float  # amount - ioAmount
+    # Live SAP Actual, summed across this budget code's IOs - only populated
+    # when sourced from the NPC Monitoring import (models_npc_monitoring.py);
+    # None for the live-workflow path below, which still gets its own Actual
+    # via a direct SALR broker pull (see npcForecastService.ts on the Node
+    # side) rather than through this field.
+    actual: float | None = None
+    # True only for a standalone "Carry-over" IO row (no Budget Code, no
+    # NPC-approved project behind it - see
+    # _npc_utilization_from_monitoring_import). amount is set equal to
+    # ioAmount for these (there's no real NPC budget ask to show instead),
+    # so balance nets to 0 rather than reading as a fabricated deficit.
+    isCarryOver: bool = False
 
 
 def _is_utilization_eligible(user: AuthedUser) -> bool:
@@ -479,14 +509,143 @@ def npc_sbu_options(
     return [NpcSbuOut(value=dept.sbu, label=NPC_SBU_LABELS.get(dept.sbu, dept.sbu))]
 
 
+def _effective_actual(io: NpcMonitoringIo, as_of_month: int | None) -> float:
+    """IO Actual as of the Budget Officer's own "YTD Actual through" month
+    (NPC Forecast's own cutoff, independent of GAE/DOE's - see
+    fiscalCycle.ts's npcAsOfMonth) - prefers that month's own entry in
+    ytd_actual_by_month (the Monitoring tab's "YTD Forecast" block; despite
+    the name, its value for an already-elapsed month matches this row's
+    single `actual` figure exactly, per the field's own docstring), falling
+    back to `actual` when there's no month selected or no data for it.
+    """
+    if as_of_month is not None and io.ytd_actual_by_month:
+        value = io.ytd_actual_by_month.get(str(as_of_month))
+        if value is not None:
+            return value
+    return io.actual
+
+
+def _npc_utilization_from_monitoring_import(
+    session: Session, fiscal_year: int, effective_sbu: str, as_of_month: int | None
+) -> list[NpcUtilizationRow] | None:
+    """The temporary 2026-only path (see models_npc_monitoring.py) - real
+    NPC Budget/IO Budget/IO Actual imported from the user's own NPC
+    Monitoring workbook, used only for whatever fiscal year(s) an import
+    actually covers. Returns None (not an empty list) when nothing's been
+    imported for this fiscal year, so the caller can tell "no import for
+    this year - use the live workflow tables" apart from "imported, but
+    genuinely zero rows for this SBU".
+    """
+    projects = session.exec(
+        select(NpcMonitoringProject).where(
+            NpcMonitoringProject.fiscal_year == fiscal_year,
+            NpcMonitoringProject.npc_sbu == effective_sbu,
+        )
+    ).all()
+    if not projects:
+        return None
+
+    ios = session.exec(
+        select(NpcMonitoringIo).where(
+            NpcMonitoringIo.fiscal_year == fiscal_year,
+            NpcMonitoringIo.npc_sbu == effective_sbu,
+        )
+    ).all()
+    ios_by_budget_code: dict[str, list[NpcMonitoringIo]] = {}
+    for io in ios:
+        if io.budget_code:
+            ios_by_budget_code.setdefault(io.budget_code, []).append(io)
+
+    rows: list[NpcUtilizationRow] = []
+    for project in projects:
+        matched = ios_by_budget_code.get(project.budget_code, [])
+        io_amount = sum(io.budget for io in matched)
+        io_actual = sum(_effective_actual(io, as_of_month) for io in matched) if matched else None
+        rows.append(
+            NpcUtilizationRow(
+                budgetCode=project.budget_code,
+                projectTitle=project.project_title,
+                amount=round(project.revised_amount, 2),
+                location=None,
+                sbu=project.npc_sbu,
+                # AUFNRs, not sap_document_number values - the live-workflow
+                # path's ioCodes are IO document numbers for the same
+                # display purpose (a list the frontend just joins/shows).
+                ioCodes=sorted(io.aufnr for io in matched),
+                ios=[
+                    NpcIoDetail(aufnr=io.aufnr, description=io.io_description, budget=round(io.budget, 2), actual=round(_effective_actual(io, as_of_month), 2))
+                    for io in sorted(matched, key=lambda io: io.aufnr)
+                ],
+                ioAmount=round(io_amount, 2),
+                balance=round(project.revised_amount - io_amount, 2),
+                actual=round(io_actual, 2) if io_actual is not None else None,
+            )
+        )
+    rows.sort(key=lambda r: r.budgetCode)
+
+    # "Carry-over" rows - one per IO that either (a) has a blank Budget
+    # Source Code in the Monitoring tab (a prior-cycle project with no
+    # current-year Budget Code), or (b) still has its own numeric-code
+    # "Carryover" line in an SBU tab (carry_over_revised_amount is set)
+    # even though the Monitoring tab has since linked that same AUFNR to a
+    # real Budget Code. (b) means a handful of IOs are deliberately double-
+    # counted - once here, once under their real project's own row below -
+    # because the source workbook's own SBU tab total does exactly that
+    # (confirmed against AUFNR 10001296: still listed as a PHP 48,435.32
+    # "Carryover" line in the Malls tab, i.e. not yet reconciled away there,
+    # even though the Monitoring tab now attributes it to JLC-2026B-NPC003)
+    # - matching that total exactly (per the user's explicit request) takes
+    # priority over de-duplicating what the source file itself hasn't.
+    # Each becomes its own standalone row instead of being dropped -
+    # appended after every real project row, per the user's request.
+    # budgetCode there is a stable per-IO placeholder (unique, so it still
+    # works as a React key/sort key on the frontend), not a real Budget
+    # Code. amount (NPC Budget) prefers carry_over_revised_amount - that
+    # IO's own SBU-tab row's Revised (Amount - Cut) figure, computed the
+    # same way as every other project's NPC Budget - falling back to the
+    # IO's own live SAP budget only when no SBU tab has a matching row for
+    # it. ioAmount/balance keep using the live SAP budget regardless (the
+    # same NPC-Budget-can-differ-from-IO-Budget relationship every other
+    # project row already has), so balance is a real npcBudget minus
+    # ioBudget delta instead of hardcoded to 0 once the two can differ.
+    carry_over_rows = [
+        NpcUtilizationRow(
+            budgetCode=f"Carry-over ({io.aufnr})",
+            projectTitle=io.io_description,
+            amount=round(io.carry_over_revised_amount if io.carry_over_revised_amount is not None else io.budget, 2),
+            location=None,
+            sbu=io.npc_sbu,
+            ioCodes=[io.aufnr],
+            ios=[NpcIoDetail(aufnr=io.aufnr, description=io.io_description, budget=round(io.budget, 2), actual=round(_effective_actual(io, as_of_month), 2))],
+            ioAmount=round(io.budget, 2),
+            balance=round((io.carry_over_revised_amount if io.carry_over_revised_amount is not None else io.budget) - io.budget, 2),
+            actual=round(_effective_actual(io, as_of_month), 2),
+            isCarryOver=True,
+        )
+        for io in ios
+        if io.budget_code is None or io.carry_over_revised_amount is not None
+    ]
+    carry_over_rows.sort(key=lambda r: r.ioCodes[0])
+
+    return rows + carry_over_rows
+
+
 @router.get("/npc", response_model=list[NpcUtilizationRow])
 def npc_utilization(
     fiscalYear: int,
     sbu: str | None = None,
+    # NPC Forecast's own "YTD Actual through" cutoff (independent of
+    # GAE/DOE's) - only meaningful for the monitoring-import path below,
+    # which is the only source with a monthly Actual breakdown.
+    asOfMonth: int | None = None,
     user: AuthedUser = Depends(_require_utilization_access),
     session: Session = Depends(get_session),
 ):
     effective_sbu = _resolve_npc_sbu_scope(user, sbu, session)
+
+    imported_rows = _npc_utilization_from_monitoring_import(session, fiscalYear, effective_sbu, asOfMonth)
+    if imported_rows is not None:
+        return imported_rows
 
     # Note 11 - reads the finalized/uploaded budget snapshot instead of
     # live-joining BudgetRequest by currentStage=APPROVED (this function
@@ -532,6 +691,11 @@ def npc_utilization(
                 location=req.npcLocation,
                 sbu=req.npcSbu or effective_sbu,
                 ioCodes=sorted(io.sap_document_number for io in matched if io.sap_document_number),
+                ios=[
+                    NpcIoDetail(aufnr=io.sap_document_number, description=io.project_title, budget=round(io.amount, 2))
+                    for io in sorted(matched, key=lambda io: io.sap_document_number or "")
+                    if io.sap_document_number
+                ],
                 ioAmount=round(io_amount, 2),
                 balance=round(npc_amount - io_amount, 2),
             )

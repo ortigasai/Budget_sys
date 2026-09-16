@@ -3,6 +3,10 @@ import { api } from "../api/client";
 
 export interface FiscalCycleConfig {
   asOfMonth2026: number;
+  // NPC Forecast's own "YTD Actual through" cutoff - independent of
+  // asOfMonth2026 above (GAE/DOE/Revenue's), so changing one doesn't move
+  // the other.
+  npcAsOfMonth2026: number;
   targetCalendarYear: number;
   cycleOpen: boolean;
   updatedBy?: string;

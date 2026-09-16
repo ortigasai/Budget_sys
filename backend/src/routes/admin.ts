@@ -143,12 +143,15 @@ adminRouter.get(
   "/fiscal-cycle",
   asyncHandler(async (_req, res) => {
     const config = await prisma.fiscalCycleConfig.findUnique({ where: { id: "singleton" } });
-    res.json(config ?? { asOfMonth2026: 9, targetCalendarYear: 2027, cycleOpen: true });
+    res.json(config ?? { asOfMonth2026: 9, npcAsOfMonth2026: 9, targetCalendarYear: 2027, cycleOpen: true });
   })
 );
 
 const fiscalCycleUpdateSchema = z.object({
   asOfMonth2026: z.number().int().min(1).max(12).optional(),
+  // Independent of asOfMonth2026 above - NPC Forecast's own cutoff, so a
+  // Budget Officer changing one doesn't move the other.
+  npcAsOfMonth2026: z.number().int().min(1).max(12).optional(),
   targetCalendarYear: z.number().int().min(2000).max(2100).optional(),
   cycleOpen: z.boolean().optional(),
 });
@@ -164,6 +167,7 @@ adminRouter.put(
       create: {
         id: "singleton",
         asOfMonth2026: fields.asOfMonth2026 ?? 9,
+        npcAsOfMonth2026: fields.npcAsOfMonth2026 ?? 9,
         targetCalendarYear: fields.targetCalendarYear ?? 2027,
         cycleOpen: fields.cycleOpen ?? true,
         updatedBy: req.user!.id,

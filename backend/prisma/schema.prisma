@@ -467,20 +467,26 @@ model HistoricalActuals {
 // forecasting - NPC's real data (budget code, project title, IO linkage)
 // lives on BudgetRequest/InternalOrderRequest, never in HistoricalActuals,
 // so it needs its own small entry table rather than reusing that model.
+// Keyed by budgetCode (not budgetRequestId) so every NPC Forecast row can
+// have an editable Remaining Months Forecast, including a row sourced only
+// from the NPC Monitoring import (no real BudgetRequest behind it at all -
+// see models_npc_monitoring.py on the Python side) - budgetRequestId is
+// kept as an informational, unindexed pointer back to the real request
+// when one exists, no longer the identifying key.
 model NpcForecastEntry {
-  id                String        @id @default(cuid())
-  budgetRequestId    String       @unique
-  budgetRequest      BudgetRequest @relation(fields: [budgetRequestId], references: [id])
+  id                 String    @id @default(cuid())
+  budgetCode         String
+  budgetRequestId    String?
   fiscalYear         Int
   // Same shape/convention as HistoricalActuals.monthlyRemainingForecast2026
   // - keyed by calendar month (1-12), only months after the fiscal cycle's
   // asOfMonth are meaningful/editable.
-  monthlyRemainingForecast Json   @default("{}")
+  monthlyRemainingForecast Json @default("{}")
   updatedById        String?
-  updatedBy          User?         @relation(fields: [updatedById], references: [id])
-  updatedAt          DateTime      @updatedAt
+  updatedBy          User?     @relation(fields: [updatedById], references: [id])
+  updatedAt          DateTime  @updatedAt
 
-  @@unique([budgetRequestId, fiscalYear])
+  @@unique([budgetCode, fiscalYear])
 }
 
 // Admin-configurable GL+CC -> Forecast sub-menu category. Starts empty; the
@@ -507,6 +513,10 @@ model ForecastCategoryMapping {
 model FiscalCycleConfig {
   id                 String   @id @default("singleton")
   asOfMonth2026      Int      @default(9)
+  // NPC's own "as of" cutoff - split out from asOfMonth2026 (GAE/DOE/Revenue)
+  // so a Budget Officer changing one doesn't move the other; both still live
+  // on this one singleton row since they're the same kind of setting.
+  npcAsOfMonth2026   Int      @default(9)
   targetCalendarYear Int      @default(2027)
   cycleOpen          Boolean  @default(true)
   updatedBy          String?
@@ -654,7 +664,6 @@ model BudgetRequest {
   attachments      Attachment[]
   reviewDecisions  ReviewDecision[]
   finalizedLine    FinalizedBudgetLine?
-  npcForecastEntry NpcForecastEntry?
 }
 
 // Note 11: "Budget Finalization & Upload" now writes one of these per

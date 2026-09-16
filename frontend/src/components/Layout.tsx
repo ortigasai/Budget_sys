@@ -1,13 +1,13 @@
 import { useLayoutEffect, useState, type ReactNode } from "react";
 import { Link, NavLink, Outlet, useLocation, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, SBU_OPTIONS, type Department } from "../api/client";
+import { api, type Department } from "../api/client";
 import { useAuth } from "../context/AuthContext";
 import { RoleSwitcher } from "./RoleSwitcher";
 import { UserMenu } from "./UserMenu";
 import { phaseForPath } from "../lib/phases";
 import { useFiscalYear } from "../lib/fiscalCycle";
-import { ADMIN_TABS } from "../pages/admin/AdminConsolePage";
+import { ADMIN_GROUPS, ADMIN_TABS } from "../pages/admin/AdminConsolePage";
 
 const linkClass = ({ isActive }: { isActive: boolean }) => `flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${isActive ? "bg-emerald-700 text-white shadow-sm shadow-emerald-700/30" : "text-slate-600 hover:bg-emerald-50 hover:text-emerald-900"}`;
 
@@ -99,11 +99,11 @@ function NewRequestSubMenu() {
       <NavLink to="/requests/new?tab=doe" className={subLinkClass(currentTab === "doe")}>
         Direct Operating Expenses (DOE)
       </NavLink>
-      <NavLink to="/requests/new?tab=npc" className={subLinkClass(currentTab === "npc")}>
-        Non-Project Capex (NPC)
-      </NavLink>
       <NavLink to="/requests/new?tab=revenue" className={subLinkClass(currentTab === "revenue")}>
         Revenue
+      </NavLink>
+      <NavLink to="/requests/new?tab=npc" className={subLinkClass(currentTab === "npc")}>
+        Non-Project Capex (NPC)
       </NavLink>
       <NavLink to="/requests/new?tab=headcount" className={subLinkClass(currentTab === "headcount")}>
         Additional Manpower
@@ -205,30 +205,6 @@ function Step5SubMenu() {
   );
 }
 
-// Note 11 §4 - "Approved Budget" (new Module 1 section). 6 SBU tabs, each
-// shown only if the current user holds an SBU Finance role for that SBU (or
-// is Budget Officer, who sees all 6) - same gating the page itself
-// re-checks against the backend, this is just which links are worth
-// showing.
-function ApprovedBudgetSubMenu() {
-  const { hasRole, hasSbuRole } = useAuth();
-  const [searchParams] = useSearchParams();
-  const currentSbu = searchParams.get("sbu");
-  const isBudgetOfficer = hasRole("BUDGET_OFFICER");
-
-  const visibleOptions = SBU_OPTIONS.filter((o) => isBudgetOfficer || hasSbuRole("BU_FINANCE_OFFICER", o.value) || hasSbuRole("BU_FINANCE_HEAD", o.value));
-
-  return (
-    <div className="ml-7 mt-1 flex flex-col gap-0.5 border-l border-emerald-100 pl-3">
-      {visibleOptions.map((o) => (
-        <NavLink key={o.value} to={`/approved-budget?sbu=${o.value}`} className={subLinkClass(currentSbu === o.value)}>
-          {o.label}
-        </NavLink>
-      ))}
-    </div>
-  );
-}
-
 // Forecast's GAE/DOE/NPC/Revenue sub-menu — same `?category=` pattern as
 // Step5SubMenu above, but with NPC included (Finalization never had it).
 function ForecastSubMenu() {
@@ -243,11 +219,11 @@ function ForecastSubMenu() {
       <NavLink to="/forecast?category=DOE" className={subLinkClass(currentCategory === "DOE")}>
         Direct Operating Expenses (DOE)
       </NavLink>
-      <NavLink to="/forecast?category=NPC" className={subLinkClass(currentCategory === "NPC")}>
-        Non-Project Capex (NPC)
-      </NavLink>
       <NavLink to="/forecast?category=REVENUE" className={subLinkClass(currentCategory === "REVENUE")}>
         Revenue
+      </NavLink>
+      <NavLink to="/forecast?category=NPC" className={subLinkClass(currentCategory === "NPC")}>
+        Non-Project Capex (NPC)
       </NavLink>
     </div>
   );
@@ -379,10 +355,12 @@ function UtilizationSidebarNav() {
 }
 
 // Admin Console's sidebar (spec: "place the sidebar to the leftmost part of
-// the page - same as the other sidebars in other modules") - flat `?tab=`
-// links, same manual-active-state pattern as TransferSidebarNav above,
-// reading the shared ADMIN_TABS list so this never drifts from what
-// AdminConsolePage itself renders.
+// the page - same as the other sidebars in other modules") - `?tab=` links
+// grouped by module (ADMIN_GROUPS order), same manual-active-state pattern
+// as TransferSidebarNav above, reading the shared ADMIN_TABS list so this
+// never drifts from what AdminConsolePage itself renders. "General" holds
+// whatever's genuinely cross-module rather than owned by one - it applies
+// across every module, not just the ones with their own section here.
 function AdminConsoleSidebarNav() {
   const [searchParams] = useSearchParams();
   const tabParam = searchParams.get("tab");
@@ -390,11 +368,20 @@ function AdminConsoleSidebarNav() {
 
   return (
     <>
-      {ADMIN_TABS.map((t) => (
-        <Link key={t.id} to={`/admin?tab=${t.id}`} className={linkClass({ isActive: activeTab === t.id })}>
-          {t.label}
-        </Link>
-      ))}
+      {ADMIN_GROUPS.map((group) => {
+        const tabs = ADMIN_TABS.filter((t) => t.group === group);
+        if (tabs.length === 0) return null;
+        return (
+          <div key={group} className="mt-3 first:mt-0">
+            <div className="px-3 pb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-400">{group}</div>
+            {tabs.map((t) => (
+              <Link key={t.id} to={`/admin?tab=${t.id}`} className={linkClass({ isActive: activeTab === t.id })}>
+                {t.label}
+              </Link>
+            ))}
+          </div>
+        );
+      })}
     </>
   );
 }
@@ -423,9 +410,9 @@ export function Layout() {
   // Spec item 16 - Revenue's 4-stage chain reuses BCA_HEAD/BUDGET_OFFICER
   // (already covered by isReviewer) plus Phase 3's two SBU-scoped roles.
   const isRevenueReviewer = isReviewer || hasSbuRole("BU_FINANCE_OFFICER") || hasSbuRole("BU_FINANCE_HEAD");
-  // Note 11 §4 - "Approved Budget" (Module 1). Same SBU Finance roles as
-  // Transfers/Revenue above, plus unconditional Budget Officer oversight.
-  const canViewApprovedBudget = isBudgetOfficer || hasSbuRole("BU_FINANCE_OFFICER") || hasSbuRole("BU_FINANCE_HEAD");
+  // Note 11 §5 - Dash Flow Budget Check gate: any SBU Finance role, or
+  // unconditional Budget Officer oversight.
+  const canViewDashFlow = isBudgetOfficer || hasSbuRole("BU_FINANCE_OFFICER") || hasSbuRole("BU_FINANCE_HEAD");
   const isHrAnalyst = hasRole("HR_ANALYST");
   const isHrHead = currentUser?.department?.name === "Human Resources" && hasRole("CENTRALIZED_DEPARTMENT_HEAD");
 
@@ -560,11 +547,6 @@ export function Layout() {
                   <CollapsibleNavGroup to="/requests/new" icon="newRequest" label="New Request" defaultOpen>
                     <NewRequestSubMenu />
                   </CollapsibleNavGroup>
-                  {canViewApprovedBudget && (
-                    <CollapsibleNavGroup to="/approved-budget" icon="approvedBudget" label="Approved Budget" defaultOpen>
-                      <ApprovedBudgetSubMenu />
-                    </CollapsibleNavGroup>
-                  )}
                   <NavItem to="/requests/mine" icon="myRequests">
                     My Requests
                   </NavItem>
@@ -604,7 +586,7 @@ export function Layout() {
               {!isAdminConsole && currentPhase.number === 2 && (
                 <>
                   <UtilizationSidebarNav />
-                  {canViewApprovedBudget && (
+                  {canViewDashFlow && (
                     <>
                       <div className="my-1 border-t border-slate-100" />
                       <DashFlowSidebarNav />

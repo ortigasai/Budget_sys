@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .routers.dash_flow import router as dash_flow_router
 from .routers.internal_orders import router as internal_orders_router
+from .routers.npc_monitoring import router as npc_monitoring_router
 from .routers.reports import router as reports_router
 from .routers.transfers import router as transfers_router
 from .routers.utilization import router as utilization_router
@@ -30,3 +31,4 @@ app.include_router(transfers_router)
 app.include_router(internal_orders_router)
 app.include_router(reports_router)
 app.include_router(dash_flow_router)
+app.include_router(npc_monitoring_router)

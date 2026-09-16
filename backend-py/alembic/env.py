@@ -8,6 +8,11 @@ from alembic import context
 from app.models_phase2 import phase2_registry
 from app.models_phase3 import phase3_registry
 from app.models_phase4 import phase4_registry
+# Side-effect import only (models_npc_monitoring.py's classes register into
+# phase3_registry, imported above, on import) - without this, autogenerate
+# has no way to know these two tables exist, same trap the comment below
+# warns about for a registry that's never imported at all.
+from app import models_npc_monitoring  # noqa: F401
 from app.settings import settings
 
 # this is the Alembic Config object, which provides

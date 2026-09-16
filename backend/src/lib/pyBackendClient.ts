@@ -31,6 +31,19 @@ export async function fetchCcGlOptions(): Promise<CcGlOptions> {
   return data;
 }
 
+// One row's worth of per-IO figures - a Budget Code can fund more than one
+// Internal Order, and the frontend shows each one on its own line, not
+// lumped into a single summed figure (see NpcForecastView.tsx).
+export interface NpcIoDetail {
+  aufnr: string;
+  description: string;
+  budget: number;
+  // None when no live/imported Actual exists yet for this specific IO -
+  // for the live-workflow path, Python leaves this null and Node fills it
+  // in per-IO from its own SALR broker match (see npcForecastService.ts).
+  actual: number | null;
+}
+
 export interface NpcUtilizationRow {
   budgetCode: string;
   projectTitle: string;
@@ -38,8 +51,19 @@ export interface NpcUtilizationRow {
   location: string | null;
   sbu: string;
   ioCodes: string[];
+  // Per-IO breakdown backing ioCodes above.
+  ios: NpcIoDetail[];
   ioAmount: number;
   balance: number;
+  // Only set when Python sourced this row from the NPC Monitoring import
+  // (models_npc_monitoring.py) - null for the live-workflow path, which
+  // gets its own Actual from a direct SALR broker pull instead (see
+  // npcForecastService.ts).
+  actual: number | null;
+  // True only for a standalone "Carry-over" IO row (no Budget Code, no NPC-
+  // approved project behind it) - amount is set equal to ioAmount for
+  // these (there's no real NPC budget ask to show instead).
+  isCarryOver: boolean;
 }
 
 // GET /utilization/npc requires an authenticated user (SBU-scoped for
@@ -48,9 +72,13 @@ export interface NpcUtilizationRow {
 // header verbatim (e.g. req.header("authorization")) - both backends verify
 // the same JWT secret, so a token issued by Node's own /auth/login is
 // already valid on Python's side too (see backend-py/app/auth.py).
-export async function fetchNpcUtilization(fiscalYear: number, sbu: string, authorizationHeader: string): Promise<NpcUtilizationRow[]> {
+// asOfMonth is NPC Forecast's own "YTD Actual through" cutoff (independent
+// of GAE/DOE's - see fiscalCycle.ts's npcAsOfMonth) - only the monitoring-
+// import path on the Python side has a monthly Actual breakdown to apply it
+// to; every other path ignores it and keeps its existing behavior.
+export async function fetchNpcUtilization(fiscalYear: number, sbu: string, authorizationHeader: string, asOfMonth?: number): Promise<NpcUtilizationRow[]> {
   const { data } = await pyClient.get<NpcUtilizationRow[]>("/utilization/npc", {
-    params: { fiscalYear, sbu },
+    params: { fiscalYear, sbu, asOfMonth },
     headers: { Authorization: authorizationHeader },
   });
   return data;

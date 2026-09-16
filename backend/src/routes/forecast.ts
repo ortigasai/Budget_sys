@@ -83,14 +83,17 @@ async function resolveNpcSbuScope(user: { departmentId: string | null; roles: { 
 forecastRouter.get(
   "/npc/template",
   asyncHandler(async (req, res) => {
-    const { targetCalendarYear } = await getFiscalCycle();
+    const { targetCalendarYear, forecastYear } = await getFiscalCycle();
     if (targetCalendarYear < 2027) {
       throw new HttpError(404, "The live spreadsheet template is available starting the fiscal year 2027 cycle.");
     }
     const npcSbu = await resolveNpcSbuScope(req.user!, req.query.npcSbu as string | undefined);
     const workbook = await buildNpcForecastTemplateWorkbook(npcSbu, req.header("authorization") ?? "");
     res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-    res.setHeader("Content-Disposition", `attachment; filename="npc-forecast-template-${npcSbu.toLowerCase()}-${targetCalendarYear}.xlsx"`);
+    // forecastYear, not targetCalendarYear - matches the workbook's own
+    // "Calendar Year" cell (buildNpcForecastTemplateWorkbook), which is the
+    // year this template's data actually belongs to.
+    res.setHeader("Content-Disposition", `attachment; filename="npc-forecast-template-${npcSbu.toLowerCase()}-${forecastYear}.xlsx"`);
     await workbook.xlsx.write(res);
     res.end();
   })
@@ -114,11 +117,11 @@ forecastRouter.post(
 );
 
 forecastRouter.patch(
-  "/npc/entries/:budgetRequestId",
+  "/npc/entries/:budgetCode",
   asyncHandler(async (req, res) => {
     const { month, value } = forecastEntrySchema.parse(req.body);
-    const { targetCalendarYear } = await getFiscalCycle();
-    const updated = await setNpcForecastMonth(req.params.budgetRequestId, targetCalendarYear, month, value, req.user!.id);
+    const { forecastYear } = await getFiscalCycle();
+    const updated = await setNpcForecastMonth(req.params.budgetCode, forecastYear, month, value, req.user!.id);
     res.json(updated);
   })
 );

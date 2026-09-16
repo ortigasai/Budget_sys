@@ -10,8 +10,13 @@ export interface FiscalCycle {
   // cutoff control) - not derived from targetCalendarYear, just co-located
   // here since it lives on the same FiscalCycleConfig singleton row and was
   // previously read via three separate copies of the same query
-  // (forecast.ts, forecastWorkflowService.ts, manpowerService.ts).
+  // (forecast.ts, forecastWorkflowService.ts, manpowerService.ts). Drives
+  // GAE/DOE/Revenue's own Forecast views.
   asOfMonth: number;
+  // NPC Forecast's own independent cutoff - a Budget Officer changing this
+  // does not move asOfMonth above (or vice versa), per the user's explicit
+  // request that GAE and NPC not depend on each other here.
+  npcAsOfMonth: number;
 }
 
 const DEFAULT_TARGET_CALENDAR_YEAR = 2027;
@@ -29,5 +34,6 @@ export async function getFiscalCycle(): Promise<FiscalCycle> {
     forecastYear: targetCalendarYear - 1,
     cycleOpen: config?.cycleOpen ?? true,
     asOfMonth: config?.asOfMonth2026 ?? DEFAULT_AS_OF_MONTH,
+    npcAsOfMonth: config?.npcAsOfMonth2026 ?? DEFAULT_AS_OF_MONTH,
   };
 }
