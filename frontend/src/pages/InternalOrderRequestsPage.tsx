@@ -1,6 +1,9 @@
 import { useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useAuth } from "../context/AuthContext";
+import { formatAufnr } from "../lib/formatAufnr";
+import { npcGroupSbus } from "../lib/groupScope";
 import { api, api2, IO_SBU_OPTIONS, type ApprovedNpcCode, type InternalOrderRequest, type IoLocation, type IoReallocationSourceType, type IoRequestType, type IoSbuCode } from "../api/client";
 import { PageHeader } from "../components/PageHeader";
 import { SectionLabel } from "../components/TabBar";
@@ -55,7 +58,9 @@ function NewInternalOrderForm() {
     queryFn: async () => (await api2.get<SalrOption[]>("/internal-orders/salr-options", { params: { fiscalYear: FISCAL_YEAR } })).data,
   });
 
-  const [sbu, setSbu] = useState<IoSbuCode>(IO_SBU_OPTIONS[0].value);
+  const { currentUser: authUser, hasRole: authHasRole } = useAuth();
+  const myNpcSbus = npcGroupSbus(authUser, authHasRole("BUDGET_OFFICER"));
+  const [sbu, setSbu] = useState<IoSbuCode>(() => IO_SBU_OPTIONS.find((o) => !myNpcSbus || myNpcSbus.includes(o.value))?.value ?? IO_SBU_OPTIONS[0].value);
   const [location, setLocation] = useState("");
   const [projectTitle, setProjectTitle] = useState("");
   const [projectStart, setProjectStart] = useState("");
@@ -198,7 +203,7 @@ function NewInternalOrderForm() {
           <div>
             <label className="block text-sm font-medium text-slate-600">SBU</label>
             <select className="mt-1 w-full rounded border border-slate-300 px-2 py-1.5 text-sm" value={sbu} onChange={(e) => setSbu(e.target.value as IoSbuCode)}>
-              {IO_SBU_OPTIONS.map((o) => (
+              {IO_SBU_OPTIONS.filter((o) => !myNpcSbus || myNpcSbus.includes(o.value)).map((o) => (
                 <option key={o.value} value={o.value}>
                   {o.label}
                 </option>
@@ -309,7 +314,7 @@ function NewInternalOrderForm() {
                           placeholder="Search Internal Orders…"
                           options={salrOptions.map((o) => ({
                             value: o.aufnr,
-                            label: `${o.aufnr} — ${o.description}`,
+                            label: `${formatAufnr(o.aufnr)} — ${o.description}`,
                             sublabel: `Available: ${o.available.toLocaleString(undefined, { maximumFractionDigits: 0 })}`,
                           }))}
                           value={reallocationIoBudgetCode}

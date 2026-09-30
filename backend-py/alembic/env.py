@@ -13,6 +13,9 @@ from app.models_phase4 import phase4_registry
 # has no way to know these two tables exist, same trap the comment below
 # warns about for a registry that's never imported at all.
 from app import models_npc_monitoring  # noqa: F401
+# Same reasoning - models_sap_raw.py's classes register into phase2_registry
+# (imported above) on import.
+from app import models_sap_raw  # noqa: F401
 from app.settings import settings
 
 # this is the Alembic Config object, which provides

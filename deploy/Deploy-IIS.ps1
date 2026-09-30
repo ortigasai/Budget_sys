@@ -22,6 +22,19 @@
          `alembic upgrade head`.
       8. Registers/refreshes two NSSM services (Node API, FastAPI service),
          both bound to 127.0.0.1 only - not reachable except through IIS.
+         Both services run their own SAP syncs automatically every 10
+         minutes from the moment they start (backend/src/index.ts, backend-
+         py/app/main.py) - no separate service/task to register for this,
+         it's just app code that (re)starts along with everything else
+         below. All three sync jobs (Forecast GAE/DOE, Manpower, and
+         Utilization/Transfer/Dash Flow/Reports) share one lock (Postgres
+         table SapSyncLock) so only one ever runs against the SAP broker at
+         a time - a losing job waits its turn rather than piling on. Every
+         attempt (start/success/failure) is logged to each service's own
+         NSSM-captured log file, and the Admin Console's "SAP Sync Status"
+         tab shows all three jobs' current status/last-synced time in one
+         place - see the "Monitoring the SAP sync" section this prints at
+         the end.
       9. Creates the IIS app pool + site on -Port, with a generated
          web.config that reverse-proxies /api and /api2 (and /uploads) to
          the two backend services and falls back to index.html for
@@ -34,7 +47,13 @@
 
     Safe to re-run: every step is idempotent (existing services/sites/pools
     are stopped and reconfigured rather than erroring out), so use this same
-    script for future redeploys after a `git pull` into -SourcePath.
+    script for future redeploys after a `git pull` into -SourcePath - since
+    this script file itself lives in the repo, that `git pull` also picks up
+    any future changes to this script before you re-run it. Re-running fully
+    rebuilds and restarts both backend services, which is also how a code
+    change to the automatic SAP sync (or any other backend change) actually
+    takes effect on the server - there's nothing beyond re-running this
+    script needed to pick it up.
 
 .PARAMETER SourcePath
     Path to the already-copied/cloned project folder on this server (the
@@ -553,9 +572,39 @@ try {
     Write-Warning "  IIS site check failed: $_"
 }
 
+# Confirms the automatic SAP sync scheduler actually started (not just that
+# the services are up) - both sides log a "starting" line the moment their
+# own scheduler kicks off (see backend/src/index.ts / backend-py/app/
+# main.py). Read from the log files rather than the sync-status API routes
+# so this check doesn't need a JWT.
+$nodeSyncLog = Join-Path $backendPath "logs\stdout.log"
+$pySyncLog = Join-Path $backendPyPath "logs\stdout.log"
+if ((Test-Path $nodeSyncLog) -and (Select-String -Path $nodeSyncLog -Pattern "\[sap-sync:" -Quiet -ErrorAction SilentlyContinue)) {
+    Write-Host "  Node API SAP sync scheduler: confirmed active (see $nodeSyncLog)."
+} else {
+    Write-Warning "  Could not confirm the Node API SAP sync scheduler started - check $nodeSyncLog once the service has had a moment to log."
+}
+if ((Test-Path $pySyncLog) -and (Select-String -Path $pySyncLog -Pattern "SAP sync scheduler starting" -Quiet -ErrorAction SilentlyContinue)) {
+    Write-Host "  FastAPI SAP sync scheduler: confirmed active (see $pySyncLog)."
+} else {
+    Write-Warning "  Could not confirm the FastAPI SAP sync scheduler started - check $pySyncLog once the service has had a moment to log."
+}
+
 $hostname = [System.Net.Dns]::GetHostName()
 Write-Host ""
 Write-Host "Deployment complete." -ForegroundColor Green
 Write-Host "  Local:   http://localhost:$Port"
 Write-Host "  Network: http://${hostname}:$Port  (and http://<this-server-IP>:$Port)"
+Write-Host ""
+Write-Host "Monitoring the SAP sync:" -ForegroundColor Cyan
+Write-Host "  Three jobs (Forecast GAE/DOE, Manpower, Utilization/Transfer/Dash Flow/"
+Write-Host "  Reports) run automatically every 10 minutes, one at a time (they share a"
+Write-Host "  lock so they never hit the SAP broker simultaneously). Every attempt"
+Write-Host "  (start/success/failure, with counts or the full error) is logged to:"
+Write-Host "    $nodeSyncLog   (Node: Forecast GAE/DOE + Manpower)"
+Write-Host "    $pySyncLog   (FastAPI: Utilization/Transfer/Dash Flow/Reports)"
+Write-Host "  NSSM rotates these at 10MB (AppRotateFiles/AppRotateBytes, set in step 8"
+Write-Host "  above) - .1, .2, etc. alongside the current file once it fills up."
+Write-Host "  Or skip the log files - Admin Console > SAP Sync Status shows all three"
+Write-Host "  jobs' current status and last-synced time in one place, in the app itself."
 Write-Host "See iis_deployment.md for how to manage the services and troubleshoot."

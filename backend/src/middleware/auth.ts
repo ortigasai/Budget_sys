@@ -2,6 +2,7 @@ import { NextFunction, Request, Response } from "express";
 import jwt from "jsonwebtoken";
 import { RoleType, Sbu } from "@prisma/client";
 import { prisma } from "../prisma";
+import { computeAccess, getEffectiveMatrix } from "../lib/accessControl";
 
 // Shared with backend-py (same env var name, same value) so a token signed
 // by this backend's POST /auth/login is verifiable by both services.
@@ -20,6 +21,8 @@ export interface AuthedUser {
   // rather than department-scoped - department is null and sbu is set for
   // those, the reverse for every other (department-scoped) role.
   roles: { roleType: RoleType; departmentId: string | null; sbu?: Sbu }[];
+  // null = no group membership (not group-restricted, see routes/auth.ts).
+  access: Record<string, boolean> | null;
 }
 
 declare global {
@@ -66,7 +69,7 @@ export async function resolveUser(req: Request, _res: Response, next: NextFuncti
 
   const user = await prisma.user.findUnique({
     where: { id: userId },
-    include: { roleAssignments: true, sbuRoleAssignments: true },
+    include: { roleAssignments: true, sbuRoleAssignments: true, groupMemberships: true },
   });
 
   if (user) {
@@ -75,6 +78,7 @@ export async function resolveUser(req: Request, _res: Response, next: NextFuncti
       name: user.name,
       email: user.email,
       departmentId: user.departmentId,
+      access: user.groupMemberships.length > 0 ? computeAccess(user.groupMemberships.map((m) => m.group), await getEffectiveMatrix()) : null,
       roles: [
         ...user.roleAssignments.map((r) => ({ roleType: r.roleType, departmentId: r.departmentId as string | null })),
         ...user.sbuRoleAssignments.map((r) => ({ roleType: r.roleType, departmentId: null, sbu: r.sbu })),
@@ -119,6 +123,27 @@ export function requireRole(...roleTypes: RoleType[]) {
     const ok = req.user.roles.some((r) => roleTypes.includes(r.roleType));
     if (!ok) {
       res.status(403).json({ error: "You do not hold a role permitted to perform this action." });
+      return;
+    }
+    next();
+  };
+}
+
+/**
+ * Group-based module gate ("Budgeting System_User Management" Access Control
+ * tab). Passes if the user has ANY of the given access keys; users with no
+ * group membership (access === null) pass unchanged so accounts outside the
+ * workbook keep working exactly as before.
+ */
+export function requireAccess(...keys: string[]) {
+  return (req: Request, res: Response, next: NextFunction) => {
+    if (!req.user) {
+      res.status(401).json({ error: "Authentication required." });
+      return;
+    }
+    const access = req.user.access;
+    if (access && !keys.some((k) => access[k])) {
+      res.status(403).json({ error: "Your access group does not permit this module." });
       return;
     }
     next();

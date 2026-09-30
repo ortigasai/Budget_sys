@@ -4,6 +4,17 @@ import { buildExpenseLineItemId, parseExpenseLineItemsBuffer } from "../lib/expe
 import { formatBudgetCode, getBudgetCodePrefixCode, nextBudgetCode } from "../lib/budgetCode";
 import { getFiscalCycle } from "../lib/fiscalCycle";
 
+// Same fuzzy name-matching convention prisma/importCentralizedReviewers.ts
+// uses for columns J/K, folded into the main catalog upload so a future
+// re-upload keeps Centralized Dept Requestor/Reviewer and Centralized Dept
+// Head in sync too, instead of needing that separate script forever.
+const nameTokens = (n: string) =>
+  n
+    .toLowerCase()
+    .replace(/[^a-zñ ]/g, " ")
+    .split(/\s+/)
+    .filter((t) => t && !["jr", "sr", "ii", "iii"].includes(t));
+
 export interface ExpenseLineItemUploadResult {
   ok: boolean;
   created: number;
@@ -45,6 +56,30 @@ export async function overrideExpenseLineItemsFromUpload(
 
   const companies = await prisma.company.findMany();
   const companyByCode = new Map(companies.map((c) => [c.code, c]));
+  // Not restricted to employeeIdNumber != null - some CD-tab-only people
+  // have no official employee-list record (see importCentralizedReviewers.ts).
+  const allUsers = await prisma.user.findMany();
+  const findUserByName = (name: string) => {
+    const t = nameTokens(name);
+    if (t.length === 0) return null;
+    const exact = allUsers.filter((e) => nameTokens(e.name).join(" ") === t.join(" "));
+    if (exact.length === 1) return exact[0];
+    const loose = allUsers.filter((e) => {
+      const et = nameTokens(e.name);
+      return et[0] === t[0] && et[et.length - 1] === t[t.length - 1];
+    });
+    return loose.length === 1 ? loose[0] : null;
+  };
+  // A cell can list more than one co-head, comma-separated - takes the
+  // first name that resolves to a real employee.
+  const firstMatchingUserId = (cellValue: string | null): string | undefined => {
+    if (!cellValue) return undefined;
+    for (const candidate of cellValue.split(",").map((s) => s.trim()).filter(Boolean)) {
+      const user = findUserByName(candidate);
+      if (user) return user.id;
+    }
+    return undefined;
+  };
   const errors: string[] = [];
   rows.forEach((row, i) => {
     if (row.companyCode && !companyByCode.has(row.companyCode)) {
@@ -107,6 +142,8 @@ export async function overrideExpenseLineItemsFromUpload(
         keepIds.add(id);
 
         const budgetCode = await resolveBudgetCode(row);
+        const centralizedReviewerId = firstMatchingUserId(row.centralizedReviewerName);
+        const centralizedHeadId = firstMatchingUserId(row.centralizedHeadName);
         const existing = await tx.expenseLineItem.findUnique({ where: { id } });
         await tx.expenseLineItem.upsert({
           where: { id },
@@ -124,6 +161,10 @@ export async function overrideExpenseLineItemsFromUpload(
             sampleCharges: row.sampleCharges,
             visibleToDepartmentId,
             budgetCode: budgetCode ?? undefined,
+            // undefined (not null) when the cell is blank/unmatched - leaves
+            // whatever's already set untouched rather than clobbering it.
+            centralizedReviewerId,
+            centralizedHeadId,
           },
           create: {
             id,
@@ -142,6 +183,8 @@ export async function overrideExpenseLineItemsFromUpload(
             visibleToDepartmentId,
             managedBy,
             budgetCode,
+            centralizedReviewerId,
+            centralizedHeadId,
           },
         });
         if (existing) updated++;

@@ -83,3 +83,50 @@ export async function fetchNpcUtilization(fiscalYear: number, sbu: string, autho
   });
   return data;
 }
+
+// The raw-SAP-cache endpoints below (GET /sap-cache/*) - Python owns one
+// local copy of each SAP broker report (see backend-py's
+// sap_raw_sync_service.py), refreshed on its own 10-min schedule under the
+// shared SapSyncLock, instead of every module here calling the broker
+// itself and duplicating the same pulls. No auth required, same as
+// /transfers/cc-gl-options above - Node's own scheduler has no user JWT to
+// forward.
+
+// Already unpadded/normalized by the Python side (no more "00" prefix to
+// strip here), and pre-summed per (glAccount, costCenter) through
+// `throughMonth` (SQL SUM/GROUP BY on Python's side, not per-row here) -
+// confirmed live that returning FBL3N's ~190k raw rows for a fiscal year
+// instead took long enough to blow past this client's 10s timeout below.
+export interface GlCcAmount {
+  glAccount: string;
+  costCenter: string;
+  amount: number;
+}
+
+export async function fetchFbl3nCache(fiscalYear: number, throughMonth: number): Promise<GlCcAmount[]> {
+  const { data } = await pyClient.get<GlCcAmount[]>("/sap-cache/fbl3n", { params: { fiscalYear, throughMonth } });
+  return data;
+}
+
+// `fiscalYear` here must be the same "actual postings year" (target - 1)
+// manpowerService.ts already computes before this call - the cache is keyed
+// by whatever fiscal_year sap_raw_sync_service.py's sync_kssb_v1_raw stored
+// it under (also target - 1, for the same reason), not re-derived here.
+export async function fetchKssbV1Cache(fiscalYear: number, throughMonth: number): Promise<GlCcAmount[]> {
+  const { data } = await pyClient.get<GlCcAmount[]>("/sap-cache/kssb-v1", { params: { fiscalYear, throughMonth } });
+  return data;
+}
+
+export interface SalrCacheRow {
+  aufnr: string;
+  budget: number;
+  actual: number;
+  committed: number;
+  allotted: number;
+  available: number;
+}
+
+export async function fetchSalrCache(fiscalYear: number): Promise<SalrCacheRow[]> {
+  const { data } = await pyClient.get<SalrCacheRow[]>("/sap-cache/salr", { params: { fiscalYear } });
+  return data;
+}

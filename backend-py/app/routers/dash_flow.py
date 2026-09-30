@@ -26,14 +26,27 @@ from ..services.dash_flow_adapter import fetch_pending_tickets, notify_ticket_cl
 router = APIRouter(prefix="/dash-flow", tags=["dash-flow"])
 
 
+# Dash Flow Budget Check is switched off for everyone for now (the page stays
+# visible in SBU Finance members' menu, but nothing behind it works). Flip to
+# True to restore the normal access rules below.
+DASH_FLOW_ENABLED = False
+
+
 def _require_dash_flow_access(user: AuthedUser = Depends(get_current_user)) -> AuthedUser:
-    if user.has_role("BUDGET_OFFICER") or user.has_sbu_role("BU_FINANCE_OFFICER"):
+    if not DASH_FLOW_ENABLED:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Dash Flow Budget Check is temporarily unavailable.")
+    if user.has_role("BUDGET_OFFICER") or user.has_sbu_role("BU_FINANCE_OFFICER") or user.can("util.dashflow", False):
         return user
     raise HTTPException(status.HTTP_403_FORBIDDEN, "You do not have access to Dash Flow Budget Check.")
 
 
 def _my_sbus(user: AuthedUser) -> list[str]:
-    return [r.sbu for r in user.roles if r.roleType == "BU_FINANCE_OFFICER" and r.sbu]
+    # SBU Finance role assignments, plus the SBUs of the user's SF group
+    # memberships (User Management workbook, scope e.g. "Malls" -> MALLS).
+    sbus = [r.sbu for r in user.roles if r.roleType == "BU_FINANCE_OFFICER" and r.sbu]
+    if user.can("util.dashflow", False):
+        sbus += [scope.upper() for group, scope in user.groups if group == "SF" and scope]
+    return list(dict.fromkeys(sbus))
 
 
 class SyncResultOut(BaseModel):

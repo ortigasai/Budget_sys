@@ -1,9 +1,25 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../../api/client";
 import { useAuth } from "../../context/AuthContext";
 import { StatusBadge } from "../../components/StatusBadge";
 import { useFiscalYear } from "../../lib/fiscalCycle";
+import { timeAgo } from "../../lib/timeAgo";
+
+// The persisted status row a background sync writes to (see
+// backend/src/lib/backgroundSync.ts) - `status`/`startedAt`/`finishedAt`/
+// `error` describe the most recent attempt, which may have failed;
+// `lastSuccessAt`/`resultJson` only ever update on a real success, so "last
+// synced at <x>" keeps showing the last success even right after a later
+// attempt errors out.
+interface ManpowerSyncStatus {
+  status: "idle" | "running" | "success" | "error";
+  startedAt: string | null;
+  finishedAt: string | null;
+  lastSuccessAt: string | null;
+  resultJson: { unmapped: { payComponentName: string; companyCode: string }[] } | null;
+  error: string | null;
+}
 
 interface Company {
   id: string;
@@ -139,20 +155,51 @@ export function ManpowerDashboardPage() {
     queryClient.invalidateQueries({ queryKey: ["manpower-dashboard-summary"] });
   };
 
+  // The recompute itself now also runs automatically every 10 minutes (see
+  // backend/src/index.ts's startup scheduler) - this button is a
+  // supplementary on-demand refresh, not the only way this data ever
+  // updates. It always runs in the background (a full KSSB V1 pull can take
+  // longer than a normal request should sit open for), so this polls GET
+  // /manpower/run/status for the result instead of awaiting the POST -
+  // continuously, both so an automatic tick's progress shows up too and so
+  // "last synced" stays fresh on its own.
   const [runStatus, setRunStatus] = useState<{ ok: boolean; message: string } | null>(null);
-  const runMutation = useMutation({
-    mutationFn: async () =>
-      (await api.post<{ unmapped: { payComponentName: string; companyCode: string }[] }>("/manpower/run", { fiscalYear: FISCAL_YEAR })).data,
-    onSuccess: (data) => {
+  const startRunMutation = useMutation({
+    mutationFn: async () => (await api.post("/manpower/run", { fiscalYear: FISCAL_YEAR })).data,
+    onError: (err: any) => setRunStatus({ ok: false, message: err.response?.data?.error ?? "Could not start the run." }),
+  });
+
+  const { data: runPollData } = useQuery({
+    queryKey: ["manpower-run-status"],
+    queryFn: async () => (await api.get<ManpowerSyncStatus>("/manpower/run/status")).data,
+    enabled: isHrAnalyst || isBudgetOfficer,
+    refetchInterval: (query) => (query.state.data?.status === "running" ? 5000 : 60000),
+  });
+
+  const previousRunStatusRef = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (!runPollData) return;
+    const previous = previousRunStatusRef.current;
+    previousRunStatusRef.current = runPollData.status;
+    // Only react to a *transition* into success/error, not every poll tick
+    // that happens to still read the same terminal status.
+    if (previous === runPollData.status) return;
+    if (runPollData.status === "success" && runPollData.resultJson) {
       invalidateAll();
+      const unmapped = runPollData.resultJson.unmapped;
       setRunStatus(
-        data.unmapped.length > 0
-          ? { ok: true, message: `Ran successfully - ${data.unmapped.length} (Pay Component, Company) pair(s) have no GL/CC mapping yet and stayed at 0 (see Admin Console > Manpower GL/CC Mapping).` }
+        unmapped.length > 0
+          ? { ok: true, message: `Ran successfully - ${unmapped.length} (Pay Component, Company) pair(s) have no GL/CC mapping yet and stayed at 0 (see Admin Console > Manpower GL/CC Mapping).` }
           : { ok: true, message: "Ran successfully - every pair pulled a real KSSB V1 figure." }
       );
-    },
-    onError: (err: any) => setRunStatus({ ok: false, message: err.response?.data?.error ?? "Run failed - could not reach the SAP data broker." }),
-  });
+    } else if (runPollData.status === "error") {
+      setRunStatus({ ok: false, message: runPollData.error ?? "Run failed - could not reach the SAP data broker." });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runPollData]);
+
+  const runInProgress = runPollData?.status === "running";
+  const lastRunLabel = runPollData?.lastSuccessAt ? `Last synced ${timeAgo(runPollData.lastSuccessAt)}` : runPollData && runPollData.status !== "idle" ? "Never synced successfully yet" : null;
   const submitMutation = useMutation({
     mutationFn: async () => (await api.post("/manpower/submit", { fiscalYear: FISCAL_YEAR })).data,
     onSuccess: invalidateAll,
@@ -201,13 +248,19 @@ export function ManpowerDashboardPage() {
           <button
             onClick={() => {
               setRunStatus(null);
-              runMutation.mutate();
+              startRunMutation.mutate();
             }}
-            disabled={runMutation.isPending}
+            disabled={startRunMutation.isPending || runInProgress}
+            title="Data refreshes automatically every 10 minutes - use this for an on-demand refresh instead of waiting."
             className="rounded-md bg-emerald-700 px-3 py-1.5 text-sm font-semibold text-white hover:bg-emerald-600 disabled:opacity-50"
           >
-            {runMutation.isPending ? "Running…" : "Run Manpower Budget"}
+            {startRunMutation.isPending || runInProgress ? "Running…" : "Run Manpower Budget"}
           </button>
+          {lastRunLabel && (
+            <span className="text-xs text-slate-500" title="SAP data refreshes automatically every 10 minutes.">
+              {lastRunLabel}
+            </span>
+          )}
           {runStatus && <span className={`text-xs ${runStatus.ok ? "text-emerald-700" : "text-red-600"}`}>{runStatus.message}</span>}
           <div className="ml-2 flex items-center gap-2 rounded-md bg-amber-50 px-3 py-1.5 ring-1 ring-amber-200">
             <label className="text-xs font-semibold text-amber-800">Merit Increase Rate</label>

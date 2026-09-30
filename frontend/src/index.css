@@ -5,3 +5,25 @@
 body {
   @apply bg-slate-50 text-slate-900;
 }
+
+/* Frozen table headers: every table's <thead> stays at the top while its rows
+   scroll. Tables inside overflow wrappers are made to scroll inside that
+   wrapper (a scroll container is what sticky sticks to), capped so the header
+   has something to stay on; overflow:hidden wrappers become overflow:clip
+   (same clipping, but not a scroll container, so the header sticks to the
+   page's own scroll instead of being trapped). */
+main thead {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+:where(main) thead {
+  background-color: rgb(248 250 252);
+}
+main .overflow-hidden {
+  overflow: clip;
+}
+main .overflow-x-auto:has(> table) {
+  max-height: 75vh;
+  overflow-y: auto;
+}

@@ -14,8 +14,15 @@ The workbook has two parts, read differently:
   NpcMonitoringProject. Column layout differs per tab (confirmed by reading
   every one directly), so columns are located by header text, not a fixed
   index - except HR (an employee car-plan roster, not a per-project table -
-  its one pooled NPC budget line is special-cased) and Admin (no Budget Code
-  anywhere in the workbook for it - skipped, logged in the summary).
+  its one pooled NPC budget line is special-cased). Admin used to have no
+  Budget Code anywhere in the workbook and was skipped entirely, but as of
+  the Sep'26 file it has its own single real project row (Budget Code
+  "LPA-2026B-NPC001", confirmed against the Monitoring tab's own
+  "CORPORATE - ADMIN" rows too, e.g. AUFNR 40001262 "LAMINATED CABINETS FOR
+  MS. CAROL MILLS" carries that same Budget Source Code) - same
+  Code/Amount/Title column shape as any other SBU tab, so it now goes
+  through the same generic import_sbu_tab path as the rest instead of being
+  special-cased or skipped.
 - The Monitoring tab lists every real SAP Internal Order - IO code (AUFNR),
   the same Budget Code linking it back to a project, and live
   Budget/Actual/Committed/Allotted/Available - feeding NpcMonitoringIo.
@@ -372,16 +379,12 @@ def run_import(wb, fiscal_year: int, source_file: str) -> dict:
     projects: list[NpcMonitoringProject] = []
     carry_over_revised: dict[str, float] = {}
     print("Per-SBU tabs:")
-    skipped_admin = False
-    for tab_name in ["Malls", "Estates", "Offices", "Residential", "Leisure", "IT"]:
+    for tab_name in ["Malls", "Estates", "Offices", "Residential", "Leisure", "IT", "Admin"]:
         if tab_name in wb.sheetnames:
             tab_projects, tab_carry_over_revised = import_sbu_tab(wb[tab_name], tab_name, fiscal_year, source_file, aufnr_to_budget_code)
             projects.extend(tab_projects)
             carry_over_revised.update(tab_carry_over_revised)
     projects.extend(import_hr_pooled_project(wb, fiscal_year, source_file))
-    if "Admin" in wb.sheetnames:
-        skipped_admin = True
-        print("  [Admin] no Budget Code exists anywhere in the workbook for Corporate Admin (confirmed against the Monitoring tab too) - skipped.")
 
     # An IO with its own numeric-code "Carryover" row in an SBU tab carries
     # the same Revised (Amount - Cut) figure every other project's NPC
@@ -427,7 +430,6 @@ def run_import(wb, fiscal_year: int, source_file: str) -> dict:
         "projectCount": len(projects),
         "ioCount": len(ios),
         "projectsBySbu": by_sbu,
-        "skippedAdmin": skipped_admin,
     }
 
 

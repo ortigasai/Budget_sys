@@ -51,8 +51,11 @@ export async function parseRevenueTemplate(buffer: Buffer): Promise<ParsedRevenu
     throw new HttpError(400, "Could not read the uploaded file. Upload the Revenue Budget Request Template (.xlsx).");
   }
 
-  const sheet = workbook.worksheets[0];
-  if (!sheet) throw new HttpError(400, "The uploaded file has no worksheet.");
+  // Not simply worksheets[0] - the template's hidden "Reference" sheet
+  // (CC/GL dropdown source lists) is added first, so the visible data sheet
+  // is actually worksheets[1] once that Reference sheet exists.
+  const sheet = workbook.worksheets.find((w) => w.state !== "veryHidden");
+  if (!sheet) throw new HttpError(400, "No usable worksheet found in the uploaded file.");
 
   const headerRow = sheet.getRow(HEADER_ROW);
   const ccHeader = cellText(headerRow.getCell(CC_COL)).toUpperCase();

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { api, type FinalizedBudgetReport } from "../api/client";
+import { api, downloadFile, type FinalizedBudgetReport } from "../api/client";
 import { PageHeader } from "../components/PageHeader";
 import { SectionLabel } from "../components/TabBar";
 import { useFiscalYear } from "../lib/fiscalCycle";
@@ -16,6 +16,7 @@ function peso(n: number) {
 export function FinalizedBudgetReportPage() {
   const { targetYear: FISCAL_YEAR } = useFiscalYear();
   const [search, setSearch] = useState("");
+  const [exportError, setExportError] = useState<string | null>(null);
 
   const { data, isLoading } = useQuery({
     queryKey: ["finalized-budget-report", FISCAL_YEAR, search],
@@ -35,14 +36,21 @@ export function FinalizedBudgetReportPage() {
       <PageHeader
         subtitle="The finalized/uploaded budget per CC-GL, from every category's one-click Finalize & Upload action."
         actions={
-          <a
-            href={`/api/budget-requests/finalized-budget-report/export?fiscalYear=${FISCAL_YEAR}${search ? `&search=${encodeURIComponent(search)}` : ""}`}
+          <button
+            type="button"
+            onClick={() =>
+              downloadFile(
+                `/budget-requests/finalized-budget-report/export?fiscalYear=${FISCAL_YEAR}${search ? `&search=${encodeURIComponent(search)}` : ""}`,
+                `finalized-budget-report-${FISCAL_YEAR}.xlsx`
+              ).catch(() => setExportError("Failed to export the report."))
+            }
             className="rounded-md border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-100"
           >
             Export to Excel
-          </a>
+          </button>
         }
       />
+      {exportError && <div className="rounded bg-red-50 p-2 text-sm text-red-700">{exportError}</div>}
 
       <input
         className="w-72 rounded border border-slate-300 px-2 py-1.5 text-sm"

@@ -9,39 +9,74 @@ import { HttpError } from "../httpError";
 import { assertCycleOpen, submitRequest } from "../services/workflowService";
 import { getFiscalCycle } from "../lib/fiscalCycle";
 import { nextBudgetCode, sbuBudgetCodePrefix } from "../lib/budgetCode";
+import { SBU_BATCH_CATEGORIES } from "../services/approvalChain";
+import { sbuBatchCategoryLabel } from "../lib/sbuBatchCategories";
+import { fetchCcGlOptions } from "../lib/pyBackendClient";
 import { NPC_LOCATION_VALUES, NPC_SBU_VALUES, npcSbuBudgetCodePrefix, type NpcLocation, type NpcSbu } from "../lib/npcSbu";
+import { EXPENSE_REQUEST_TEMPLATE_HEADER, parseExpenseRequestSheet, visibleLineItemsForRequest } from "../lib/expenseRequestTemplate";
 
 export const bulkUploadRouter = Router();
 
 bulkUploadRouter.use(requireAuth);
 
-const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-const HEADER = ["Expense Line Item", ...MONTHS, "Business Justification", "Other Required Fields (JSON)"];
+const HEADER = EXPENSE_REQUEST_TEMPLATE_HEADER;
 
 // Bulk upload is capped well below the exceljs/archiver DoS advisory's blast
 // radius (see plan notes) — small spreadsheets only, never arbitrary blobs.
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
 
-// Note 11 §6 - "Open Spreadsheet Template" for GAE/DOE (spec's other two
-// categories, NPC and Revenue, have their own distinct shapes - see
-// routes/npcTemplate.ts and revenueTemplate.ts respectively). `category`
-// defaults to GAE (this route predates Note 11 and only ever produced GAE
-// requests); DOE additionally requires `sbu`, tagged onto every row created
-// from this same sheet (one sheet -> one department -> one SBU, same as
-// Revenue's per-batch SBU). The line item list is filtered to this
-// requestor's own visible catalog (Notes_7), same rule StandardRequestTab.tsx
-// applies client-side for the manual form.
-async function visibleLineItemsForRequest(departmentId: string) {
-  const department = await prisma.department.findUnique({ where: { id: departmentId } });
-  const applyVisibilityFilter = department?.name !== "Budget";
-  return prisma.expenseLineItem.findMany({
-    where: {
-      status: "STANDARD",
-      category: { not: "Manpower - Salary" },
-      ...(applyVisibilityFilter ? { OR: [{ visibleToDepartmentId: null }, { visibleToDepartmentId: departmentId }] } : {}),
-    },
-    orderBy: { name: "asc" },
+// Note 11 §6 - "Open Spreadsheet Template" for GAE (catalog line-item name +
+// Jan-Dec). The 5 SBU-batch categories (DOE, Commission, Cost of Sales,
+// Depreciation & Amortization, Interest Expense - see routes/doeBatches.ts
+// and approvalChain.ts's SBU_BATCH_CATEGORIES) get their own, entirely
+// different shape below - real SAP upload data for these is a raw Cost
+// Center + GL Account (Cost Element) pair with no catalog line item behind
+// it at all (confirmed against "SAP Upload validation.xlsx"'s MallsDOE/
+// OfficesDOE/EstatesDOE/RBUcommission/RBUcos/Depreciation/Interest tabs -
+// every one of them is Cost Center/Cost Element/Jan-Dec, never a line-item
+// name), so this reuses Revenue's exact CC/GL/Jan-Dec/Total template shape
+// (see revenueBatches.ts's own "/template" route) rather than GAE's.
+// (NPC/Revenue keep their own separate routes below - npc-template and
+// revenueBatchesRouter's own "/template" respectively.)
+
+const SBU_BATCH_MONTH_HEADER = ["CC", "GL", "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December", "Total"];
+
+async function writeSbuBatchTemplate(res: import("express").Response, category: RequestCategory, sbu: string, fiscalYear: number) {
+  const { costCenters, glAccounts } = await fetchCcGlOptions();
+
+  const workbook = new ExcelJS.Workbook();
+  const refSheet = workbook.addWorksheet("Reference", { state: "veryHidden" });
+  costCenters.forEach((c, i) => {
+    refSheet.getCell(i + 1, 1).value = c.code;
   });
+  glAccounts.forEach((g, i) => {
+    refSheet.getCell(i + 1, 2).value = g.code;
+  });
+
+  const sheetTitle = `${sbu} ${sbuBatchCategoryLabel(category)} Requests ${fiscalYear}`;
+  const sheet = workbook.addWorksheet(sheetTitle.slice(0, 31));
+  sheet.getCell("O1").value = { formula: "SUBTOTAL(9,O3:O1048576)" } as any;
+  sheet.getRow(2).values = SBU_BATCH_MONTH_HEADER;
+  sheet.getRow(2).font = { bold: true };
+  sheet.getColumn(1).width = 12;
+  sheet.getColumn(2).width = 12;
+  sheet.getColumn(15).width = 13.8;
+
+  const lastRow = 1002;
+  for (let r = 3; r <= lastRow; r++) {
+    if (costCenters.length > 0) {
+      sheet.getCell(`A${r}`).dataValidation = { type: "list", allowBlank: true, formulae: [`Reference!$A$1:$A$${costCenters.length}`] };
+    }
+    if (glAccounts.length > 0) {
+      sheet.getCell(`B${r}`).dataValidation = { type: "list", allowBlank: true, formulae: [`Reference!$B$1:$B$${glAccounts.length}`] };
+    }
+    sheet.getCell(`O${r}`).value = { formula: `SUM(C${r}:N${r})` } as any;
+  }
+
+  res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+  res.setHeader("Content-Disposition", `attachment; filename="budget-request-template-${category.toLowerCase()}-${sbu.toLowerCase()}-${fiscalYear}.xlsx"`);
+  await workbook.xlsx.write(res);
+  res.end();
 }
 
 bulkUploadRouter.get(
@@ -49,11 +84,22 @@ bulkUploadRouter.get(
   asyncHandler(async (req, res) => {
     const { targetCalendarYear } = await getFiscalCycle();
     const fiscalYear = Number(req.query.fiscalYear ?? targetCalendarYear);
-    const category = (req.query.category as string | undefined) === "DOE" ? RequestCategory.DOE : RequestCategory.GAE;
+    const requestedCategory = req.query.category as string | undefined;
+    const category =
+      requestedCategory && (SBU_BATCH_CATEGORIES as readonly string[]).includes(requestedCategory)
+        ? (requestedCategory as RequestCategory)
+        : RequestCategory.GAE;
+    const isSbuBatch = (SBU_BATCH_CATEGORIES as readonly RequestCategory[]).includes(category);
     const sbu = req.query.sbu as string | undefined;
-    if (category === RequestCategory.DOE && !sbu) {
-      throw new HttpError(400, "Select an SBU before downloading the DOE template.");
+    if (isSbuBatch && !sbu) {
+      throw new HttpError(400, `Select an SBU before downloading the ${sbuBatchCategoryLabel(category)} template.`);
     }
+
+    if (isSbuBatch) {
+      await writeSbuBatchTemplate(res, category, sbu!, fiscalYear);
+      return;
+    }
+
     const departmentId = req.user!.departmentId;
     if (!departmentId) throw new HttpError(400, "Your account has no assigned department.");
 
@@ -65,8 +111,7 @@ bulkUploadRouter.get(
       refSheet.getCell(i + 1, 1).value = item.name;
     });
 
-    const sheetTitle = category === RequestCategory.DOE ? `${sbu} DOE Requests ${fiscalYear}` : `Budget Requests ${fiscalYear}`;
-    const sheet = workbook.addWorksheet(sheetTitle.slice(0, 31));
+    const sheet = workbook.addWorksheet(`Budget Requests ${fiscalYear}`.slice(0, 31));
     sheet.addRow(HEADER);
     sheet.getRow(1).font = { bold: true };
 
@@ -138,58 +183,13 @@ bulkUploadRouter.post(
       },
     });
 
-    const errors: RowError[] = [];
+    const parsed = parseExpenseRequestSheet(sheet, itemsByName);
+    const errors: RowError[] = [...parsed.errors];
     let created = 0;
-    let rowCount = 0;
+    const rowCount = parsed.rowCount;
 
-    for (let rowNumber = 2; rowNumber <= sheet.rowCount; rowNumber++) {
-      const row = sheet.getRow(rowNumber);
-      const lineItemName = String(row.getCell(1).value ?? "").trim();
-      if (!lineItemName) continue; // blank row, not counted
-
-      rowCount++;
-
+    for (const parsedRow of parsed.rows) {
       try {
-        const lineItem = itemsByName.get(lineItemName.toLowerCase());
-        if (!lineItem) {
-          throw new Error(`Expense line item "${lineItemName}" is not in the standard catalog.`);
-        }
-
-        const monthlyAmounts: number[] = [];
-        for (let m = 0; m < 12; m++) {
-          const raw = row.getCell(2 + m).value;
-          const num = Number(raw ?? 0);
-          if (Number.isNaN(num) || num < 0) {
-            throw new Error(`${MONTHS[m]} amount must be a non-negative number.`);
-          }
-          monthlyAmounts.push(num);
-        }
-        const proposedAmount = monthlyAmounts.reduce((a, b) => a + b, 0);
-        if (proposedAmount <= 0) {
-          throw new Error(`${targetCalendarYear} Proposed Amount must be greater than 0.`);
-        }
-
-        const businessJustification = String(row.getCell(14).value ?? "").trim();
-        if (!businessJustification) {
-          throw new Error("Business Justification is mandatory.");
-        }
-
-        let otherRequiredFields: Record<string, string> = {};
-        const rawOther = row.getCell(15).value;
-        if (rawOther) {
-          try {
-            otherRequiredFields = JSON.parse(String(rawOther));
-          } catch {
-            throw new Error("Other Required Fields (JSON) column is not valid JSON.");
-          }
-        }
-        const extraFieldsConfig = (lineItem.extraFieldsConfig as { label: string; required: boolean }[]) ?? [];
-        for (const field of extraFieldsConfig) {
-          if (field.required && !otherRequiredFields[field.label]?.trim()) {
-            throw new Error(`Field "${field.label}" is required for "${lineItem.name}".`);
-          }
-        }
-
         // DOE gets a fresh Budget Code per row, same as one manual DOE
         // submission via the Save Draft form (lib/budgetCode.ts) - this
         // sheet is many independent DOE requests, not one batch total.
@@ -199,11 +199,11 @@ bulkUploadRouter.post(
           data: {
             departmentId,
             fiscalYear,
-            expenseLineItemId: lineItem.id,
-            monthlyAmounts,
-            proposedAmount,
-            businessJustification,
-            otherRequiredFields,
+            expenseLineItemId: parsedRow.lineItem.id,
+            monthlyAmounts: parsedRow.monthlyAmounts,
+            proposedAmount: parsedRow.proposedAmount,
+            businessJustification: parsedRow.businessJustification,
+            otherRequiredFields: parsedRow.otherRequiredFields,
             requestCategory: category,
             sbu,
             budgetCode,
@@ -225,7 +225,7 @@ bulkUploadRouter.post(
 
         created++;
       } catch (err) {
-        errors.push({ row: rowNumber, error: err instanceof Error ? err.message : "Unknown error" });
+        errors.push({ row: parsedRow.row, error: err instanceof Error ? err.message : "Unknown error" });
       }
     }
 

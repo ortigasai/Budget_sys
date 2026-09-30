@@ -2,7 +2,7 @@ const STAGE_LABELS: Record<string, string> = {
   DRAFT: "Draft",
   DEPT_HEAD_REVIEW: "Dept Head Review",
   CFO_APPROVAL: "CFO Approval",
-  CENTRALIZED_L1_REVIEW: "Centralized L1 Review",
+  CENTRALIZED_L1_REVIEW: "Centralized Dept Requestor/Reviewer",
   CENTRALIZED_HEAD_REVIEW: "Centralized Head Review",
   BCA_HEAD_REVIEW: "BC&A Head Review",
   BUDGET_OFFICER_REVIEW: "Budget Officer Review",
@@ -24,6 +24,9 @@ const STAGE_LABELS: Record<string, string> = {
   // BU_FINANCE_OFFICER_VERIFICATION/CFO_REVIEW/CFO_AUTHORIZATION are still
   // used by Internal Order Requests' own (unchanged) DOE/GAE stage machine.
   BUDGET_OFFICER_VALIDATION: "Budget Officer Validation",
+  SF_VALIDATION: "SBU Finance Validation",
+  SF_HEAD_REVIEW: "SBU Finance Head Review",
+  SBU_HEAD_REVIEW: "SBU / Division Head Review",
   BU_FINANCE_HEAD_REVIEW: "BU Finance Head Review",
   BU_HEAD_AUTHORIZATION: "BU Head Authorization",
   BU_FINANCE_OFFICER_VERIFICATION: "BU Finance Officer Verification",
@@ -68,6 +71,9 @@ const STAGE_COLORS: Record<string, string> = {
   APPROVER_REVIEW: "bg-blue-100 text-blue-700",
   // Phase 3 — Budget Transfer & Reallocation.
   BUDGET_OFFICER_VALIDATION: "bg-amber-100 text-amber-700",
+  SF_VALIDATION: "bg-blue-100 text-blue-700",
+  SF_HEAD_REVIEW: "bg-blue-100 text-blue-700",
+  SBU_HEAD_REVIEW: "bg-blue-100 text-blue-700",
   BU_FINANCE_HEAD_REVIEW: "bg-blue-100 text-blue-700",
   BU_HEAD_AUTHORIZATION: "bg-blue-100 text-blue-700",
   BU_FINANCE_OFFICER_VERIFICATION: "bg-purple-100 text-purple-700",

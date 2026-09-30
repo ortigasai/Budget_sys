@@ -1,15 +1,21 @@
 import { Fragment, useMemo } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQueries, useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
-import { api, type AdditionalHeadcountRequest, type BudgetRequest, type MobilePhoneBudgetRequest, type Office365AccountRequest } from "../api/client";
+import { api, requestLineDisplay, type AdditionalHeadcountRequest, type BudgetRequest, type DoeBatchDetail, type MobilePhoneBudgetRequest, type Office365AccountRequest, type RevenueBatchSummary } from "../api/client";
 import { StatusBadge } from "../components/StatusBadge";
 import { PageHeader } from "../components/PageHeader";
+import { SBU_BATCH_TYPES } from "../components/SbuTypeSwitch";
+import { STAGE_LABELS as REVENUE_STAGE_LABELS } from "./newRequest/RevenueRequestTab";
 
 const REQUEST_CATEGORY_LABELS: Record<string, string> = {
   GAE: "GAE",
   DOE: "DOE",
   NPC: "NPC",
   REVENUE: "Revenue",
+  COMMISSION: "Commission",
+  COST_OF_SALES: "Cost of Sales",
+  DEPRECIATION_AMORTIZATION: "Depreciation & Amortization",
+  INTEREST_EXPENSE: "Interest Expense",
 };
 
 // This page only queried /budget-requests/my-requests, so Additional
@@ -20,6 +26,18 @@ const REQUEST_CATEGORY_LABELS: Record<string, string> = {
 // models, but they exist *because of* that one headcount request, so they're
 // nested underneath it as a sub-section rather than sorted in as their own
 // top-level rows.
+// Note 11 §16 follow-up - Revenue's own "My Revenue Requests" list (inside
+// the New Request/Forecast Revenue tab) was removed; revenue batches now
+// show here as a third row kind instead, same as headcount above. DOE's
+// analogous "Upload Template" flow (now generalized - see
+// SbuBatchUploadTab.tsx/doeBatches.ts's createSbuBatchRouter - to also cover
+// Commission/Cost of Sales/Depreciation & Amortization/Interest Expense)
+// adds a fourth kind, but only for batches still in DRAFT - once a batch is
+// submitted its rows fan out into that category's normal per-row review
+// (unlike Revenue, which always keeps a batch's rows in lockstep, even once
+// APPROVED), so a submitted batch's rows just show up as ordinary "budget"
+// rows below, same as a manually-created request of that category always
+// has.
 type TopLevelRow =
   | { kind: "budget"; id: string; createdAt: string; data: BudgetRequest }
   | {
@@ -29,7 +47,9 @@ type TopLevelRow =
       data: AdditionalHeadcountRequest;
       office365: Office365AccountRequest | null;
       mobilePhone: MobilePhoneBudgetRequest | null;
-    };
+    }
+  | { kind: "revenue"; id: string; createdAt: string; data: RevenueBatchSummary }
+  | { kind: "sbu-batch"; id: string; createdAt: string; data: DoeBatchDetail; tab: string; label: string };
 
 export function MyRequestsPage() {
   const { data: budgetRequests = [], isLoading: budgetLoading } = useQuery({
@@ -48,11 +68,41 @@ export function MyRequestsPage() {
     queryKey: ["additional-headcount", "mobile-phone-budget", "my-requests"],
     queryFn: async () => (await api.get<MobilePhoneBudgetRequest[]>("/additional-headcount/mobile-phone-budget/my-requests")).data,
   });
+  // Same query key RevenueRequestTab's own mutations already invalidate
+  // (upload/override/submit/cancel), so this list stays fresh after any of
+  // those actions even though it's rendered from a different page now.
+  const { data: revenueBatches = [], isLoading: revenueLoading } = useQuery({
+    queryKey: ["revenue-batches", "mine"],
+    queryFn: async () => (await api.get<RevenueBatchSummary[]>("/revenue-batches/mine")).data,
+  });
+  // One query per SBU-batch category (DOE, Commission, Cost of Sales,
+  // Depreciation & Amortization, Interest Expense) - same query keys each
+  // category's own SbuBatchUploadTab mutations already invalidate.
+  const sbuBatchQueries = useQueries({
+    queries: SBU_BATCH_TYPES.map((t) => ({
+      queryKey: [t.apiPath, "mine"],
+      queryFn: async () => (await api.get<DoeBatchDetail[]>(`/${t.apiPath}/mine`)).data,
+    })),
+  });
+  const sbuBatchLoading = sbuBatchQueries.some((q) => q.isLoading);
+  const sbuBatchRows = useMemo(
+    () =>
+      SBU_BATCH_TYPES.flatMap((t, i) => (sbuBatchQueries[i].data ?? []).map((r) => ({ kind: "sbu-batch" as const, id: r.id, createdAt: r.createdAt, data: r, tab: t.tab, label: t.label }))),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [sbuBatchQueries.map((q) => q.data)]
+  );
 
-  const isLoading = budgetLoading || headcountLoading || office365Loading || mobilePhoneLoading;
+  // Revenue rows are always shown as the aggregated "revenue" batch row
+  // below (every stage, including APPROVED) rather than individually -
+  // /budget-requests/my-requests returns every BudgetRequest unfiltered, so
+  // without this a Revenue line item would show up twice: once here, once
+  // inside its batch row.
+  const displayedBudgetRequests = useMemo(() => budgetRequests.filter((r) => r.requestCategory !== "REVENUE"), [budgetRequests]);
+
+  const isLoading = budgetLoading || headcountLoading || office365Loading || mobilePhoneLoading || revenueLoading || sbuBatchLoading;
   const rows = useMemo<TopLevelRow[]>(() => {
     const combined: TopLevelRow[] = [
-      ...budgetRequests.map((r) => ({ kind: "budget" as const, id: r.id, createdAt: r.createdAt, data: r })),
+      ...displayedBudgetRequests.map((r) => ({ kind: "budget" as const, id: r.id, createdAt: r.createdAt, data: r })),
       ...headcountRequests.map((r) => ({
         kind: "headcount" as const,
         id: r.id,
@@ -61,11 +111,13 @@ export function MyRequestsPage() {
         office365: office365Requests.find((o) => o.additionalHeadcountRequest.id === r.id) ?? null,
         mobilePhone: mobilePhoneRequests.find((m) => m.additionalHeadcountRequest.id === r.id) ?? null,
       })),
+      ...revenueBatches.map((r) => ({ kind: "revenue" as const, id: r.id, createdAt: r.createdAt, data: r })),
+      ...sbuBatchRows,
     ];
     return combined.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-  }, [budgetRequests, headcountRequests, office365Requests, mobilePhoneRequests]);
+  }, [displayedBudgetRequests, headcountRequests, office365Requests, mobilePhoneRequests, revenueBatches, sbuBatchRows]);
 
-  const totalCount = budgetRequests.length + headcountRequests.length + office365Requests.length + mobilePhoneRequests.length;
+  const totalCount = displayedBudgetRequests.length + headcountRequests.length + office365Requests.length + mobilePhoneRequests.length + revenueBatches.length + sbuBatchRows.length;
 
   return (
     <div className="space-y-4">
@@ -98,10 +150,10 @@ export function MyRequestsPage() {
                         <td className="px-4 py-2 text-xs font-medium text-slate-500">{REQUEST_CATEGORY_LABELS[row.data.requestCategory] ?? row.data.requestCategory}</td>
                         <td className="px-4 py-2">
                           <Link to={`/requests/${row.data.id}`} className="font-medium text-emerald-800 hover:underline">
-                            {row.data.expenseLineItem.name}
+                            {requestLineDisplay(row.data).name}
                           </Link>
                         </td>
-                        <td className="px-4 py-2 text-slate-500">{row.data.budgetCode ?? row.data.expenseLineItem.budgetCode ?? "—"}</td>
+                        <td className="px-4 py-2 text-slate-500">{requestLineDisplay(row.data).budgetCode ?? "—"}</td>
                         <td className="px-4 py-2 font-medium text-slate-700">₱{row.data.proposedAmount.toLocaleString()}</td>
                         {/* Notes_10: "Budget Cut" and "Approved Amount" —
                             only the Budget Officer can set budgetCutAmount
@@ -116,7 +168,7 @@ export function MyRequestsPage() {
                         </td>
                         <td className="px-4 py-2 text-slate-500">{row.data.sapDocumentNumber ?? "—"}</td>
                       </>
-                    ) : (
+                    ) : row.kind === "headcount" ? (
                       <>
                         <td className="px-4 py-2 text-xs font-medium text-slate-500">Additional Manpower</td>
                         <td className="px-4 py-2">
@@ -135,6 +187,47 @@ export function MyRequestsPage() {
                         <td className="px-4 py-2">
                           <StatusBadge stage={row.data.currentStage} />
                           <PendingReviewers names={row.data.pendingReviewers} />
+                        </td>
+                        <td className="px-4 py-2 text-slate-400">N/A</td>
+                      </>
+                    ) : row.kind === "revenue" ? (
+                      <>
+                        <td className="px-4 py-2 text-xs font-medium text-slate-500">Revenue</td>
+                        <td className="px-4 py-2">
+                          <Link to={`/requests/new?tab=revenue&batch=${row.data.id}`} className="font-medium text-emerald-800 hover:underline">
+                            {row.data.sbu} — {row.data.company?.name ?? "—"}
+                          </Link>
+                        </td>
+                        {/* Revenue batches carry a total tied to the
+                            Board-Approved Budget, not a per-line budget code/
+                            cut/approved-amount split - N/A for the columns
+                            that don't apply, same convention headcount uses
+                            above. */}
+                        <td className="px-4 py-2 text-slate-400">N/A</td>
+                        <td className="px-4 py-2 font-medium text-slate-700">₱{row.data.totalAmount.toLocaleString()}</td>
+                        <td className="px-4 py-2 text-slate-400">N/A</td>
+                        <td className="px-4 py-2 text-slate-400">N/A</td>
+                        <td className="px-4 py-2">{REVENUE_STAGE_LABELS[row.data.currentStage] ?? row.data.currentStage}</td>
+                        <td className="px-4 py-2 text-slate-400">N/A</td>
+                      </>
+                    ) : (
+                      <>
+                        <td className="px-4 py-2 text-xs font-medium text-slate-500">{row.label} (Draft)</td>
+                        <td className="px-4 py-2">
+                          <Link to={`/requests/new?tab=${row.tab}&batch=${row.data.id}`} className="font-medium text-emerald-800 hover:underline">
+                            {row.data.sbu} — {row.data.company?.name ?? "—"} ({row.data.rowCount} line{row.data.rowCount === 1 ? "" : "s"})
+                          </Link>
+                        </td>
+                        {/* A batch's rows keep their own individual Budget
+                            Code/Budget Cut/Approved Amount once submitted -
+                            this row only exists pre-submit, so N/A for the
+                            same reason Revenue's does above. */}
+                        <td className="px-4 py-2 text-slate-400">N/A</td>
+                        <td className="px-4 py-2 font-medium text-slate-700">₱{row.data.totalAmount.toLocaleString()}</td>
+                        <td className="px-4 py-2 text-slate-400">N/A</td>
+                        <td className="px-4 py-2 text-slate-400">N/A</td>
+                        <td className="px-4 py-2">
+                          <StatusBadge stage={row.data.currentStage} />
                         </td>
                         <td className="px-4 py-2 text-slate-400">N/A</td>
                       </>

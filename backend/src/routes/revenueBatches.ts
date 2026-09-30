@@ -10,6 +10,7 @@ import { prisma } from "../prisma";
 import { asyncHandler } from "../asyncHandler";
 import { hasRole, hasSbuRole, requireAuth } from "../middleware/auth";
 import { HttpError } from "../httpError";
+import { assertSfSbu } from "../lib/groupScope";
 import { parseRevenueTemplate } from "../lib/revenueTemplate";
 import { fetchCcGlOptions } from "../lib/pyBackendClient";
 import { assertCycleOpen, cancelRevenueBatch, revenueBatchDecision, submitRevenueBatch } from "../services/workflowService";
@@ -152,6 +153,7 @@ revenueBatchesRouter.post(
     if (!departmentId) throw new HttpError(400, "Your account has no assigned department to originate a request from.");
 
     const { sbu, companyId, fiscalYear } = uploadFieldsSchema.parse(req.body);
+    await assertSfSbu(req.user!, sbu);
     const company = await prisma.company.findUniqueOrThrow({ where: { id: companyId } }).catch(() => {
       throw new HttpError(400, "Unrecognized Company selection.");
     });
@@ -284,8 +286,8 @@ async function loadBatchDetail(batchId: string) {
     uploadedByName: batch.uploadedBy.name,
     rows: rows.map((r) => ({
       id: r.id,
-      costCenter: r.expenseLineItem.costCenter,
-      glAccount: r.expenseLineItem.glAccount,
+      costCenter: r.expenseLineItem!.costCenter,
+      glAccount: r.expenseLineItem!.glAccount,
       monthlyAmounts: r.monthlyAmounts,
       proposedAmount: r.proposedAmount,
     })),
@@ -303,8 +305,11 @@ async function loadBatchDetail(batchId: string) {
 revenueBatchesRouter.get(
   "/mine",
   asyncHandler(async (req, res) => {
+    // sbu alone no longer uniquely identifies a Revenue batch - DOE's own
+    // batch upload (doeBatches.ts) also sets it now, so every list here
+    // additionally requires at least one REVENUE-category row.
     const batches = await prisma.bulkUploadBatch.findMany({
-      where: { uploadedById: req.user!.id, sbu: { not: null } },
+      where: { uploadedById: req.user!.id, sbu: { not: null }, budgetRequests: { some: { requestCategory: "REVENUE" } } },
       orderBy: { createdAt: "desc" },
     });
     res.json(await Promise.all(batches.map(batchSummary)));
@@ -321,7 +326,7 @@ const REVENUE_STAGE_ROLE_CHECK: Partial<Record<RequestStage, (req: import("expre
 revenueBatchesRouter.get(
   "/inbox",
   asyncHandler(async (req, res) => {
-    const batches = await prisma.bulkUploadBatch.findMany({ where: { sbu: { not: null } }, orderBy: { createdAt: "asc" } });
+    const batches = await prisma.bulkUploadBatch.findMany({ where: { sbu: { not: null }, budgetRequests: { some: { requestCategory: "REVENUE" } } }, orderBy: { createdAt: "asc" } });
     const summaries = await Promise.all(batches.map(batchSummary));
     const mine = summaries.filter((s) => {
       const check = REVENUE_STAGE_ROLE_CHECK[s.currentStage];
@@ -339,7 +344,7 @@ revenueBatchesRouter.get(
 revenueBatchesRouter.get(
   "/reviewed-by-me",
   asyncHandler(async (req, res) => {
-    const batches = await prisma.bulkUploadBatch.findMany({ where: { sbu: { not: null } }, orderBy: { createdAt: "desc" } });
+    const batches = await prisma.bulkUploadBatch.findMany({ where: { sbu: { not: null }, budgetRequests: { some: { requestCategory: "REVENUE" } } }, orderBy: { createdAt: "desc" } });
     const withDecisions = await Promise.all(
       batches.map(async (batch) => {
         const summary = await batchSummary(batch);

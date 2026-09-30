@@ -10,11 +10,17 @@
 // aren't all budget-cap-tracked business units.
 export const CORE_CENTRALIZED_DEPARTMENT_NAMES = [
   "Admin Services",
+  "Budget, Controls & Analysis",
   "Corporate Finance",
+  "Corporate Marketing",
   "External Affairs",
   "Human Resources",
-  "IS & IT",
+  "Information System & Information Technology",
+  "Internal Audit",
   "Legal",
   "Office of the CFO",
+  "OMD Operations",
+  "Procurement",
   "Tax",
+  "Technical Services",
 ];

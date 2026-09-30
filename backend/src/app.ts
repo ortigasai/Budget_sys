@@ -1,7 +1,7 @@
 import cors from "cors";
 import express, { NextFunction, Request, Response } from "express";
 import path from "node:path";
-import { resolveUser } from "./middleware/auth";
+import { requireAccess, resolveUser } from "./middleware/auth";
 import { authRouter } from "./routes/auth";
 import { adminRouter } from "./routes/admin";
 import { forecastRouter } from "./routes/forecast";
@@ -9,6 +9,8 @@ import { dashboardRouter } from "./routes/dashboard";
 import { budgetRequestsRouter } from "./routes/budgetRequests";
 import { bulkUploadRouter } from "./routes/bulkUpload";
 import { revenueBatchesRouter } from "./routes/revenueBatches";
+import { createSbuBatchRouter, doeBatchesRouter } from "./routes/doeBatches";
+import { RequestCategory } from "@prisma/client";
 import { additionalHeadcountRouter } from "./routes/additionalHeadcount";
 import { manpowerRouter } from "./routes/manpower";
 import { approvedBudgetRouter } from "./routes/approvedBudget";
@@ -29,7 +31,7 @@ export function createApp() {
 
   app.use("/api/auth", authRouter);
   app.use("/api/admin", adminRouter);
-  app.use("/api/forecast", forecastRouter);
+  app.use("/api/forecast", requireAccess("forecast.gae", "forecast.doe", "forecast.commission", "forecast.revenue", "forecast.cos", "forecast.da", "forecast.interest", "forecast.npc"), forecastRouter);
   app.use("/api/dashboard", dashboardRouter);
   // Mounted before budgetRequestsRouter so its more specific paths (e.g.
   // /bulk-upload/template) are never shadowed by budgetRequestsRouter's
@@ -37,6 +39,11 @@ export function createApp() {
   app.use("/api/budget-requests", bulkUploadRouter);
   app.use("/api/budget-requests", budgetRequestsRouter);
   app.use("/api/revenue-batches", revenueBatchesRouter);
+  app.use("/api/doe-batches", doeBatchesRouter);
+  app.use("/api/commission-batches", createSbuBatchRouter(RequestCategory.COMMISSION));
+  app.use("/api/cost-of-sales-batches", createSbuBatchRouter(RequestCategory.COST_OF_SALES));
+  app.use("/api/depreciation-amortization-batches", createSbuBatchRouter(RequestCategory.DEPRECIATION_AMORTIZATION));
+  app.use("/api/interest-expense-batches", createSbuBatchRouter(RequestCategory.INTEREST_EXPENSE));
   app.use("/api/additional-headcount", additionalHeadcountRouter);
   app.use("/api/manpower", manpowerRouter);
   app.use("/api/approved-budget", approvedBudgetRouter);

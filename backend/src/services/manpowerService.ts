@@ -5,7 +5,7 @@ import { HttpError } from "../httpError";
 import { sumMonthlyForecast } from "./budgetCalcService";
 import { uploadCostCenterPlanning } from "./sapMockAdapter";
 import { getFiscalCycle } from "../lib/fiscalCycle";
-import { fetchKssbV1Rows } from "../lib/sapBroker";
+import { fetchKssbV1Cache } from "../lib/pyBackendClient";
 
 async function getAsOfMonth() {
   return (await getFiscalCycle()).asOfMonth;
@@ -334,11 +334,15 @@ export async function getManpowerDashboardSummary(fiscalYear: number, companyId?
  * integration): pulls real KSSB V1 YTD actuals for every (payComponent,
  * company) pair that has both a GL Account and a Cost Center mapped (Admin
  * Console - see PayComponent.glAccount/Company.costCenter), summed across
- * periods 1..asOfMonth. Pairs missing either mapping stay at ytdActual=0
- * (same as any other unmapped GL-CC pair elsewhere in this app - skipped,
- * not fabricated) and are reported back in `unmapped`. Also auto-fills
- * Remaining Months Forecast for the roster-driven components (Basic Pay,
- * Guaranteed Bonus, Government Contributions) from the uploaded
+ * periods 1..asOfMonth - read from the Python backend's local raw cache
+ * (see pyBackendClient.ts's fetchKssbV1Cache, backend-py's
+ * sap_raw_sync_service.py) instead of calling the SAP broker directly, since
+ * KSSB V1 has only ever had this one consumer and Python already pulls it
+ * on the shared 10-min schedule. Pairs missing either mapping stay at
+ * ytdActual=0 (same as any other unmapped GL-CC pair elsewhere in this app -
+ * skipped, not fabricated) and are reported back in `unmapped`. Also
+ * auto-fills Remaining Months Forecast for the roster-driven components
+ * (Basic Pay, Guaranteed Bonus, Government Contributions) from the uploaded
  * ManpowerRosterSummary - Basic Pay/Contributions = monthly rate x
  * remaining months, Guaranteed Bonus = 2x monthly Basic Pay (flat, "2 months
  * of basic salary"). Every other component/company stays HR-Analyst-manual.
@@ -353,21 +357,20 @@ export async function runManpowerRecompute(fiscalYear: number) {
   const rosterMap = new Map(rosterSummaries.map((r) => [r.companyId, r]));
   const remainingMonths = 12 - asOfMonth;
 
-  const glAccounts = [...new Set(payComponents.filter((p) => p.glAccount).map((p) => `00${p.glAccount}`))];
-  const costCenters = [...new Set(companies.filter((c) => c.costCenter).map((c) => `00${c.costCenter}`))];
   // fiscalYear - 1, not fiscalYear: real KSSB V1 postings can only exist for
   // a year that's actually happened, not the future year still being
   // budgeted for (same "target year - 1" relationship as the Forecast
-  // GAE/DOE sync) - ManpowerEntry itself still stays keyed on fiscalYear.
-  const sapRows = glAccounts.length > 0 && costCenters.length > 0 ? await fetchKssbV1Rows(costCenters, glAccounts, fiscalYear - 1) : [];
+  // GAE/DOE sync, and the same offset sap_raw_sync_service.py's own
+  // sync_kssb_v1_raw already applies before caching) - ManpowerEntry itself
+  // still stays keyed on fiscalYear. Python sums per (glAccount, costCenter)
+  // through asOfMonth in SQL (see sap_cache.py) rather than returning every
+  // raw posting for Node to sum here.
+  const cacheRows = await fetchKssbV1Cache(fiscalYear - 1, asOfMonth);
 
   const ytdActualByGlCc = new Map<string, number>();
-  for (const row of sapRows) {
-    if (row.PostingPeriod > asOfMonth) continue;
-    const costCenter = row.ProfitCenter.replace(/^00/, "");
-    const glAccount = row.KSTAR.replace(/^00/, "");
-    const key = `${glAccount}:${costCenter}`;
-    ytdActualByGlCc.set(key, (ytdActualByGlCc.get(key) ?? 0) + (Number(row.Actual) || 0));
+  for (const row of cacheRows) {
+    const key = `${row.glAccount}:${row.costCenter}`;
+    ytdActualByGlCc.set(key, (ytdActualByGlCc.get(key) ?? 0) + row.amount);
   }
 
   const unmapped: { payComponentId: string; payComponentName: string; companyId: string; companyCode: string }[] = [];

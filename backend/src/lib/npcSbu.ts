@@ -56,3 +56,16 @@ export const NPC_LOCATION_OPTIONS: { value: NpcLocation; label: string }[] = [
   { value: "GH", label: "GH" },
   { value: "CV", label: "CV" },
 ];
+
+// The User Management workbook's own labels for the NPC group's scope -> the
+// codes above (mirrors backend-py/app/npc_sbu.py's NPC_GROUP_SCOPE_TO_SBU).
+export const NPC_GROUP_SCOPE_TO_SBU: Record<string, string> = {
+  Malls: "MALLS",
+  Offices: "OFFICES",
+  Estates: "ESTATES",
+  Residential: "RESIDENTIAL",
+  Leisure: "LEISURE",
+  "Corporate - IT": "CORPORATE_IT",
+  "Corporate - HR": "CORPORATE_HR",
+  "Corporate - Admin": "CORPORATE_ADMIN",
+};

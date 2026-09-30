@@ -14,7 +14,8 @@ import { buildNpcForecastTemplateWorkbook, getNpcForecastRows, parseNpcForecastT
 import { hasRole } from "../middleware/auth";
 import { CORE_CENTRALIZED_DEPARTMENT_NAMES } from "../lib/coreDepartments";
 import { getFiscalCycle } from "../lib/fiscalCycle";
-import { NPC_SBU_VALUES } from "../lib/npcSbu";
+import { NPC_GROUP_SCOPE_TO_SBU, NPC_SBU_VALUES } from "../lib/npcSbu";
+import { forecastDepartmentIdsForUser } from "../lib/forecastDepartments";
 
 export const forecastRouter = Router();
 
@@ -25,6 +26,16 @@ forecastRouter.use(requireAuth);
 // also gates the Home dashboard's Cap & Pool cards (see lib/coreDepartments.ts).
 // Every other centralized department (there are dozens more, imported from
 // the real Employee List roster) has no forecast feature.
+// The subset of eligible departments THIS user may view/enter (own
+// department or one named by their CD group membership) - the Forecast page's
+// picker; the Budget Officer sees all of them regardless.
+forecastRouter.get(
+  "/my-departments",
+  asyncHandler(async (req, res) => {
+    res.json(await forecastDepartmentIdsForUser(req.user!.id, req.user!.departmentId));
+  })
+);
+
 forecastRouter.get(
   "/eligible-departments",
   asyncHandler(async (_req, res) => {
@@ -65,7 +76,7 @@ forecastRouter.get(
 // backend-py's own _resolve_npc_sbu_scope, mirrored here). Budget Officer
 // may view/edit any of the 8 NPC SBUs; everyone else is pinned to their own
 // department's Department.sbu.
-async function resolveNpcSbuScope(user: { departmentId: string | null; roles: { roleType: RoleType }[] }, requestedSbu: string | undefined): Promise<string> {
+async function resolveNpcSbuScope(user: { id: string; departmentId: string | null; roles: { roleType: RoleType }[] }, requestedSbu: string | undefined): Promise<string> {
   const isBudgetOfficer = user.roles.some((r) => r.roleType === RoleType.BUDGET_OFFICER);
   if (isBudgetOfficer) {
     if (!requestedSbu || !(NPC_SBU_VALUES as readonly string[]).includes(requestedSbu)) {
@@ -73,9 +84,16 @@ async function resolveNpcSbuScope(user: { departmentId: string | null; roles: { 
     }
     return requestedSbu;
   }
+  // NPC-group memberships (User Management workbook) take precedence over the
+  // department's SBU - same rule as backend-py's _my_npc_sbus.
+  const memberships = await prisma.userGroupMembership.findMany({ where: { userId: user.id, group: "NPC" } });
+  const mine = memberships.map((m) => NPC_GROUP_SCOPE_TO_SBU[m.scope]).filter((v): v is string => Boolean(v));
+  if (mine.length > 0) {
+    return requestedSbu && mine.includes(requestedSbu) ? requestedSbu : mine[0];
+  }
   const department = user.departmentId ? await prisma.department.findUnique({ where: { id: user.departmentId } }) : null;
   if (!department?.sbu) {
-    throw new HttpError(403, "Your department has no NPC SBU assigned - ask the Budget Officer to set one in the Admin Console.");
+    throw new HttpError(403, "You have no NPC SBU assigned - ask the Budget Officer to add you to an NPC SBU group or set your department's SBU in the Admin Console.");
   }
   return department.sbu;
 }
@@ -135,10 +153,76 @@ forecastRouter.get(
   })
 );
 
-async function canViewDepartment(user: { departmentId: string | null; roles: { roleType: RoleType }[] }, departmentId: string) {
+async function canViewDepartment(user: { id: string; departmentId: string | null; roles: { roleType: RoleType }[] }, departmentId: string) {
   const dept = await prisma.department.findUnique({ where: { id: departmentId }, select: { name: true } });
   if (!dept || !CORE_CENTRALIZED_DEPARTMENT_NAMES.includes(dept.name)) return false;
-  return user.departmentId === departmentId || user.roles.some((r) => r.roleType === RoleType.BUDGET_OFFICER);
+  if (user.roles.some((r) => r.roleType === RoleType.BUDGET_OFFICER)) return true;
+  return (await forecastDepartmentIdsForUser(user.id, user.departmentId)).includes(departmentId);
+}
+
+interface ForecastRowLike {
+  id: string;
+  expenseCategory: string | null;
+  glDescription: string;
+  budgetCode: string | null;
+  requestCategory: RequestCategory;
+  costCenter: string;
+  glAccount: string;
+  approvedBudget2026: number;
+  ytdActuals2026: number;
+  availableBudget2026: number;
+  remainingMonthsForecast: number;
+  totalActualForecast: number;
+  remainingBudget2026: number;
+  monthlyRemainingForecast2026: unknown;
+  forecastCompletedAt: Date | null;
+}
+
+// CC-GL is a SAP-matching detail, not something a reviewer needs to see
+// line by line - the same Expense Category + Expense Line Item can span
+// several catalog rows (one per company sharing that name, e.g.
+// "Meetings"; see historicalActualsService.ts's own resolveCatalogMatch
+// comment), which used to show up as several near-identical rows on the
+// Forecast table. This merges them into one, summing every numeric column
+// and each remaining month; each underlying row's own CC/GL/Budget Code/
+// amounts survive in `breakdown`, for a details popup rather than the main
+// table. A group with exactly one underlying row keeps that row's own id
+// (so the existing PATCH /forecast/entries/:id inline editing keeps working
+// unchanged for the common case); a merged group's id is synthetic and not
+// PATCH-able - editing a merged group happens per underlying row, in the
+// popup, same as before merging existed.
+function groupForecastRows<T extends ForecastRowLike>(rows: T[]): (T & { breakdown: T[] })[] {
+  const groups = new Map<string, T[]>();
+  for (const r of rows) {
+    const key = `${r.expenseCategory ?? ""}\u0000${r.glDescription}`;
+    const arr = groups.get(key) ?? [];
+    arr.push(r);
+    groups.set(key, arr);
+  }
+  return [...groups.values()].map((group) => {
+    if (group.length === 1) return { ...group[0], breakdown: group };
+    const monthlyRemainingForecast2026: Record<string, number> = {};
+    for (const g of group) {
+      for (const [month, value] of Object.entries((g.monthlyRemainingForecast2026 as Record<string, number> | null) ?? {})) {
+        monthlyRemainingForecast2026[month] = (monthlyRemainingForecast2026[month] ?? 0) + value;
+      }
+    }
+    const budgetCodes = [...new Set(group.map((g) => g.budgetCode).filter((c): c is string => Boolean(c)))];
+    return {
+      ...group[0],
+      id: `group:${group[0].expenseCategory ?? ""}:${group[0].glDescription}`,
+      budgetCode: budgetCodes.length === 1 ? budgetCodes[0] : null,
+      approvedBudget2026: group.reduce((sum, g) => sum + g.approvedBudget2026, 0),
+      ytdActuals2026: group.reduce((sum, g) => sum + g.ytdActuals2026, 0),
+      availableBudget2026: group.reduce((sum, g) => sum + g.availableBudget2026, 0),
+      remainingMonthsForecast: group.reduce((sum, g) => sum + g.remainingMonthsForecast, 0),
+      totalActualForecast: group.reduce((sum, g) => sum + g.totalActualForecast, 0),
+      remainingBudget2026: group.reduce((sum, g) => sum + g.remainingBudget2026, 0),
+      monthlyRemainingForecast2026,
+      forecastCompletedAt: group.every((g) => g.forecastCompletedAt) ? group[0].forecastCompletedAt : null,
+      breakdown: group,
+    };
+  });
 }
 
 // FR-1.10 forecast view: 2025 Actuals, 2026 Approved Budget, 2026 YTD
@@ -146,6 +230,14 @@ async function canViewDepartment(user: { departmentId: string | null; roles: { r
 // Budget, per CC-GL, for the given department. Notes item 7(4): a
 // centralized department cannot view another centralized department's
 // forecast — only the Budget Officer can view across departments.
+//
+// Row-level scoping: a Centralized Dept Requestor/Reviewer or Centralized
+// Dept Head only sees the line items "Budgeting System_Expense Line Items"
+// columns J/K assign to THEM specifically (ExpenseLineItem.
+// centralizedReviewerId/centralizedHeadId - see importCentralizedReviewers.ts),
+// not every line item in their department. The Budget Officer is exempt -
+// same full-oversight exception every other permission check in this app
+// already makes for that role.
 forecastRouter.get(
   "/:departmentId",
   asyncHandler(async (req, res) => {
@@ -154,8 +246,15 @@ forecastRouter.get(
     }
 
     const cycle = await getFiscalCycle();
+    const isBudgetOfficer = hasRole(req.user, RoleType.BUDGET_OFFICER);
     const rows = await prisma.historicalActuals.findMany({
-      where: { departmentId: req.params.departmentId, fiscalYear: cycle.targetCalendarYear },
+      where: {
+        departmentId: req.params.departmentId,
+        fiscalYear: cycle.targetCalendarYear,
+        ...(isBudgetOfficer
+          ? {}
+          : { expenseLineItem: { is: { OR: [{ centralizedReviewerId: req.user!.id }, { centralizedHeadId: req.user!.id }] } } }),
+      },
       orderBy: { glDescription: "asc" },
     });
     const asOfMonth = cycle.asOfMonth;
@@ -173,7 +272,7 @@ forecastRouter.get(
       return { ...r, remainingMonthsForecast, availableBudget2026, totalActualForecast, remainingBudget2026 };
     });
 
-    res.json({ asOfMonth, rows: withComputedColumns });
+    res.json({ asOfMonth, rows: groupForecastRows(withComputedColumns) });
   })
 );
 
@@ -229,9 +328,18 @@ forecastRouter.patch(
     }
 
     const { month, value } = forecastEntrySchema.parse(req.body);
-    const { asOfMonth } = await getFiscalCycle();
-    if (month <= asOfMonth) {
-      throw new HttpError(400, `Month ${month} is already in Actuals (as-of month is ${asOfMonth}).`);
+    const cycle = await getFiscalCycle();
+    // 2026's forecast is Budget-Officer-only (bulk Upload Completed
+    // Template only) - every other Centralized Dept Requestor/Reviewer/
+    // Head's own manual per-cell entry is disabled for this cycle. This is
+    // keyed off forecastYear (not hardcoded), so it lifts on its own once
+    // the cycle rolls to forecastYear 2027 - the normal collaborative
+    // process resumes there without needing another code change.
+    if (cycle.forecastYear === 2026 && !hasRole(req.user, RoleType.BUDGET_OFFICER)) {
+      throw new HttpError(403, "2026's Remaining Months Forecast is entered by the Budget Officer only, via Upload Completed Template.");
+    }
+    if (month <= cycle.asOfMonth) {
+      throw new HttpError(400, `Month ${month} is already in Actuals (as-of month is ${cycle.asOfMonth}).`);
     }
 
     const current = (row.monthlyRemainingForecast2026 as Record<string, number>) ?? {};
@@ -299,8 +407,14 @@ forecastRouter.post(
     if (!(await canViewDepartment(req.user!, req.params.departmentId))) {
       throw new HttpError(403, "Only the owning department or the Budget Officer can submit this forecast.");
     }
-    const { targetCalendarYear } = await getFiscalCycle();
-    const updated = await submitForecast(req.params.departmentId, targetCalendarYear, req.user!.id);
+    const cycle = await getFiscalCycle();
+    // Same 2026-is-Budget-Officer-only restriction as PATCH /entries/:id
+    // above - nobody else submits a 2026 forecast for review either, since
+    // there's nothing for them to have entered in the first place.
+    if (cycle.forecastYear === 2026 && !hasRole(req.user, RoleType.BUDGET_OFFICER)) {
+      throw new HttpError(403, "2026's Remaining Months Forecast is entered by the Budget Officer only, via Upload Completed Template.");
+    }
+    const updated = await submitForecast(req.params.departmentId, cycle.targetCalendarYear, req.user!.id);
     res.json(updated);
   })
 );

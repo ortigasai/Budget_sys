@@ -1,15 +1,16 @@
 import { useSearchParams } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
+import { SBU_BATCH_TYPES, SbuTypeSwitch } from "../components/SbuTypeSwitch";
 import { StandardRequestTab } from "./newRequest/StandardRequestTab";
 import { NpcRequestTab } from "./newRequest/NpcRequestTab";
 import { RevenueRequestTab } from "./newRequest/RevenueRequestTab";
+import { SbuBatchUploadTab } from "./newRequest/SbuBatchUploadTab";
 import { AdditionalHeadcountTab } from "./newRequest/AdditionalHeadcountTab";
 
-type RequestTab = "standard" | "doe" | "headcount" | "npc" | "revenue";
+type RequestTab = "standard" | "headcount" | "npc" | "revenue";
 
 const SUBTITLES: Record<RequestTab, string> = {
   standard: "Create a General & Administrative Expenses (GAE) request.",
-  doe: "Create a Direct Operating Expenses (DOE) request.",
   headcount: "Request additional manpower.",
   npc: "Request non-project capital expenditure.",
   revenue: "Submit a revenue request.",
@@ -34,25 +35,24 @@ export function NewRequestPage() {
   // picker below instead of silently defaulting to GAE, per Amendment
   // request. GAE is only shown once explicitly chosen (?tab=standard, same
   // as every other category).
-  const tab: RequestTab | null =
-    tabParam === "standard" || tabParam === "doe" || tabParam === "headcount" || tabParam === "npc" || tabParam === "revenue"
-      ? tabParam
-      : null;
+  const tab: RequestTab | null = tabParam === "standard" || tabParam === "headcount" || tabParam === "npc" || tabParam === "revenue" ? tabParam : null;
 
-  // StandardRequestTab (GAE/DOE), NpcRequestTab, RevenueRequestTab, and
+  // StandardRequestTab (GAE), NpcRequestTab, RevenueRequestTab, and
   // AdditionalHeadcountTab all own their PageHeader now, so their submit
   // button can live in the header's actions slot instead of the bottom of
   // the form - the shared header here only covers the states that don't
   // have one of their own (i.e. no category picked yet).
-  const usesOwnHeader = tab !== null;
+  const batchType = SBU_BATCH_TYPES.find((t) => t.tab === tabParam);
+  const usesOwnHeader = tab !== null || !!batchType;
 
   return (
     <div className="space-y-4">
       {!usesOwnHeader && <PageHeader subtitle="Choose a request type to get started." />}
+      {(tab === "revenue" || batchType) && <SbuTypeSwitch mode="request" current={tabParam} />}
 
-      {tab === null && <NoCategorySelected />}
+      {batchType && <SbuBatchUploadTab category={batchType.category} apiPath={batchType.apiPath} subtitle={`Submit a ${batchType.label} request.`} />}
+      {tab === null && !batchType && <NoCategorySelected />}
       {tab === "standard" && <StandardRequestTab requestCategory="GAE" subtitle={SUBTITLES.standard} />}
-      {tab === "doe" && <StandardRequestTab requestCategory="DOE" subtitle={SUBTITLES.doe} />}
       {tab === "headcount" && <AdditionalHeadcountTab subtitle={SUBTITLES.headcount} />}
       {tab === "npc" && <NpcRequestTab subtitle={SUBTITLES.npc} />}
       {tab === "revenue" && <RevenueRequestTab subtitle={SUBTITLES.revenue} />}

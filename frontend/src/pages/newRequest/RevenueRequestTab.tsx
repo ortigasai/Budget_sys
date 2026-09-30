@@ -1,6 +1,9 @@
 import { useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, SBU_OPTIONS, type Company, type RevenueBatchDetail, type RevenueBatchSummary, type Sbu } from "../../api/client";
+import { useAuth } from "../../context/AuthContext";
+import { sfSbus } from "../../lib/groupScope";
+import { api, SBU_OPTIONS, type Company, type RevenueBatchDetail, type Sbu } from "../../api/client";
 import { PageHeader } from "../../components/PageHeader";
 import { SectionLabel } from "../../components/TabBar";
 import { useFiscalYear } from "../../lib/fiscalCycle";
@@ -14,7 +17,10 @@ interface BoardBudgetRow {
   setAt: string;
 }
 
-const STAGE_LABELS: Record<string, string> = {
+// Exported so MyRequestsPage can render the same labels for the revenue
+// rows it now shows (the "My Revenue Requests" list here was removed in
+// favor of that single consolidated list).
+export const STAGE_LABELS: Record<string, string> = {
   DRAFT: "Draft",
   REVENUE_BU_FINANCE_OFFICER_REVIEW: "BU Finance Officer Review",
   REVENUE_BU_FINANCE_HEAD_REVIEW: "BU Finance Head Review",
@@ -38,9 +44,17 @@ export function RevenueRequestTab({ subtitle }: { subtitle: string }) {
   const queryClient = useQueryClient();
   const { targetYear: FISCAL_YEAR } = useFiscalYear();
   const [sbu, setSbu] = useState<Sbu | "">("");
+  const { currentUser: authUser, hasRole: authHasRole } = useAuth();
+  const mySfSbus = sfSbus(authUser, authHasRole("BUDGET_OFFICER"));
   const [companyId, setCompanyId] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [activeBatchId, setActiveBatchId] = useState<string | null>(null);
+  // "My Revenue Requests" (the standalone list this tab used to render) was
+  // removed in favor of showing revenue requests under the single "My
+  // Requests" page - its "View" link opens the request straight into this
+  // tab's own detail view via ?batch=<id>, same as this tab already switches
+  // into that view after a fresh upload.
+  const [searchParams] = useSearchParams();
+  const [activeBatchId, setActiveBatchId] = useState<string | null>(searchParams.get("batch"));
 
   const { data: companies = [] } = useQuery({
     queryKey: ["companies"],
@@ -51,11 +65,6 @@ export function RevenueRequestTab({ subtitle }: { subtitle: string }) {
     queryFn: async () => (await api.get<{ history: BoardBudgetRow[] }>(`/admin/board-approved-budget?fiscalYear=${FISCAL_YEAR}`)).data,
   });
   const boardAmountForSbu = sbu ? boardBudget?.history.find((h) => h.requestCategory === "REVENUE" && h.sbu === sbu)?.amount : undefined;
-
-  const { data: myBatches = [] } = useQuery({
-    queryKey: ["revenue-batches", "mine"],
-    queryFn: async () => (await api.get<RevenueBatchSummary[]>("/revenue-batches/mine")).data,
-  });
 
   const { data: activeBatch, refetch: refetchActive } = useQuery({
     queryKey: ["revenue-batches", activeBatchId],
@@ -129,7 +138,7 @@ export function RevenueRequestTab({ subtitle }: { subtitle: string }) {
               </label>
               <select className="mt-1 w-full rounded border border-slate-300 px-2 py-1.5 text-sm" value={sbu} onChange={(e) => setSbu(e.target.value as Sbu)}>
                 <option value="">— Select —</option>
-                {SBU_OPTIONS.map((o) => (
+                {SBU_OPTIONS.filter((o) => !mySfSbus || mySfSbus.includes(o.value)).map((o) => (
                   <option key={o.value} value={o.value}>
                     {o.label}
                   </option>
@@ -253,47 +262,6 @@ export function RevenueRequestTab({ subtitle }: { subtitle: string }) {
           )}
         </div>
       )}
-
-      <div className="rounded-lg border border-slate-200 bg-white shadow-sm">
-        <div className="border-b border-slate-100 px-4 py-2 text-xs font-semibold tracking-wide text-emerald-800">My Revenue Requests</div>
-        {myBatches.length === 0 ? (
-          <div className="px-4 py-6 text-center text-sm text-slate-400">None yet.</div>
-        ) : (
-          <table className="w-full text-sm">
-            <thead className="bg-slate-50 text-left text-xs text-slate-500">
-              <tr>
-                <th className="px-3 py-2">SBU</th>
-                <th className="px-3 py-2">Company</th>
-                <th className="px-3 py-2 text-right">Total</th>
-                <th className="px-3 py-2">Stage</th>
-                <th className="px-3 py-2" />
-              </tr>
-            </thead>
-            <tbody>
-              {myBatches.map((b, i) => (
-                <tr key={b.id} className={`border-t border-slate-100 ${i % 2 === 1 ? "bg-slate-50/60" : ""}`}>
-                  <td className="px-3 py-2">{b.sbu}</td>
-                  <td className="px-3 py-2">{b.company?.name}</td>
-                  <td className="px-3 py-2 text-right">{peso(b.totalAmount)}</td>
-                  <td className="px-3 py-2">{STAGE_LABELS[b.currentStage] ?? b.currentStage}</td>
-                  <td className="px-3 py-2">
-                    <div className="flex items-center gap-2">
-                      <button onClick={() => setActiveBatchId(b.id)} className="text-xs font-medium text-emerald-700 hover:underline">
-                        View
-                      </button>
-                      {b.currentStage === "DRAFT" && (
-                        <button onClick={() => cancelMutation.mutate(b.id)} className="text-xs font-medium text-red-600 hover:underline">
-                          Cancel
-                        </button>
-                      )}
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </div>
     </div>
   );
 }

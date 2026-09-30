@@ -8,6 +8,7 @@ import { Prisma, RequestCategory, RequestStage, RoleType, Sbu } from "@prisma/cl
 import { prisma } from "../prisma";
 import { asyncHandler } from "../asyncHandler";
 import { hasRole, requireAuth, requireRole } from "../middleware/auth";
+import { assertNpcSbu } from "../lib/groupScope";
 import { HttpError } from "../httpError";
 import { getFiscalCycle } from "../lib/fiscalCycle";
 import { getFinalizedBudgetReport } from "../services/finalizedBudgetReportService";
@@ -17,16 +18,15 @@ import { resolveBudgetRequestPendingReviewers } from "../lib/pendingReviewers";
 import {
   applyBudgetCut,
   assertCycleOpen,
-  bcaHeadDecision,
   cancelRequest,
-  centralizedHeadDecision,
-  centralizedL1Decision,
-  cfoDecision,
-  deptHeadDecision,
+  decideRequest,
   finalizeAtStep5,
+  reassignRequest,
   returnAtStep5,
   submitRequest,
+  userCanAct,
 } from "../services/workflowService";
+import { ACTIVE_STAGES, nextStageAfter, previousStageBefore } from "../services/approvalChain";
 
 export const budgetRequestsRouter = Router();
 
@@ -73,6 +73,10 @@ const createSchema = z.object({
   projectEndDate: z.coerce.date().optional(),
   costCenter: z.string().min(1).optional(),
   amount: z.number().positive().optional(), // VAT exclusive
+  // Approval Workflow: picked from the employee list on the submission form.
+  departmentHeadId: z.string().min(1).optional(),
+  sbuHeadId: z.string().min(1).optional(),
+  centralizedHeadId: z.string().min(1).optional(),
 });
 
 budgetRequestsRouter.post(
@@ -97,6 +101,7 @@ budgetRequestsRouter.post(
     // justification collected from the requestor.
     if (requestCategory === RequestCategory.NPC) {
       if (!body.npcSbu) throw new HttpError(400, "Select an SBU for this Non-Project Capex request.");
+      await assertNpcSbu(req.user!, body.npcSbu);
       if (!body.npcLocation) throw new HttpError(400, "Select a Location for this Non-Project Capex request.");
       if (!body.projectTitle) throw new HttpError(400, "Enter a Project Title.");
       if (!body.projectStartDate || !body.projectEndDate) throw new HttpError(400, "Enter both a Project Start and Project End date.");
@@ -137,6 +142,8 @@ budgetRequestsRouter.post(
           projectStartDate: body.projectStartDate,
           projectEndDate: body.projectEndDate,
           budgetCode,
+          departmentHeadId: body.departmentHeadId,
+          sbuHeadId: body.sbuHeadId,
           createdById: req.user!.id,
         },
         include: DETAIL_INCLUDE,
@@ -201,6 +208,8 @@ budgetRequestsRouter.post(
         requestCategory,
         sbu: requestCategory === RequestCategory.DOE ? body.sbu : undefined,
         budgetCode,
+        departmentHeadId: body.departmentHeadId,
+        centralizedHeadId: body.centralizedHeadId,
         createdById: req.user!.id,
       },
       include: DETAIL_INCLUDE,
@@ -232,6 +241,9 @@ budgetRequestsRouter.patch(
       data.proposedAmount = body.monthlyAmounts.reduce((a, b) => a + b, 0);
     }
     if (body.expenseLineItemId !== undefined) data.expenseLineItem = { connect: { id: body.expenseLineItemId } };
+    if (body.departmentHeadId !== undefined) data.departmentHeadId = body.departmentHeadId;
+    if (body.sbuHeadId !== undefined) data.sbuHeadId = body.sbuHeadId;
+    if (body.centralizedHeadId !== undefined) data.centralizedHeadId = body.centralizedHeadId;
 
     const updated = await prisma.budgetRequest.update({
       where: { id: req.params.id },
@@ -270,6 +282,12 @@ budgetRequestsRouter.post(
     if (request.createdById !== req.user!.id) {
       throw new HttpError(403, "You can only submit your own requests.");
     }
+    // The approver drop-downs can be filled in at submission time (drafts made
+    // by bulk upload never had them).
+    const picks = z.object({ departmentHeadId: z.string().min(1).optional(), sbuHeadId: z.string().min(1).optional(), centralizedHeadId: z.string().min(1).optional() }).parse(req.body ?? {});
+    if (picks.departmentHeadId || picks.sbuHeadId || picks.centralizedHeadId) {
+      await prisma.budgetRequest.update({ where: { id: req.params.id }, data: picks });
+    }
     const updated = await submitRequest(req.params.id);
     res.json(updated);
   })
@@ -280,7 +298,7 @@ budgetRequestsRouter.post(
 budgetRequestsRouter.post(
   "/:id/cancel",
   asyncHandler(async (req, res) => {
-    const updated = await cancelRequest(req.params.id, req.user!.id);
+    const updated = await cancelRequest(req.params.id, req.user!, typeof req.body?.comment === "string" ? req.body.comment : undefined);
     res.json(updated);
   })
 );
@@ -301,52 +319,24 @@ budgetRequestsRouter.get(
   })
 );
 
-const STAGE_BY_ROLE: Partial<Record<RoleType, RequestStage>> = {
-  [RoleType.DEPARTMENT_HEAD]: RequestStage.DEPT_HEAD_REVIEW,
-  [RoleType.CFO]: RequestStage.CFO_APPROVAL,
-  [RoleType.CENTRALIZED_FIRST_LEVEL_REVIEWER]: RequestStage.CENTRALIZED_L1_REVIEW,
-  [RoleType.CENTRALIZED_DEPARTMENT_HEAD]: RequestStage.CENTRALIZED_HEAD_REVIEW,
-  [RoleType.BCA_HEAD]: RequestStage.BCA_HEAD_REVIEW,
-  [RoleType.BUDGET_OFFICER]: RequestStage.BUDGET_OFFICER_REVIEW,
-};
-
-// Requests waiting on the current user's action, scoped to the
-// department(s) where they hold the relevant role. Department Heads are
-// scoped by the request's *originating* department; the centralized roles
-// (L1 reviewer / centralized head / BC&A) are scoped by the expense line
-// item's *owning* department, per FR-1.18.
+// Requests waiting on the current user's action: every request sitting at an
+// active stage whose current-stage rule (a dropdown pick / reassignment, or the
+// stage's role scoped to the request's department / SBU) names this user - see
+// services/approvalChain.ts's canActOnStage. The Budget Officer's final
+// Finalize & Upload stage is worked from Budget Finalization, not here.
 budgetRequestsRouter.get(
   "/inbox",
   asyncHandler(async (req, res) => {
-    const clauses: Prisma.BudgetRequestWhereInput[] = [];
-
-    for (const role of req.user!.roles) {
-      const stage = STAGE_BY_ROLE[role.roleType];
-      if (!stage) continue;
-
-      if (role.roleType === RoleType.DEPARTMENT_HEAD) {
-        clauses.push({ currentStage: stage, departmentId: role.departmentId! });
-      } else if (
-        role.roleType === RoleType.CENTRALIZED_FIRST_LEVEL_REVIEWER ||
-        role.roleType === RoleType.CENTRALIZED_DEPARTMENT_HEAD
-      ) {
-        clauses.push({ currentStage: stage, expenseLineItem: { ownerDepartmentId: role.departmentId! } });
-      } else {
-        clauses.push({ currentStage: stage });
-      }
-    }
-
-    if (clauses.length === 0) {
-      res.json([]);
-      return;
-    }
-
-    const requests = await prisma.budgetRequest.findMany({
-      where: { OR: clauses },
+    const candidates = await prisma.budgetRequest.findMany({
+      where: { currentStage: { in: ACTIVE_STAGES.filter((s) => s !== RequestStage.BUDGET_OFFICER_REVIEW) } },
       include: DETAIL_INCLUDE,
       orderBy: { updatedAt: "asc" },
     });
-    res.json(requests);
+    res.json(
+      candidates
+        .filter((r) => userCanAct(req.user!, r))
+        .map((r) => ({ ...r, canAct: true, nextStage: nextStageAfter(r, r.currentStage), previousStage: previousStageBefore(r, r.currentStage) }))
+    );
   })
 );
 
@@ -402,7 +392,7 @@ budgetRequestsRouter.get(
         budgetCode: r.budgetCode,
         npcHeadCode: r.npcHeadCode,
         npcSbu: r.npcSbu,
-        expenseLineItemName: r.expenseLineItem.name,
+        expenseLineItemName: r.expenseLineItem!.name,
       })),
     );
   })
@@ -471,86 +461,29 @@ budgetRequestsRouter.get(
       where: { id: req.params.id },
       include: DETAIL_INCLUDE,
     });
-    res.json(request);
+    res.json({ ...request, canAct: userCanAct(req.user!, request) });
   })
 );
 
 // ---- Workflow decisions ----
+// One decision route for every approval stage (see services/approvalChain.ts):
+// proceed to the next stage, return to the previous stage, or return to the
+// requestor - plus reassign the current stage to anyone.
 budgetRequestsRouter.post(
-  "/:id/decisions/dept-head",
-  requireRole(RoleType.DEPARTMENT_HEAD),
+  "/:id/decision",
   asyncHandler(async (req, res) => {
-    const request = await prisma.budgetRequest.findUniqueOrThrow({ where: { id: req.params.id } });
-    if (!hasRole(req.user, RoleType.DEPARTMENT_HEAD, request.departmentId)) {
-      throw new HttpError(403, "You are not the Department Head for this request's originating department.");
-    }
     const { decision, comment } = z
-      .object({ decision: z.enum(["APPROVE", "RETURN"]), comment: z.string().optional() })
+      .object({ decision: z.enum(["APPROVE", "RETURN_PREVIOUS", "RETURN_REQUESTOR"]), comment: z.string().optional() })
       .parse(req.body);
-    const updated = await deptHeadDecision(req.params.id, req.user!.id, decision, comment);
-    res.json(updated);
+    res.json(await decideRequest(req.params.id, req.user!, decision, comment));
   })
 );
 
 budgetRequestsRouter.post(
-  "/:id/decisions/centralized-l1",
-  requireRole(RoleType.CENTRALIZED_FIRST_LEVEL_REVIEWER),
+  "/:id/reassign",
   asyncHandler(async (req, res) => {
-    const request = await prisma.budgetRequest.findUniqueOrThrow({
-      where: { id: req.params.id },
-      include: { expenseLineItem: true },
-    });
-    if (!hasRole(req.user, RoleType.CENTRALIZED_FIRST_LEVEL_REVIEWER, request.expenseLineItem.ownerDepartmentId)) {
-      throw new HttpError(403, "You are not the First-Level Reviewer for this expense line item's owning department.");
-    }
-    const { decision, comment } = z
-      .object({ decision: z.enum(["APPROVE", "REJECT"]), comment: z.string().optional() })
-      .parse(req.body);
-    const updated = await centralizedL1Decision(req.params.id, req.user!.id, decision, comment);
-    res.json(updated);
-  })
-);
-
-budgetRequestsRouter.post(
-  "/:id/decisions/centralized-head",
-  requireRole(RoleType.CENTRALIZED_DEPARTMENT_HEAD),
-  asyncHandler(async (req, res) => {
-    const request = await prisma.budgetRequest.findUniqueOrThrow({
-      where: { id: req.params.id },
-      include: { expenseLineItem: true },
-    });
-    if (!hasRole(req.user, RoleType.CENTRALIZED_DEPARTMENT_HEAD, request.expenseLineItem.ownerDepartmentId)) {
-      throw new HttpError(403, "You are not the Centralized Department Head for this expense line item's owning department.");
-    }
-    const { decision, comment } = z
-      .object({ decision: z.enum(["APPROVE", "RETURN"]), comment: z.string().optional() })
-      .parse(req.body);
-    const updated = await centralizedHeadDecision(req.params.id, req.user!.id, decision, comment);
-    res.json(updated);
-  })
-);
-
-budgetRequestsRouter.post(
-  "/:id/decisions/cfo",
-  requireRole(RoleType.CFO),
-  asyncHandler(async (req, res) => {
-    const { decision, comment } = z
-      .object({ decision: z.enum(["APPROVE", "RETURN"]), comment: z.string().optional() })
-      .parse(req.body);
-    const updated = await cfoDecision(req.params.id, req.user!.id, decision, comment);
-    res.json(updated);
-  })
-);
-
-budgetRequestsRouter.post(
-  "/:id/decisions/bca-head",
-  requireRole(RoleType.BCA_HEAD),
-  asyncHandler(async (req, res) => {
-    const { decision, comment } = z
-      .object({ decision: z.enum(["APPROVE", "RETURN"]), comment: z.string().optional() })
-      .parse(req.body);
-    const updated = await bcaHeadDecision(req.params.id, req.user!.id, decision, comment);
-    res.json(updated);
+    const { userId, comment } = z.object({ userId: z.string().min(1), comment: z.string().optional() }).parse(req.body);
+    res.json(await reassignRequest(req.params.id, req.user!, userId, comment));
   })
 );
 
@@ -575,6 +508,10 @@ budgetRequestsRouter.post(
           "CENTRALIZED_L1_REVIEW",
           "CENTRALIZED_HEAD_REVIEW",
           "BCA_HEAD_REVIEW",
+          "BUDGET_OFFICER_VALIDATION",
+          "SF_VALIDATION",
+          "SF_HEAD_REVIEW",
+          "SBU_HEAD_REVIEW",
         ]),
         reasonCodeId: z.string(),
       })

@@ -47,7 +47,7 @@ def require_report_access(
     rather than folded into the RoleType system, since this is "can view
     this one module," not a role with its own approval powers.
     """
-    if user.has_role("BUDGET_OFFICER"):
+    if user.has_role("BUDGET_OFFICER") or (user.access is not None and user.can("reports", False)):
         return user
     grant = session.exec(select(ReportAccessGrant).where(ReportAccessGrant.user_id == user.id)).first()
     if grant is None:
@@ -61,7 +61,7 @@ class MyAccessOut(BaseModel):
 
 @router.get("/my-access", response_model=MyAccessOut)
 def my_access(user: AuthedUser = Depends(get_current_user), session: Session = Depends(get_session)):
-    if user.has_role("BUDGET_OFFICER"):
+    if user.has_role("BUDGET_OFFICER") or (user.access is not None and user.can("reports", False)):
         return MyAccessOut(hasAccess=True)
     grant = session.exec(select(ReportAccessGrant).where(ReportAccessGrant.user_id == user.id)).first()
     return MyAccessOut(hasAccess=grant is not None)

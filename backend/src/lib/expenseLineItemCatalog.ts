@@ -40,6 +40,14 @@ export interface ParsedExpenseLineItemRow {
   // Notes_7: column L, "Visible only to (Department)" — null when the row
   // has no visibility restriction (selectable by any Requestor).
   visibleToDepartmentName: string | null;
+  // Columns J/K ("Centralized Dept Requestor/Reviewer"/"Centralized Dept
+  // Head") - raw employee name text, resolved to a User.id by the caller
+  // (this lib has no DB access). A cell can list more than one name,
+  // comma-separated (co-heads) - callers should resolve the first name that
+  // matches a real employee, same convention prisma/importCentralizedReviewers.ts
+  // already uses.
+  centralizedReviewerName: string | null;
+  centralizedHeadName: string | null;
   // Columns A/C - the CD abbreviation (e.g. "AS") and this row's per-CD
   // sequence number. The file's own column D ("Budget Code") also bakes in
   // a YY, but that's frozen to whichever year the file was last edited in
@@ -214,8 +222,11 @@ function cellNumber(cell: ExcelJS.Cell): number | null {
 }
 
 function parseWorkbook(workbook: ExcelJS.Workbook): ParsedExpenseLineItemRow[] {
-  const sheet = workbook.getWorksheet("Sheet1");
-  if (!sheet) throw new Error(`Sheet1 not found in workbook`);
+  // Same "GAE" tab name (falling back to the first sheet) that
+  // prisma/importCentralizedReviewers.ts already uses for this same file -
+  // older reference copies used "Sheet1" instead, hence the fallback.
+  const sheet = workbook.getWorksheet("GAE") ?? workbook.worksheets[0];
+  if (!sheet) throw new Error(`No usable worksheet found in workbook`);
 
   const rows: ParsedExpenseLineItemRow[] = [];
   for (let r = 3; r <= sheet.rowCount; r++) {
@@ -224,8 +235,10 @@ function parseWorkbook(workbook: ExcelJS.Workbook): ParsedExpenseLineItemRow[] {
     // read directly; YY (2) and the pre-computed Budget Code (4, ="CD-YY-Num")
     // are NOT used - the file's own YY is frozen to whichever year it was
     // last edited in, so the code is rebuilt from CD+Num plus the *current*
-    // Target Calendar Year instead (see lib/budgetCode.ts). Everything from
-    // column 5 on is the original layout, shifted right by 4.
+    // Target Calendar Year instead (see lib/budgetCode.ts). Columns J
+    // ("Centralized Dept Requestor/Reviewer", 10) and K ("Centralized Dept
+    // Head", 11) were inserted later still - everything from Cost Center (12)
+    // on is the original layout, shifted right by 2 more to make room.
     const budgetCodePrefixRaw = cellText(row.getCell(1));
     const budgetCodeNumRaw = cellNumber(row.getCell(3));
     const category = String(row.getCell(5).value ?? "").trim();
@@ -240,13 +253,15 @@ function parseWorkbook(workbook: ExcelJS.Workbook): ParsedExpenseLineItemRow[] {
     const companyRaw = companyRawText === "OLCP" ? "OCLP" : companyRawText;
     const descriptionRaw = String(row.getCell(8).value ?? "").trim();
     const departmentName = String(row.getCell(9).value ?? "").trim();
-    const costCenterRaw = row.getCell(10).value;
-    const glAccountRaw = row.getCell(11).value;
-    const additionalFieldRaw = row.getCell(12).value ? String(row.getCell(12).value) : null;
-    const spendGridComputationRaw = String(row.getCell(13).value ?? "").trim();
-    const spendGridFrequencyRaw = String(row.getCell(14).value ?? "").trim();
-    const sampleChargesRaw = String(row.getCell(15).value ?? "").trim();
-    const visibleToDepartmentRaw = String(row.getCell(16).value ?? "").trim();
+    const centralizedReviewerRaw = String(row.getCell(10).value ?? "").trim();
+    const centralizedHeadRaw = String(row.getCell(11).value ?? "").trim();
+    const costCenterRaw = row.getCell(12).value;
+    const glAccountRaw = row.getCell(13).value;
+    const additionalFieldRaw = row.getCell(14).value ? String(row.getCell(14).value) : null;
+    const spendGridComputationRaw = String(row.getCell(15).value ?? "").trim();
+    const spendGridFrequencyRaw = String(row.getCell(16).value ?? "").trim();
+    const sampleChargesRaw = String(row.getCell(17).value ?? "").trim();
+    const visibleToDepartmentRaw = String(row.getCell(18).value ?? "").trim();
 
     if (!departmentName) continue; // rows with no owning department can't be routed
 
@@ -270,6 +285,8 @@ function parseWorkbook(workbook: ExcelJS.Workbook): ParsedExpenseLineItemRow[] {
       spendGridFrequency: spendGridFrequencyRaw || null,
       sampleCharges: sampleChargesRaw || null,
       visibleToDepartmentName: visibleToDepartmentRaw || null,
+      centralizedReviewerName: centralizedReviewerRaw || null,
+      centralizedHeadName: centralizedHeadRaw || null,
       budgetCodePrefix: budgetCodePrefixRaw || null,
       budgetCodeNum: budgetCodeNumRaw,
     });

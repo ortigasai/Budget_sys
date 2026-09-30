@@ -17,7 +17,6 @@ interface NpcMonitoringUploadResult {
   projectCount: number;
   ioCount: number;
   projectsBySbu: Record<string, number>;
-  skippedAdmin: boolean;
 }
 
 // See app/import_npc_monitoring.py's own docstring (backend-py) - 2026's

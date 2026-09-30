@@ -12,6 +12,8 @@ import { applyEmployeeImport, parseEmployeesBuffer } from "../lib/employeeImport
 import { CORE_CENTRALIZED_DEPARTMENT_NAMES } from "../lib/coreDepartments";
 import { getFiscalCycle } from "../lib/fiscalCycle";
 import { NPC_SBU_VALUES } from "../lib/npcSbu";
+import { getSyncStatus, startBackgroundSync } from "../lib/backgroundSync";
+import { ACCESS_GROUPS, ACCESS_MATRIX, getEffectiveMatrix, invalidateAccessMatrix } from "../lib/accessControl";
 
 export const adminRouter = Router();
 
@@ -870,7 +872,7 @@ adminRouter.post(
   asyncHandler(async (req, res) => {
     if (!req.file) throw new HttpError(400, "No file uploaded.");
     const result = await parseForecastTemplate(req.file.buffer);
-    res.status(result.ok ? 200 : 400).json(result);
+    res.json(result);
   })
 );
 
@@ -878,11 +880,126 @@ adminRouter.post(
 // syncHistoricalActualsFromSap()'s own doc comment for the CC-GL matching
 // limitation (a GL-CC pair shared by more than one catalog item can't be
 // auto-resolved and is reported back instead, not silently guessed at).
+//
+// Runs in the background (see lib/backgroundSync.ts) and returns
+// immediately - this used to await the sync inline on the request, which
+// could sit past the frontend's own request timeout on a big pull (the
+// broker paces itself under a shared rate limit, so a full sync easily
+// takes longer than a normal request should). This also now runs
+// automatically every 10 minutes (see index.ts's startup scheduler) - this
+// route is for an on-demand refresh, not the only way the data ever
+// updates. Poll GET .../sync-sap/status for the result.
 adminRouter.post(
   "/historical-actuals/sync-sap",
   requireRole(RoleType.BUDGET_OFFICER),
   asyncHandler(async (_req, res) => {
-    const result = await syncHistoricalActualsFromSap();
-    res.json(result);
+    const started = startBackgroundSync("historicalActuals", syncHistoricalActualsFromSap);
+    if (!started) throw new HttpError(409, "A SAP sync is already in progress.");
+    res.status(202).json({ status: "started" });
+  })
+);
+
+adminRouter.get(
+  "/historical-actuals/sync-sap/status",
+  asyncHandler(async (_req, res) => {
+    res.json((await getSyncStatus("historicalActuals")) ?? { module: "historicalActuals", status: "idle" });
+  })
+);
+
+// ---- Access Control ("Budgeting System_User Management") ----
+// The group -> module matrix itself lives in code (lib/accessControl.ts);
+// membership (who is in which group, under which scope) is editable here.
+const GROUP_LABELS: Record<string, string> = {
+  BCA: "Budget, Controls & Analysis",
+  CD: "Centralized Departments",
+  NCD: "Non-centralized Departments",
+  MC: "Mancom",
+  SF: "SBU Finance",
+  NPC: "NPC SBU",
+};
+
+adminRouter.get(
+  "/access-control",
+  asyncHandler(async (_req, res) => {
+    const memberships = await prisma.userGroupMembership.findMany({
+      include: { user: { select: { id: true, name: true, email: true } } },
+      orderBy: [{ group: "asc" }, { scope: "asc" }],
+    });
+    res.json({
+      matrix: await getEffectiveMatrix(),
+      defaults: ACCESS_MATRIX,
+      groups: ACCESS_GROUPS.map((g) => ({
+        group: g,
+        label: GROUP_LABELS[g],
+        members: memberships
+          .filter((m) => m.group === g)
+          .map((m) => ({ id: m.id, userId: m.user.id, name: m.user.name, email: m.user.email, scope: m.scope }))
+          .sort((a, b) => a.name.localeCompare(b.name)),
+      })),
+    });
+  })
+);
+
+const membershipSchema = z.object({
+  userId: z.string().min(1),
+  group: z.enum(ACCESS_GROUPS),
+  scope: z.string().trim().default(""),
+});
+
+adminRouter.post(
+  "/access-control/members",
+  requireRole(RoleType.BUDGET_OFFICER),
+  asyncHandler(async (req, res) => {
+    const { userId, group, scope } = membershipSchema.parse(req.body);
+    const groupScope = group === "BCA" || group === "MC" ? "" : scope;
+    const created = await prisma.userGroupMembership.upsert({
+      where: { userId_group_scope: { userId, group, scope: groupScope } },
+      update: {},
+      create: { userId, group, scope: groupScope },
+    });
+    res.status(201).json(created);
+  })
+);
+
+adminRouter.delete(
+  "/access-control/members/:id",
+  requireRole(RoleType.BUDGET_OFFICER),
+  asyncHandler(async (req, res) => {
+    await prisma.userGroupMembership.delete({ where: { id: req.params.id } });
+    res.json({ ok: true });
+  })
+);
+
+const matrixCellSchema = z.object({
+  key: z.string().min(1),
+  group: z.enum(["CD", "NCD", "MC", "SF", "NPC"]),
+  allowed: z.boolean(),
+});
+
+adminRouter.put(
+  "/access-control/matrix",
+  requireRole(RoleType.BUDGET_OFFICER),
+  asyncHandler(async (req, res) => {
+    const { key, group, allowed } = matrixCellSchema.parse(req.body);
+    const def = ACCESS_MATRIX.find((r) => r.key === key);
+    if (!def) throw new HttpError(400, "Unknown access key.");
+    // Back at the workbook default => drop the override instead of storing a redundant row.
+    if ((def[group] === "P") === allowed) {
+      await prisma.accessMatrixCell.deleteMany({ where: { key, group } });
+    } else {
+      await prisma.accessMatrixCell.upsert({ where: { key_group: { key, group } }, update: { allowed }, create: { key, group, allowed } });
+    }
+    invalidateAccessMatrix();
+    res.json({ ok: true });
+  })
+);
+
+adminRouter.delete(
+  "/access-control/matrix",
+  requireRole(RoleType.BUDGET_OFFICER),
+  asyncHandler(async (_req, res) => {
+    await prisma.accessMatrixCell.deleteMany();
+    invalidateAccessMatrix();
+    res.json({ ok: true });
   })
 );

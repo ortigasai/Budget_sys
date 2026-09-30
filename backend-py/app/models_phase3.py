@@ -129,6 +129,10 @@ class CostCenter(Phase3Model, table=True):
     # here as a plain str like every other cross-registry reference), or null
     # if not yet mapped.
     sbu: Optional[str] = None
+    # The department this Cost Center belongs to ("Budgeting System_CC-GL",
+    # CC sheet's Department column) - drives which cost centers appear on a
+    # department's Utilization Overview. Null for cost centers no department owns.
+    department: Optional[str] = None
 
 
 class GlAccount(Phase3Model, table=True):

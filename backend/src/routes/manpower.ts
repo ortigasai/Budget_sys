@@ -20,6 +20,7 @@ import {
   submitManpowerBudget,
 } from "../services/manpowerService";
 import { getFiscalCycle } from "../lib/fiscalCycle";
+import { getSyncStatus, startBackgroundSync } from "../lib/backgroundSync";
 
 export const manpowerRouter = Router();
 
@@ -30,17 +31,29 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 *
 // HR Analyst owns this module; the Human Resources Centralized Department
 // Head ("HR Head") and the Budget Officer also need read access as part of
 // the approval chain.
+// Express 4 doesn't forward a rejected promise from an async middleware
+// function to the error-handling middleware on its own (see
+// asyncHandler.ts) - registered directly (not wrapped in asyncHandler,
+// since it's a middleware, not a route's own final handler), this used to
+// `throw` its 403 directly, which Node then surfaced as an unhandled
+// promise rejection and crashed the whole process on every request from a
+// non-HR/non-Budget-Officer user - confirmed live, this was silently taking
+// the entire site down.
 async function requireManpowerViewer(req: any, res: any, next: any) {
-  if (hasRole(req.user, RoleType.HR_ANALYST) || hasRole(req.user, RoleType.BUDGET_OFFICER)) {
-    next();
-    return;
+  try {
+    if (hasRole(req.user, RoleType.HR_ANALYST) || hasRole(req.user, RoleType.BUDGET_OFFICER)) {
+      next();
+      return;
+    }
+    const hrDept = await prisma.department.findUnique({ where: { name: "Human Resources" } });
+    if (hrDept && hasRole(req.user, RoleType.CENTRALIZED_DEPARTMENT_HEAD, hrDept.id)) {
+      next();
+      return;
+    }
+    next(new HttpError(403, "Only the HR Analyst, HR Head, or Budget Officer can view Manpower Budgeting."));
+  } catch (err) {
+    next(err);
   }
-  const hrDept = await prisma.department.findUnique({ where: { name: "Human Resources" } });
-  if (hrDept && hasRole(req.user, RoleType.CENTRALIZED_DEPARTMENT_HEAD, hrDept.id)) {
-    next();
-    return;
-  }
-  throw new HttpError(403, "Only the HR Analyst, HR Head, or Budget Officer can view Manpower Budgeting.");
 }
 
 function requireHrAnalyst(req: any, res: any, next: any) {
@@ -122,13 +135,29 @@ manpowerRouter.put(
   })
 );
 
+// Runs in the background and returns immediately (see lib/backgroundSync.ts
+// and historicalActualsService's own sync-sap route for the same pattern) -
+// the KSSB V1 pull this makes could sit past the frontend's own request
+// timeout on a big pull, same reasoning as Forecast's Sync from SAP. Also
+// now runs automatically every 10 minutes (see index.ts's startup
+// scheduler) - this route is for an on-demand refresh. Poll GET .../run/
+// status for the result.
 manpowerRouter.post(
   "/run",
   requireHrAnalyst,
   asyncHandler(async (req, res) => {
     const { targetCalendarYear } = await getFiscalCycle();
     const fiscalYear = Number(req.body.fiscalYear ?? targetCalendarYear);
-    res.json(await runManpowerRecompute(fiscalYear));
+    const started = startBackgroundSync("manpower", () => runManpowerRecompute(fiscalYear));
+    if (!started) throw new HttpError(409, "A recompute is already in progress.");
+    res.status(202).json({ status: "started" });
+  })
+);
+
+manpowerRouter.get(
+  "/run/status",
+  asyncHandler(async (_req, res) => {
+    res.json((await getSyncStatus("manpower")) ?? { module: "manpower", status: "idle" });
   })
 );
 

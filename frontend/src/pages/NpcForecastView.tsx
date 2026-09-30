@@ -1,9 +1,11 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, NPC_SBU_OPTIONS, type NpcSbu } from "../api/client";
+import { api, downloadFile, NPC_GROUP_SCOPE_TO_SBU, NPC_SBU_OPTIONS, type NpcSbu } from "../api/client";
 import { useAuth } from "../context/AuthContext";
 import { PageHeader } from "../components/PageHeader";
 import { ExpandableSection } from "../components/ExpandableSection";
+import { IoDetailModal } from "../components/IoDetailModal";
+import { formatAufnr } from "../lib/formatAufnr";
 import { useFiscalCycle, useFiscalYear } from "../lib/fiscalCycle";
 
 const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -69,13 +71,6 @@ function peso(n: number) {
   return `₱${n.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
 }
 
-// Display only - ioCodes stays the full 12-digit zero-padded AUFNR
-// everywhere else (matching against the broker/import data still needs the
-// real value) - this just drops the padding's leading "0000" for a
-// shorter, more scannable IO Code(s) column.
-function formatAufnr(code: string): string {
-  return code.length > 4 ? code.slice(4) : code;
-}
 
 // Note 11 §8 - NPC Forecast. Genuinely new (not a filtered view of the
 // generic HistoricalActuals table the GAE/DOE/Revenue tabs use) - NPC's
@@ -87,7 +82,8 @@ function formatAufnr(code: string): string {
 export function NpcForecastView() {
   const { currentUser, hasRole } = useAuth();
   const isBudgetOfficer = hasRole("BUDGET_OFFICER");
-  const { targetYear } = useFiscalYear();
+  const { targetYear, forecastYear } = useFiscalYear();
+  const [openIo, setOpenIo] = useState<string | null>(null);
   const queryClient = useQueryClient();
 
   // Budget-Officer-only control, same as ForecastPage.tsx's GAE/DOE view -
@@ -103,9 +99,16 @@ export function NpcForecastView() {
     },
   });
 
-  const ownSbu = currentUser?.department?.sbu ?? null;
+  // NPC-group memberships (User Management workbook, e.g. "Corporate - HR")
+  // take precedence over the department's own SBU - same rule the backend
+  // applies (resolveNpcSbuScope in routes/forecast.ts).
+  const groupSbus = (currentUser?.groups ?? [])
+    .filter((g) => g.group === "NPC")
+    .map((g) => NPC_GROUP_SCOPE_TO_SBU[g.scope])
+    .filter((v): v is NpcSbu => Boolean(v));
+  const mySbus: NpcSbu[] = isBudgetOfficer ? NPC_SBU_OPTIONS.map((o) => o.value) : groupSbus.length > 0 ? [...new Set(groupSbus)] : currentUser?.department?.sbu ? [currentUser.department.sbu] : [];
   const [pickedSbu, setPickedSbu] = useState<NpcSbu | "">("");
-  const effectiveSbu = isBudgetOfficer ? pickedSbu || NPC_SBU_OPTIONS[0].value : ownSbu ?? "";
+  const effectiveSbu: NpcSbu | "" = pickedSbu && mySbus.includes(pickedSbu) ? pickedSbu : mySbus[0] ?? "";
 
   const { data, isLoading, isError } = useQuery({
     queryKey: ["forecast", "npc", effectiveSbu],
@@ -235,7 +238,7 @@ export function NpcForecastView() {
   if (!effectiveSbu) {
     return (
       <div className="space-y-4">
-        <PageHeader subtitle="Your department has no NPC SBU assigned - ask the Budget Officer to set one in the Admin Console." />
+        <PageHeader subtitle="You have no NPC SBU assigned - ask the Budget Officer to add you to an NPC SBU group in the Admin Console." />
       </div>
     );
   }
@@ -245,9 +248,9 @@ export function NpcForecastView() {
       <PageHeader
         subtitle={`Months through ${MONTH_NAMES[asOfMonth - 1]} are already in Actuals - only remaining months are editable.`}
         actions={
-          isBudgetOfficer ? (
+          mySbus.length > 1 ? (
             <select className="rounded border border-slate-300 px-2 py-1.5 text-sm" value={effectiveSbu} onChange={(e) => setPickedSbu(e.target.value as NpcSbu)}>
-              {NPC_SBU_OPTIONS.map((o) => (
+              {NPC_SBU_OPTIONS.filter((o) => mySbus.includes(o.value)).map((o) => (
                 <option key={o.value} value={o.value}>
                   {o.label}
                 </option>
@@ -274,12 +277,17 @@ export function NpcForecastView() {
 
       {targetYear >= 2027 && (
         <div className="flex flex-wrap items-center gap-3 rounded-lg border border-slate-200 bg-white p-3 shadow-sm">
-          <a
-            href={`/api/forecast/npc/template?npcSbu=${effectiveSbu}`}
+          <button
+            type="button"
+            onClick={() =>
+              downloadFile(`/forecast/npc/template?npcSbu=${effectiveSbu}`, `npc-forecast-template-${String(effectiveSbu).toLowerCase()}.xlsx`).catch(() =>
+                setUploadStatus({ ok: false, message: "Failed to download the template." })
+              )
+            }
             className="rounded-md border border-emerald-300 bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-800 hover:bg-emerald-100"
           >
             Open Spreadsheet Template
-          </a>
+          </button>
           <label className="cursor-pointer rounded-md border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100">
             {uploadMutation.isPending ? "Uploading…" : "Upload Completed Template"}
             <input
@@ -453,7 +461,11 @@ export function NpcForecastView() {
                         <>
                           <td className="px-2 py-1">
                             {r.ios.map((io) => (
-                              <div key={io.code}>{formatAufnr(io.code)}</div>
+                              <div key={io.code}>
+                                <button type="button" onClick={() => setOpenIo(io.code)} className="text-emerald-700 underline decoration-dotted underline-offset-2 hover:text-emerald-900">
+                                  {formatAufnr(io.code)}
+                                </button>
+                              </div>
                             ))}
                           </td>
                           <td className="px-2 py-1">
@@ -515,6 +527,7 @@ export function NpcForecastView() {
           </table>
         </div>
       </ExpandableSection>
+      {openIo && <IoDetailModal aufnr={openIo} fiscalYear={forecastYear} onClose={() => setOpenIo(null)} />}
     </div>
   );
 }

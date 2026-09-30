@@ -13,11 +13,15 @@ import { useAuth } from "../context/AuthContext";
 // enough) — matches the ad hoc multi-role gates Layout.tsx already builds
 // for nav visibility (isReviewer, isHrHead, etc.), so a route needing the
 // same kind of gate extends this one shared guard instead of a bespoke one.
-export function RequireRole({ role, children }: { role: string | string[]; children: ReactNode }) {
-  const { hasRole } = useAuth();
+// `access` lets a route also open for anyone whose User Management group access
+// grants one of those keys (see AuthContext's gate) - a grouped user's access
+// is authoritative, so it replaces the role check for them.
+export function RequireRole({ role, access, children }: { role: string | string[]; access?: string[]; children: ReactNode }) {
+  const { hasRole, currentUser } = useAuth();
   const roles = Array.isArray(role) ? role : [role];
 
-  if (!roles.some((r) => hasRole(r))) {
+  const allowed = access && currentUser?.access ? access.some((k) => currentUser.access![k]) : roles.some((r) => hasRole(r));
+  if (!allowed) {
     return <Navigate to="/" replace />;
   }
 

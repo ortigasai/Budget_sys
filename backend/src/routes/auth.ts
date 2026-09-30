@@ -4,6 +4,15 @@ import jwt from "jsonwebtoken";
 import { z } from "zod";
 import { prisma } from "../prisma";
 import { JWT_SECRET } from "../middleware/auth";
+import { computeAccess, getEffectiveMatrix } from "../lib/accessControl";
+
+// No group membership at all (e.g. accounts not listed in the User Management
+// workbook) => access is null, which the frontend/route guards treat as "not
+// group-restricted" so existing users are never locked out by the new layer.
+async function groupsAndAccess(memberships: { group: string; scope: string }[]) {
+  const groups = memberships.map((m) => ({ group: m.group, scope: m.scope }));
+  return { groups, access: groups.length > 0 ? computeAccess(groups.map((g) => g.group), await getEffectiveMatrix()) : null };
+}
 
 export const authRouter = Router();
 
@@ -17,16 +26,22 @@ authRouter.get("/users", async (_req, res) => {
       department: true,
       roleAssignments: { include: { department: true } },
       sbuRoleAssignments: true,
+      groupMemberships: true,
     },
     orderBy: { name: "asc" },
   });
 
+  const matrix = await getEffectiveMatrix();
   res.json(
     users.map((u) => ({
       id: u.id,
       name: u.name,
       email: u.email,
+      // True for people on the Employee List (vs. accounts created only from other workbooks) - the quick-login picker lists these.
+      isEmployee: u.employeeIdNumber !== null,
       department: u.department ? { id: u.department.id, name: u.department.name, sbu: u.department.sbu } : null,
+      groups: u.groupMemberships.map((m) => ({ group: m.group, scope: m.scope })),
+      access: u.groupMemberships.length > 0 ? computeAccess(u.groupMemberships.map((m) => m.group), matrix) : null,
       roles: [
         ...u.roleAssignments.map((r) => ({
           roleType: r.roleType,
@@ -58,7 +73,7 @@ authRouter.post("/login", async (req, res) => {
 
   const user = await prisma.user.findUnique({
     where: { email: email.trim().toLowerCase() },
-    include: { department: true, roleAssignments: { include: { department: true } }, sbuRoleAssignments: true },
+    include: { department: true, roleAssignments: { include: { department: true } }, sbuRoleAssignments: true, groupMemberships: true },
   });
 
   if (!user || !user.passwordHash || !(await bcrypt.compare(password, user.passwordHash))) {
@@ -74,6 +89,7 @@ authRouter.post("/login", async (req, res) => {
     name: user.name,
     email: user.email,
     department: user.department ? { id: user.department.id, name: user.department.name, sbu: user.department.sbu } : null,
+    ...(await groupsAndAccess(user.groupMemberships)),
     roles: [
       ...user.roleAssignments.map((r) => ({
         roleType: r.roleType,

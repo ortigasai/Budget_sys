@@ -10,19 +10,21 @@ convention across both backends.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
+from sqlalchemy import func
 from sqlmodel import Session, select
 
 from ..auth import AuthedUser, get_current_user, require_role
 from ..db import enum_eq, get_session
-from ..models_phase1 import BudgetRequest, Department, ExpenseLineItem, FinalizedBudgetLine
+from ..models_sap_raw import SapKssbV2Raw, SapSalrRaw
+from ..models_phase1 import BudgetRequest, Department, ExpenseLineItem, FinalizedBudgetLine, UserGroupMembership
 from ..models_phase2 import SapActualTransaction, SapCommitment
-from ..models_phase3 import InternalOrderRequest
+from ..models_phase3 import CostCenter, GlAccount, InternalOrderRequest
 from ..models_npc_monitoring import NpcMonitoringIo, NpcMonitoringProject
-from ..npc_sbu import NPC_SBU_LABELS
+from ..npc_sbu import NPC_GROUP_SCOPE_TO_SBU, NPC_SBU_LABELS
 from ..services.sap_sync_service import get_sync_status, start_sync_in_background
 
 router = APIRouter(prefix="/utilization", tags=["utilization"])
@@ -59,6 +61,8 @@ class DepartmentOut(BaseModel):
 class OverviewRow(BaseModel):
     glAccount: str
     costCenter: str
+    glAccountName: str | None = None
+    costCenterName: str | None = None
     approvedBudget: float
     actualExpenditures: float
     commitments: float
@@ -157,7 +161,10 @@ def _is_utilization_eligible(user: AuthedUser) -> bool:
     rule) - FR-2.6 explicitly gives the Budget Officer an action on this same
     dashboard, which only makes sense if they can also see it.
     """
-    return user.has_role("BUDGET_OFFICER") or any(r.roleType in CENTRALIZED_ROLE_TYPES for r in user.roles)
+    legacy = user.has_role("BUDGET_OFFICER") or any(r.roleType in CENTRALIZED_ROLE_TYPES for r in user.roles)
+    # Group-based access (User Management workbook): a grouped user is
+    # eligible if their groups grant any Module 2 page.
+    return legacy or any(user.can(k, False) for k in ("util.overview", "util.reconciliation", "util.npc"))
 
 
 def _require_utilization_access(user: AuthedUser = Depends(get_current_user)) -> AuthedUser:
@@ -166,13 +173,86 @@ def _require_utilization_access(user: AuthedUser = Depends(get_current_user)) ->
     return user
 
 
+def _utilization_department_names(session: Session) -> list[str]:
+    """Departments Utilization can show: the fixed core list plus every
+    department the CC-GL workbook assigns cost centers to (Corporate
+    Marketing, Procurement, Internal Audit, ...), under the core list's own
+    spelling where the two differ.
+    """
+    names = set(CORE_CENTRALIZED_DEPARTMENT_NAMES)
+    for dept in session.exec(select(CostCenter.department).where(CostCenter.department != None).distinct()).all():  # noqa: E711
+        names.add(CC_DEPARTMENT_ALIASES.get(dept, dept))
+    return sorted(names)
+
+
+SBU_SCOPE_PREFIX = "SBU:"
+
+
+def _sf_sbus(user: AuthedUser) -> list[str]:
+    """SBUs (uppercase, e.g. MALLS) an SBU Finance member's SF memberships name."""
+    return list(dict.fromkeys(scope.upper() for g, scope in user.groups if g == "SF" and scope))
+
+
+def _sbu_cost_center_codes(session: Session, sbu: str) -> set[str]:
+    """Cost centers the CC-GL workbook maps to this SBU."""
+    return {c.code for c in session.exec(select(CostCenter).where(CostCenter.sbu == sbu)).all()}
+
+
+def _scope_from_id(user: AuthedUser, scope_id: str, session: Session):
+    """Resolves the Overview/Reconciliation scope id: either a core department
+    id, or "SBU:<CODE>" for an SBU Finance member's own SBU (all cost centers
+    mapped to it, across departments). Returns (name, cost center codes, the
+    ExpenseLineItem condition for that scope).
+    """
+    if scope_id.startswith(SBU_SCOPE_PREFIX):
+        sbu = scope_id[len(SBU_SCOPE_PREFIX) :].upper()
+        if not user.has_role("BUDGET_OFFICER") and not (user.can("util.overview", False) and sbu in _sf_sbus(user)):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "You do not have access to this SBU's utilization data.")
+        ccs = _sbu_cost_center_codes(session, sbu)
+        return sbu.title(), ccs, ExpenseLineItem.costCenter.in_(ccs or {""})
+    dept = _assert_department_access(user, scope_id, session)
+    return dept.name, _department_cost_center_codes(session, dept.name), ExpenseLineItem.ownerDepartmentId == dept.id
+
+
+# The User Management workbook's CD scope names -> the core department list's
+# names (same map as backend/src/lib/forecastDepartments.ts).
+CD_SCOPE_TO_CORE_DEPARTMENT = {
+    "Administrative Services": "Admin Services",
+    "Corporate Finance": "Corporate Finance",
+    "Tax": "Tax",
+    "Legal": "Legal",
+    "Office of the CFO": "Office of the CFO",
+    "Human Resources": "Human Resources",
+    "External Affairs": "External Affairs",
+    "Information System & Information Technology": "IS & IT",
+}
+
+
+def _viewable_department_ids(user: AuthedUser, session: Session) -> set[str]:
+    """Core departments whose utilization this user may view: everything for
+    the Budget Officer; otherwise their centralized roles' departments, plus -
+    for group members granted Departmental Overview/Live Reconciliation - the
+    departments their CD memberships name, or every core department for SBU
+    Finance/Mancom members (no department of their own to be scoped to).
+    """
+    core = session.exec(select(Department).where(Department.name.in_(_utilization_department_names(session)))).all()
+    if user.has_role("BUDGET_OFFICER"):
+        return {d.id for d in core}
+    ids = {r.departmentId for r in user.roles if r.roleType in CENTRALIZED_ROLE_TYPES and r.departmentId}
+    if user.access is not None and (user.can("util.overview", False) or user.can("util.reconciliation", False)):
+        cd_names = {CD_SCOPE_TO_CORE_DEPARTMENT.get(sc, CC_DEPARTMENT_ALIASES.get(sc, sc)) for g, sc in user.groups if g == "CD" and sc}
+        if cd_names:
+            ids |= {d.id for d in core if d.name in cd_names}
+        elif any(g == "MC" for g, _ in user.groups):
+            ids |= {d.id for d in core}
+    return ids
+
+
 def _assert_department_access(user: AuthedUser, department_id: str, session: Session) -> Department:
     dept = session.get(Department, department_id)
-    if dept is None or dept.name not in CORE_CENTRALIZED_DEPARTMENT_NAMES:
+    if dept is None or dept.name not in _utilization_department_names(session):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Department not found.")
-    if user.has_role("BUDGET_OFFICER"):
-        return dept
-    if any(user.has_role(role_type, department_id) for role_type in CENTRALIZED_ROLE_TYPES):
+    if department_id in _viewable_department_ids(user, session):
         return dept
     raise HTTPException(status.HTTP_403_FORBIDDEN, "You do not have access to this department's utilization data.")
 
@@ -183,19 +263,19 @@ def list_departments(
     session: Session = Depends(get_session),
 ):
     core = session.exec(
-        select(Department).where(Department.name.in_(CORE_CENTRALIZED_DEPARTMENT_NAMES)).order_by(Department.name)
+        select(Department).where(Department.name.in_(_utilization_department_names(session))).order_by(Department.name)
     ).all()
-    if user.has_role("BUDGET_OFFICER"):
-        eligible = core
-    else:
-        my_dept_ids = {
-            r.departmentId for r in user.roles if r.roleType in CENTRALIZED_ROLE_TYPES
-        }
-        eligible = [d for d in core if d.id in my_dept_ids]
-    return [DepartmentOut(id=d.id, name=d.name) for d in eligible]
+    viewable = _viewable_department_ids(user, session)
+    eligible = [d for d in core if d.id in viewable]
+    out = [DepartmentOut(id=d.id, name=d.name) for d in eligible]
+    # SBU Finance members see their own SBU (every cost center mapped to it),
+    # not a department.
+    if user.has_role("BUDGET_OFFICER") is False and (user.can("util.overview", False) or user.can("util.reconciliation", False)):
+        out += [DepartmentOut(id=f"{SBU_SCOPE_PREFIX}{sbu}", name=f"{sbu.title()} (SBU)") for sbu in _sf_sbus(user)]
+    return out
 
 
-def _approved_budget_by_gl_cc(session: Session, department_id: str, fiscal_year: int) -> dict[tuple[str, str], float]:
+def _approved_budget_by_gl_cc(session: Session, department_id: str, fiscal_year: int, cond=None) -> dict[tuple[str, str], float]:
     """Sum(FinalizedBudgetLine.amount) for this department's catalog, grouped
     by (glAccount, costCenter) - Note 11: reads the finalized/uploaded budget
     snapshot instead of live-joining BudgetRequest+ExpenseLineItem by
@@ -210,7 +290,7 @@ def _approved_budget_by_gl_cc(session: Session, department_id: str, fiscal_year:
         .join(BudgetRequest, FinalizedBudgetLine.budgetRequestId == BudgetRequest.id)
         .join(ExpenseLineItem, BudgetRequest.expenseLineItemId == ExpenseLineItem.id)
         .where(
-            ExpenseLineItem.ownerDepartmentId == department_id,
+            cond if cond is not None else ExpenseLineItem.ownerDepartmentId == department_id,
             FinalizedBudgetLine.fiscalYear == fiscal_year,
         )
     ).all()
@@ -221,13 +301,13 @@ def _approved_budget_by_gl_cc(session: Session, department_id: str, fiscal_year:
     return totals
 
 
-def _approved_budget_by_line_item(session: Session, department_id: str, fiscal_year: int) -> dict[str, float]:
+def _approved_budget_by_line_item(session: Session, department_id: str, fiscal_year: int, cond=None) -> dict[str, float]:
     rows = session.exec(
         select(FinalizedBudgetLine, ExpenseLineItem)
         .join(BudgetRequest, FinalizedBudgetLine.budgetRequestId == BudgetRequest.id)
         .join(ExpenseLineItem, BudgetRequest.expenseLineItemId == ExpenseLineItem.id)
         .where(
-            ExpenseLineItem.ownerDepartmentId == department_id,
+            cond if cond is not None else ExpenseLineItem.ownerDepartmentId == department_id,
             FinalizedBudgetLine.fiscalYear == fiscal_year,
         )
     ).all()
@@ -237,15 +317,36 @@ def _approved_budget_by_line_item(session: Session, department_id: str, fiscal_y
     return totals
 
 
+def _utc_iso(dt: datetime | None) -> str | None:
+    """Every datetime this app stores is written via datetime.utcnow() -
+    naive, no tzinfo (Postgres' own TIMESTAMP WITHOUT TIME ZONE column type
+    strips any tzinfo on the way in regardless, so there's no fix at the
+    storage layer). A naive .isoformat() therefore produces a string with
+    no UTC marker ("2026-09-17T00:20:53" instead of "...+00:00") - a
+    browser parsing that via `new Date(...)` reads it as ITS OWN local
+    time, not UTC, which (confirmed live from a UTC+8 browser reading the
+    Admin Console's SAP Sync Status tab) showed a 3-minute-old sync as
+    having happened 8 hours ago. This stamps the UTC offset back on at the
+    one point it actually reaches JSON.
+    """
+    if dt is None:
+        return None
+    return dt.replace(tzinfo=timezone.utc).isoformat()
+
+
 class SapSyncStartOut(BaseModel):
     status: str  # "started"
 
 
 class SapSyncStatusOut(BaseModel):
     status: str  # "idle" | "running" | "success" | "error"
-    fiscalYear: int | None
+    fiscalYear: int
     startedAt: str | None
     finishedAt: str | None
+    # Only ever set by a successful run - stays put through a later failed
+    # attempt, so the UI can keep showing "last synced at <x>" even right
+    # after `status`/`error` above flip to a failed attempt's outcome.
+    lastSuccessAt: str | None = None
     actualsSynced: int | None = None
     commitmentsSynced: int | None = None
     error: str | None = None
@@ -263,11 +364,14 @@ def sync_sap_route(
     Flow's budget check, and Reports' Budget vs Actual all read those tables
     live and pick up the synced figures once it finishes.
 
-    A full sync easily takes several minutes (hundreds of paginated broker
-    requests, deliberately paced under the broker's own rate limit) - too
-    long to run inline on this request without sitting past IIS/ARR's
-    reverse-proxy timeout, so this only starts the sync in the background
-    and returns immediately. Poll GET /sync-sap/status for the result.
+    This now also runs automatically every 10 minutes (see main.py's startup
+    hook) - this route is for an on-demand refresh (e.g. right after a known
+    SAP update), not the only way the data ever changes anymore. A full sync
+    easily takes several minutes (hundreds of paginated broker requests,
+    deliberately paced under the broker's own rate limit) - too long to run
+    inline on this request without sitting past IIS/ARR's reverse-proxy
+    timeout, so this only starts the sync in the background and returns
+    immediately. Poll GET /sync-sap/status for the result.
     """
     started = start_sync_in_background(fiscalYear)
     if not started:
@@ -276,18 +380,38 @@ def sync_sap_route(
 
 
 @router.get("/sync-sap/status", response_model=SapSyncStatusOut)
-def sync_sap_status_route(user: AuthedUser = Depends(_require_utilization_access)):
-    state = get_sync_status()
-    result = state.get("result") or {}
+def sync_sap_status_route(fiscalYear: int, user: AuthedUser = Depends(_require_utilization_access)):
+    row = get_sync_status(fiscalYear)
+    if row is None:
+        return SapSyncStatusOut(status="idle", fiscalYear=fiscalYear, startedAt=None, finishedAt=None)
     return SapSyncStatusOut(
-        status=state["status"],
-        fiscalYear=state["fiscalYear"],
-        startedAt=state["startedAt"],
-        finishedAt=state["finishedAt"],
-        actualsSynced=result.get("actualsSynced"),
-        commitmentsSynced=result.get("commitmentsSynced"),
-        error=state.get("error"),
+        status=row.status,
+        fiscalYear=row.fiscal_year,
+        startedAt=_utc_iso(row.started_at),
+        finishedAt=_utc_iso(row.finished_at),
+        lastSuccessAt=_utc_iso(row.last_success_at),
+        actualsSynced=row.actuals_synced,
+        commitmentsSynced=row.commitments_synced,
+        error=row.error,
     )
+
+
+# Department names as the CC-GL workbook spells them -> the core department
+# list's names.
+CC_DEPARTMENT_ALIASES = {
+    "Administrative Services": "Admin Services",
+    "Legal Department": "Legal",
+    "Information System & Information Technology": "IS & IT",
+}
+
+
+def _department_cost_center_codes(session: Session, dept_name: str) -> set[str]:
+    """Cost center codes the CC-GL workbook assigns to this (core) department."""
+    codes = set()
+    for cc in session.exec(select(CostCenter).where(CostCenter.department != None)).all():  # noqa: E711
+        if CC_DEPARTMENT_ALIASES.get(cc.department, cc.department) == dept_name:
+            codes.add(cc.code)
+    return codes
 
 
 @router.get("/overview", response_model=list[OverviewRow])
@@ -297,9 +421,25 @@ def overview(
     user: AuthedUser = Depends(_require_utilization_access),
     session: Session = Depends(get_session),
 ):
-    _assert_department_access(user, departmentId, session)
+    _, dept_ccs, scope_cond = _scope_from_id(user, departmentId, session)
+    finalized = _approved_budget_by_gl_cc(session, departmentId, fiscalYear, scope_cond)
 
-    approved = _approved_budget_by_gl_cc(session, departmentId, fiscalYear)
+    # Every Cost Center the CC-GL workbook maps to this department, with SAP's
+    # own approved budget (KSSB V2 Plan, summed over the year's periods) per
+    # GL-CC - the approved budget shown here. A GL-CC with no SAP plan falls
+    # back to whatever finalized budget this app holds for it.
+    plan_totals: dict[tuple[str, str], float] = {}
+    if dept_ccs:
+        for gl, cc, total in session.exec(
+            select(SapKssbV2Raw.gl_account, SapKssbV2Raw.cost_center, func.sum(SapKssbV2Raw.plan))
+            .where(SapKssbV2Raw.fiscal_year == fiscalYear, SapKssbV2Raw.cost_center.in_(dept_ccs))
+            .group_by(SapKssbV2Raw.gl_account, SapKssbV2Raw.cost_center)
+        ).all():
+            plan_totals[(gl, cc)] = float(total or 0)
+    approved = dict(finalized)
+    for key, plan in plan_totals.items():
+        if plan != 0:
+            approved[key] = plan
 
     actuals = session.exec(
         select(SapActualTransaction).where(SapActualTransaction.fiscal_year == fiscalYear)
@@ -308,21 +448,26 @@ def overview(
         select(SapCommitment).where(SapCommitment.fiscal_year == fiscalYear)
     ).all()
 
-    # Mock actuals/commitments are only ever generated against an approved
-    # request's own GL-CC (see app/seed_mock_sap.py), so their keys are
-    # always a subset of approved's - rows are driven by approved GL-CC
-    # lines, same as FR-2.2's "per department/GL-CC" framing.
-    gl_cc_keys = set(approved.keys())
     actual_totals: dict[tuple[str, str], float] = {}
     for a in actuals:
+        if a.cost_center not in dept_ccs and (a.gl_account, a.cost_center) not in approved:
+            continue
         key = (a.gl_account, a.cost_center)
         actual_totals[key] = actual_totals.get(key, 0.0) + a.amount
     commitment_totals: dict[tuple[str, str], float] = {}
     for c in commitments:
         if c.status not in OPEN_COMMITMENT_STATUSES:
             continue
+        if c.cost_center not in dept_ccs and (c.gl_account, c.cost_center) not in approved:
+            continue
         key = (c.gl_account, c.cost_center)
         commitment_totals[key] = commitment_totals.get(key, 0.0) + c.amount
+
+    # Rows: every GL-CC with an approved budget, or with any actual/commitment
+    # posted against one of the department's own cost centers.
+    gl_cc_keys = set(approved.keys()) | {k for k, v in actual_totals.items() if v} | {k for k, v in commitment_totals.items() if v}
+    gl_names = {g.code: g.name for g in session.exec(select(GlAccount)).all()}
+    cc_names = {c.code: c.name for c in session.exec(select(CostCenter)).all()}
 
     rows: list[OverviewRow] = []
     for gl_account, cost_center in sorted(gl_cc_keys):
@@ -334,6 +479,8 @@ def overview(
             OverviewRow(
                 glAccount=gl_account,
                 costCenter=cost_center,
+                glAccountName=gl_names.get(gl_account),
+                costCenterName=cc_names.get(cost_center),
                 approvedBudget=round(approved_amount, 2),
                 actualExpenditures=round(actual_amount, 2),
                 commitments=round(commitment_amount, 2),
@@ -344,6 +491,50 @@ def overview(
     return rows
 
 
+@router.get("/overview/export")
+def overview_export(
+    departmentId: str,
+    fiscalYear: int,
+    user: AuthedUser = Depends(_require_utilization_access),
+    session: Session = Depends(get_session),
+):
+    """The Overview table (whole scope, unfiltered) as an .xlsx download."""
+    from io import BytesIO
+
+    from fastapi.responses import Response
+    from openpyxl import Workbook
+    from openpyxl.styles import Font
+
+    rows = overview(departmentId=departmentId, fiscalYear=fiscalYear, user=user, session=session)
+    scope_name, _, _ = _scope_from_id(user, departmentId, session)
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Overview"
+    ws.append(["GL Account", "Cost Center", "GL Account Name", "Cost Center Name", "Approved Budget", "Actual Expenditures", "Commitments", "Total Allotted", "Available"])
+    for r in rows:
+        ws.append([r.glAccount, r.costCenter, r.glAccountName or "", r.costCenterName or "", r.approvedBudget, r.actualExpenditures, r.commitments, r.totalAllotted, r.available])
+    ws.append([])
+    ws.append(["Total", None, None, None] + [sum(getattr(r, f) for r in rows) for f in ("approvedBudget", "actualExpenditures", "commitments", "totalAllotted", "available")])
+    for cell in ws[1]:
+        cell.font = Font(bold=True)
+    for cell in ws[ws.max_row]:
+        cell.font = Font(bold=True)
+    for i, w in enumerate([14, 14, 40, 30, 18, 20, 16, 16, 16]):
+        ws.column_dimensions[chr(65 + i)].width = w
+    for col in "EFGHI":
+        for c in ws[col][1:]:
+            c.number_format = "#,##0.00"
+    ws.freeze_panes = "A2"
+    buf = BytesIO()
+    wb.save(buf)
+    safe = "".join(ch if ch.isalnum() else "-" for ch in scope_name).strip("-").lower()
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="utilization-overview-{safe}-{fiscalYear}.xlsx"'},
+    )
+
+
 @router.get("/reconciliation", response_model=ReconciliationOut)
 def reconciliation(
     departmentId: str,
@@ -351,11 +542,9 @@ def reconciliation(
     user: AuthedUser = Depends(_require_utilization_access),
     session: Session = Depends(get_session),
 ):
-    _assert_department_access(user, departmentId, session)
+    _, _, scope_cond = _scope_from_id(user, departmentId, session)
 
-    line_items = session.exec(
-        select(ExpenseLineItem).where(ExpenseLineItem.ownerDepartmentId == departmentId)
-    ).all()
+    line_items = session.exec(select(ExpenseLineItem).where(scope_cond)).all()
     line_items_by_id = {li.id: li for li in line_items}
     dept_gl_cc = {(li.glAccount, li.costCenter) for li in line_items}
     # GAE's Budget Code is on the catalog item itself.
@@ -367,14 +556,14 @@ def reconciliation(
         select(BudgetRequest)
         .join(ExpenseLineItem, BudgetRequest.expenseLineItemId == ExpenseLineItem.id)
         .where(
-            ExpenseLineItem.ownerDepartmentId == departmentId,
+            scope_cond,
             BudgetRequest.fiscalYear == fiscalYear,
             BudgetRequest.budgetCode.is_not(None),
         )
     ).all()
     line_item_id_by_request_budget_code = {r.budgetCode: r.expenseLineItemId for r in doe_npc_requests}
 
-    approved_by_item = _approved_budget_by_line_item(session, departmentId, fiscalYear)
+    approved_by_item = _approved_budget_by_line_item(session, departmentId, fiscalYear, scope_cond)
 
     actuals = session.exec(
         select(SapActualTransaction).where(SapActualTransaction.fiscal_year == fiscalYear)
@@ -478,11 +667,24 @@ def _my_department(user: AuthedUser, session: Session) -> Department | None:
     return session.get(Department, user.departmentId) if user.departmentId else None
 
 
+def _my_npc_sbus(user: AuthedUser, session: Session) -> list[str]:
+    """The NPC SBUs this person may see: their NPC-group memberships (User
+    Management workbook, scope e.g. "Corporate - HR") if any, otherwise their
+    own department's Department.sbu.
+    """
+    scopes = session.exec(select(UserGroupMembership.scope).where(UserGroupMembership.userId == user.id, UserGroupMembership.group == "NPC")).all()
+    sbus = [NPC_GROUP_SCOPE_TO_SBU[s] for s in scopes if s in NPC_GROUP_SCOPE_TO_SBU]
+    if sbus:
+        return list(dict.fromkeys(sbus))
+    dept = _my_department(user, session)
+    return [dept.sbu] if dept is not None and dept.sbu else []
+
+
 def _resolve_npc_sbu_scope(user: AuthedUser, requested_sbu: str | None, session: Session) -> str:
-    """Budget Officer may pick any SBU; everyone else is pinned to their own
-    department's SBU (spec: "users can only view the NPC approved for the
-    SBU they belong to") - same shape as _assert_department_access above,
-    just keyed by SBU instead of department id.
+    """Budget Officer may pick any SBU; everyone else is limited to their own
+    NPC SBU(s) (spec: "users can only view the NPC approved for the SBU they
+    belong to") - same shape as _assert_department_access above, just keyed
+    by SBU instead of department id.
     """
     if user.has_role("BUDGET_OFFICER"):
         if not requested_sbu:
@@ -490,10 +692,14 @@ def _resolve_npc_sbu_scope(user: AuthedUser, requested_sbu: str | None, session:
         if requested_sbu not in NPC_SBU_LABELS:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Unrecognized SBU.")
         return requested_sbu
-    dept = _my_department(user, session)
-    if dept is None or not dept.sbu:
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "Your department has no SBU assigned - ask the Budget Officer to set one in the Admin Console.")
-    return dept.sbu
+    if not user.can("util.npc", True):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Your access group does not permit Utilization - NPC.")
+    mine = _my_npc_sbus(user, session)
+    if not mine:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "You have no NPC SBU assigned - ask the Budget Officer to add you to an NPC SBU group or set your department's SBU in the Admin Console.")
+    if requested_sbu and requested_sbu in mine:
+        return requested_sbu
+    return mine[0]
 
 
 @router.get("/npc/sbus", response_model=list[NpcSbuOut])
@@ -503,10 +709,146 @@ def npc_sbu_options(
 ):
     if user.has_role("BUDGET_OFFICER"):
         return [NpcSbuOut(value=v, label=l) for v, l in NPC_SBU_LABELS.items()]
-    dept = _my_department(user, session)
-    if dept is None or not dept.sbu:
-        return []
-    return [NpcSbuOut(value=dept.sbu, label=NPC_SBU_LABELS.get(dept.sbu, dept.sbu))]
+    return [NpcSbuOut(value=v, label=NPC_SBU_LABELS.get(v, v)) for v in _my_npc_sbus(user, session)]
+
+
+class NpcIoDetailOut(BaseModel):
+    aufnr: str
+    description: str | None
+    budgetCode: str | None
+    sbu: str | None
+    # Live SAP (S_ALR_87013019, local cache) figures - null if this IO isn't in the cache.
+    sapBudget: float | None
+    sapActual: float | None
+    sapCommitted: float | None
+    sapAllotted: float | None
+    sapAvailable: float | None
+    # NPC Monitoring workbook figures, when the IO came from that import.
+    monitoringBudget: float | None
+    monitoringActual: float | None
+    monitoringCommitted: float | None
+    monitoringAvailable: float | None
+    ytdActualByMonth: dict | None
+    # The Internal Order Request that created it in this app, if any.
+    requestProjectTitle: str | None
+    requestLocation: str | None
+    requestProjectStart: str | None
+    requestProjectEnd: str | None
+    requestAmount: float | None
+    requestStatus: str | None
+    requestCostCenter: str | None
+
+
+def _short_aufnr(code: str) -> str:
+    """Drop the 12-digit AUFNR's leading "0000" padding, for display/export only."""
+    return code[4:] if code.startswith("0000") else code
+
+
+def _build_io_detail(aufnr: str, fiscal_year: int, user: AuthedUser, session: Session) -> NpcIoDetailOut:
+    """Details of one Internal Order for the NPC table's clickable IO Code.
+    Scoped like the table itself: the Budget Officer sees any IO, everyone
+    else only IOs belonging to one of their own NPC SBUs.
+    """
+    fiscalYear = fiscal_year
+    stripped = aufnr.lstrip("0") or "0"
+    mon = next(
+        (r for r in session.exec(select(NpcMonitoringIo).where(NpcMonitoringIo.fiscal_year == fiscalYear)).all() if (r.aufnr.lstrip("0") or "0") == stripped),
+        None,
+    )
+    salr = next(
+        (r for r in session.exec(select(SapSalrRaw).where(SapSalrRaw.fiscal_year == fiscalYear)).all() if (r.aufnr.lstrip("0") or "0") == stripped),
+        None,
+    )
+    req = next(
+        (r for r in session.exec(select(InternalOrderRequest).where(InternalOrderRequest.fiscal_year == fiscalYear)).all() if r.sap_document_number and (r.sap_document_number.lstrip("0") or "0") == stripped),
+        None,
+    )
+    sbu = mon.npc_sbu if mon else (req.sbu if req else None)
+    if mon is None and req is None and salr is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Internal Order not found.")
+    if not user.has_role("BUDGET_OFFICER") and sbu not in _my_npc_sbus(user, session):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "This Internal Order is outside your NPC SBU.")
+    return NpcIoDetailOut(
+        aufnr=(mon.aufnr if mon else salr.aufnr if salr else aufnr),
+        description=mon.io_description if mon else (req.project_title if req else None),
+        budgetCode=mon.budget_code if mon else (req.npc_budget_code if req else None),
+        sbu=sbu,
+        sapBudget=salr.budget if salr else None,
+        sapActual=salr.actual if salr else None,
+        sapCommitted=salr.committed if salr else None,
+        sapAllotted=salr.allotted if salr else None,
+        sapAvailable=salr.available if salr else None,
+        monitoringBudget=mon.budget if mon else None,
+        monitoringActual=mon.actual if mon else None,
+        monitoringCommitted=mon.committed if mon else None,
+        monitoringAvailable=mon.available if mon else None,
+        ytdActualByMonth=mon.ytd_actual_by_month if mon else None,
+        requestProjectTitle=req.project_title if req else None,
+        requestLocation=req.location if req else None,
+        requestProjectStart=req.project_start.date().isoformat() if req else None,
+        requestProjectEnd=req.project_end.date().isoformat() if req else None,
+        requestAmount=req.amount if req else None,
+        requestStatus=req.status if req else None,
+        requestCostCenter=req.cost_center if req else None,
+    )
+
+
+@router.get("/npc/io/{aufnr}", response_model=NpcIoDetailOut)
+def npc_io_detail(
+    aufnr: str,
+    fiscalYear: int,
+    user: AuthedUser = Depends(_require_utilization_access),
+    session: Session = Depends(get_session),
+):
+    return _build_io_detail(aufnr, fiscalYear, user, session)
+
+
+@router.get("/npc/io/{aufnr}/export")
+def npc_io_export(
+    aufnr: str,
+    fiscalYear: int,
+    user: AuthedUser = Depends(_require_utilization_access),
+    session: Session = Depends(get_session),
+):
+    """The same details the IO pop-up shows, as an .xlsx download."""
+    from io import BytesIO
+
+    from fastapi.responses import Response
+    from openpyxl import Workbook
+    from openpyxl.styles import Font
+
+    d = _build_io_detail(aufnr, fiscalYear, user, session)
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Internal Order"
+    rows = [
+        ("Internal Order", _short_aufnr(d.aufnr)),
+        ("Description", d.description or ""),
+        ("Budget Code", d.budgetCode or ""),
+        ("NPC SBU", d.sbu or ""),
+        (None, None),
+        ("SAP figures (S_ALR_87013019)", None),
+        ("Budget", d.sapBudget),
+        ("Actual", d.sapActual),
+        ("Commitment", d.sapCommitted),
+        ("Allotted", d.sapAllotted),
+        ("Available", d.sapAvailable),
+    ]
+    for label, value in rows:
+        ws.append([label, value])
+    for cell in ws["A"]:
+        cell.font = Font(bold=True)
+    for r in range(7, 12):
+        ws.cell(row=r, column=2).number_format = "#,##0.00"
+    ws.column_dimensions["A"].width = 30
+    ws.column_dimensions["B"].width = 40
+    buf = BytesIO()
+    wb.save(buf)
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="io-{_short_aufnr(d.aufnr)}.xlsx"'},
+    )
 
 
 def _effective_actual(io: NpcMonitoringIo, as_of_month: int | None) -> float:
@@ -542,15 +884,18 @@ def _npc_utilization_from_monitoring_import(
             NpcMonitoringProject.npc_sbu == effective_sbu,
         )
     ).all()
-    if not projects:
-        return None
-
     ios = session.exec(
         select(NpcMonitoringIo).where(
             NpcMonitoringIo.fiscal_year == fiscal_year,
             NpcMonitoringIo.npc_sbu == effective_sbu,
         )
     ).all()
+    # An SBU can have imported IOs but no Budget-Code project at all (e.g.
+    # Corporate Admin: the workbook has no Budget Code for it, only a
+    # code-less IO) - those still surface as Carry-over rows below, instead
+    # of falling through to the live-workflow tables and showing nothing.
+    if not projects and not ios:
+        return None
     ios_by_budget_code: dict[str, list[NpcMonitoringIo]] = {}
     for io in ios:
         if io.budget_code:
@@ -610,7 +955,7 @@ def _npc_utilization_from_monitoring_import(
     # ioBudget delta instead of hardcoded to 0 once the two can differ.
     carry_over_rows = [
         NpcUtilizationRow(
-            budgetCode=f"Carry-over ({io.aufnr})",
+            budgetCode=f"Carry-over ({_short_aufnr(io.aufnr)})",
             projectTitle=io.io_description,
             amount=round(io.carry_over_revised_amount if io.carry_over_revised_amount is not None else io.budget, 2),
             location=None,
@@ -628,6 +973,65 @@ def _npc_utilization_from_monitoring_import(
     carry_over_rows.sort(key=lambda r: r.ioCodes[0])
 
     return rows + carry_over_rows
+
+
+@router.get("/npc/export")
+def npc_utilization_export(
+    fiscalYear: int,
+    sbu: str | None = None,
+    user: AuthedUser = Depends(_require_utilization_access),
+    session: Session = Depends(get_session),
+):
+    """The whole NPC Utilization table (same rows, same SBU scoping) as an
+    .xlsx download, plus a second sheet with one row per Internal Order.
+    """
+    from io import BytesIO
+
+    from fastapi.responses import Response
+    from openpyxl import Workbook
+    from openpyxl.styles import Font
+
+    rows = npc_utilization(fiscalYear=fiscalYear, sbu=sbu, asOfMonth=None, user=user, session=session)
+    effective_sbu = _resolve_npc_sbu_scope(user, sbu, session)
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "NPC Utilization"
+    ws.append(["Budget Code", "Project Title", "Amount (VAT excl.)", "Location", "SBU", "IO Code", "IO Amount", "Balance"])
+    for r in rows:
+        ws.append([r.budgetCode, r.projectTitle, r.amount, r.location or "", r.sbu, ", ".join(_short_aufnr(c) for c in r.ioCodes), r.ioAmount, r.balance])
+    ws.append([])
+    ws.append(["Total", None, sum(r.amount for r in rows), None, None, None, sum(r.ioAmount for r in rows), sum(r.balance for r in rows)])
+
+    ios = wb.create_sheet("IO Details")
+    ios.append(["Budget Code", "Project Title", "IO Code", "IO Description", "IO Budget", "IO Actual", "Commitment", "Allotted", "Available"])
+    salr_by_aufnr = {(r.aufnr.lstrip("0") or "0"): r for r in session.exec(select(SapSalrRaw).where(SapSalrRaw.fiscal_year == fiscalYear)).all()}
+    for r in rows:
+        for io in r.ios:
+            salr = salr_by_aufnr.get(io.aufnr.lstrip("0") or "0")
+            ios.append([
+                r.budgetCode, r.projectTitle, _short_aufnr(io.aufnr), io.description, io.budget, io.actual,
+                salr.committed if salr else None, salr.allotted if salr else None, salr.available if salr else None,
+            ])
+
+    for sheet, money_cols, widths in ((ws, "CGH", [18, 40, 20, 14, 18, 40, 16, 16]), (ios, "EFGHI", [18, 40, 16, 40, 16, 16, 16, 16, 16])):
+        for cell in sheet[1]:
+            cell.font = Font(bold=True)
+        for i, w in enumerate(widths):
+            sheet.column_dimensions[chr(65 + i)].width = w
+        for col in money_cols:
+            for c in sheet[col][1:]:
+                c.number_format = "#,##0.00"
+    for c in ws[ws.max_row]:
+        c.font = Font(bold=True)
+
+    buf = BytesIO()
+    wb.save(buf)
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="npc-utilization-{effective_sbu.lower()}-{fiscalYear}.xlsx"'},
+    )
 
 
 @router.get("/npc", response_model=list[NpcUtilizationRow])

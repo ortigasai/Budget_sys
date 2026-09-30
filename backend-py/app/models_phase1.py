@@ -105,6 +105,76 @@ class Company(Phase1Model, table=True):
     id: str = Field(primary_key=True)
     code: str
     name: str
+    # SAP Requirements integration - admin-mapped SAP Cost Center that funds
+    # this company's KSSB V1 pull (see sap_raw_sync_service.py's
+    # sync_kssb_v1_raw). Null until mapped, same as the Node side.
+    costCenter: Optional[str] = None
+
+
+class UserGroupMembership(Phase1Model, table=True):
+    """Read-only mirror of the Node-owned access-group membership table (User
+    Management workbook) - only read here, to scope NPC views by the NPC SBU
+    the person belongs to."""
+
+    __tablename__ = "UserGroupMembership"
+
+    id: str = Field(primary_key=True)
+    userId: str
+    group: str
+    scope: str
+
+
+class PayComponent(Phase1Model, table=True):
+    __tablename__ = "PayComponent"
+
+    id: str = Field(primary_key=True)
+    name: str
+    # SAP Requirements integration - admin-mapped SAP GL Account that funds
+    # this pay component's KSSB V1 pull (see sap_raw_sync_service.py's
+    # sync_kssb_v1_raw). Null until mapped, same as the Node side.
+    glAccount: Optional[str] = None
+
+
+class FiscalCycleConfig(Phase1Model, table=True):
+    """Singleton row (id="singleton") - the Budget Officer's Target Calendar
+    Year/cycle-open switch and the two "YTD Actual through" cutoffs (see
+    backend/src/lib/fiscalCycle.ts). Read here only to derive the current
+    forecastYear (targetCalendarYear - 1) for the automatic SAP sync
+    schedule (see services/sap_sync_service.py) - never written to from
+    this side.
+    """
+
+    __tablename__ = "FiscalCycleConfig"
+
+    id: str = Field(primary_key=True)
+    asOfMonth2026: int
+    npcAsOfMonth2026: int
+    targetCalendarYear: int
+    cycleOpen: bool
+    updatedBy: Optional[str] = None
+    updatedAt: datetime
+
+
+class SapSyncLock(Phase1Model, table=True):
+    """DELIBERATE EXCEPTION to this file's own "read-only shadow model" rule
+    (see the module docstring above) - unlike every other model in this
+    file, this one IS written to from here. It's a single global mutex (one
+    row, id "global") shared with the Node backend's own SapSyncStatus/
+    SapSyncLock (backend/prisma/schema.prisma, migrated there - Python's
+    copy here stays outside Alembic's autogenerate scope the same way every
+    other table in this file already does), claimed by whichever of the
+    three scheduled sync jobs (Node's "historicalActuals"/"manpower",
+    Python's combined "sap" job here) starts first and released when it
+    finishes - see services/sap_sync_service.py's run_scheduled_sync. Not
+    owned by either backend individually, which is exactly why it needs to
+    be genuinely dual-write instead of a one-directional mirror.
+    """
+
+    __tablename__ = "SapSyncLock"
+
+    id: str = Field(primary_key=True, default="global")
+    heldBy: Optional[str] = None
+    heldAt: Optional[datetime] = None
 
 
 class ExpenseLineItem(Phase1Model, table=True):

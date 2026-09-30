@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useSearchParams } from "react-router-dom";
-import { api, NPC_SBU_OPTIONS, SBU_OPTIONS, type BudgetRequest, type NpcSbu, type RequestCategory, type Sbu } from "../api/client";
+import { api, requestLineDisplay, NPC_SBU_OPTIONS, SBU_OPTIONS, type BudgetRequest, type NpcSbu, type RequestCategory, type Sbu } from "../api/client";
+import { SBU_BATCH_TYPES } from "../components/SbuTypeSwitch";
 import { PageHeader } from "../components/PageHeader";
 import { useFiscalYear } from "../lib/fiscalCycle";
 
@@ -64,8 +65,13 @@ export function Step5DashboardPage() {
   // (?category=GAE, same as every other category).
   const [searchParams] = useSearchParams();
   const categoryParam = searchParams.get("category");
-  const category: RequestCategory | null = categoryParam === "GAE" || categoryParam === "DOE" || categoryParam === "NPC" || categoryParam === "REVENUE" ? categoryParam : null;
-  const usesSbuBreakdown = category === "DOE" || category === "REVENUE";
+  // SBU_BATCH_TYPES covers DOE/Commission/Cost of Sales/Depreciation &
+  // Amortization/Interest Expense - all SBU-scoped, same board-approved-
+  // budget-breakdown shape Revenue already has.
+  const sbuBatchCategoryValues = new Set(SBU_BATCH_TYPES.map((t) => t.category));
+  const category: RequestCategory | null =
+    categoryParam === "GAE" || categoryParam === "NPC" || categoryParam === "REVENUE" || sbuBatchCategoryValues.has(categoryParam as RequestCategory) ? (categoryParam as RequestCategory) : null;
+  const usesSbuBreakdown = category === "REVENUE" || sbuBatchCategoryValues.has(category as RequestCategory);
   const [sbuFilter, setSbuFilter] = useState<Sbu | "ALL">("ALL");
 
   const [npcHeadFilter, setNpcHeadFilter] = useState<NpcSbu | "ALL">("ALL");
@@ -125,7 +131,7 @@ export function Step5DashboardPage() {
   const finalize = useMutation({
     mutationFn: async (r: BudgetRequest) => (await api.post<BudgetRequest>(`/budget-requests/${r.id}/finalize`)).data,
     onSuccess: (updated, r) => {
-      setLastFinalized({ lineItemName: r.expenseLineItem.name, sapDocumentNumber: updated.sapDocumentNumber });
+      setLastFinalized({ lineItemName: requestLineDisplay(r).name, sapDocumentNumber: updated.sapDocumentNumber });
       queryClient.invalidateQueries({ queryKey: ["step5-dashboard"] });
     },
   });
@@ -143,7 +149,8 @@ export function Step5DashboardPage() {
   });
 
   const grouped = requests.reduce<Record<string, BudgetRequest[]>>((acc, r) => {
-    const key = r.expenseLineItem.ownerDepartment.name;
+    // SBU-batch categories (no owning centralized department) group by SBU instead.
+    const key = requestLineDisplay(r).ownerDepartmentName ?? (r.sbu ? `${r.sbu} SBU` : r.requestCategory);
     acc[key] = acc[key] ?? [];
     acc[key].push(r);
     return acc;
@@ -264,7 +271,7 @@ export function Step5DashboardPage() {
                 <tr key={r.id} className={`border-t border-slate-100 ${i % 2 === 1 ? "bg-slate-50/60" : ""}`}>
                   <td className="px-3 py-2">
                     <Link to={`/requests/${r.id}`} className="font-medium text-emerald-800 hover:underline">
-                      {r.expenseLineItem.name}
+                      {requestLineDisplay(r).name}
                     </Link>
                   </td>
                   <td className="px-3 py-2">₱{r.proposedAmount.toLocaleString()}</td>

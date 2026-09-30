@@ -11,21 +11,23 @@ import { api2 } from "../api/client";
 // "Restricted" state instead of linking in for anyone else, same idea as
 // the disabled "Coming soon" tile pattern, just a different reason.
 export function PhaseMenuPage() {
-  const { currentUser, hasRole } = useAuth();
-  const isBudgetOfficer = hasRole("BUDGET_OFFICER");
+  const { currentUser, hasRole, gate } = useAuth();
+  const isBudgetOfficer = gate("admin", hasRole("BUDGET_OFFICER"));
   const { data: reportAccess } = useQuery({
     queryKey: ["reports", "my-access"],
     queryFn: async () => (await api2.get<{ hasAccess: boolean }>("/reports/my-access")).data,
     enabled: !!currentUser,
   });
-  const hasReportAccess = reportAccess?.hasAccess ?? false;
+  const hasReportAccess = gate("reports", reportAccess?.hasAccess ?? false);
 
   return (
     <div className="mx-auto max-w-3xl py-8">
       <h1 className="mb-8 text-center text-lg font-semibold text-slate-600">Select a module to continue</h1>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        {PHASES.map((phase) => {
+        {PHASES.map((basePhase) => {
+          // Module 2 for someone whose group grants Dash Flow but none of the Utilization pages lands on Dash Flow instead.
+          const phase = basePhase.number === 2 && currentUser?.access && !currentUser.access["util.overview"] && !currentUser.access["util.reconciliation"] && !currentUser.access["util.npc"] && currentUser.access["util.dashflow"] ? { ...basePhase, to: "/dash-flow" } : basePhase;
           const restricted = phase.number === 4 && !hasReportAccess;
           return phase.to && !restricted ? (
             <Link key={phase.number} to={phase.to} className="group flex flex-col rounded-xl border border-slate-200 bg-white p-5 shadow-sm transition-colors hover:border-emerald-300 hover:shadow-md">

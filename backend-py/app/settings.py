@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     database_url: str
     port: int = 8000
     jwt_secret: str
+    # Node backend, asked for a caller's group-based access map (see auth.py) - the one source of truth for the User Management matrix and its admin edits.
+    node_backend_url: str = "http://127.0.0.1:4000"
     # Phase 3 transfer-request attachments (FR-3.1) - local disk storage,
     # same convention as the Node backend's multer-based uploads.
     upload_dir: str = "./uploads"
@@ -24,6 +26,7 @@ class Settings(BaseSettings):
     # lib/sapBroker.ts talks to, with its own set of per-report API keys.
     sap_broker_base_url: str = "https://paba.ortigasland.com.ph/api/v1"
     fbl3n_api_key: str = ""
+    kssb_v1_api_key: str = ""
     kssb_v2_api_key: str = ""
     salr_api_key: str = ""
 

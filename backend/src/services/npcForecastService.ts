@@ -2,8 +2,7 @@ import ExcelJS from "exceljs";
 import { prisma } from "../prisma";
 import { HttpError } from "../httpError";
 import { getFiscalCycle } from "../lib/fiscalCycle";
-import { fetchNpcUtilization, type NpcIoDetail } from "../lib/pyBackendClient";
-import { fetchSalrRows, type SalrRow } from "../lib/sapBroker";
+import { fetchNpcUtilization, fetchSalrCache, type NpcIoDetail, type SalrCacheRow } from "../lib/pyBackendClient";
 
 // Note 11 §8 - NPC Forecast is genuinely new: NPC's real data (budget code,
 // project title, IO linkage) lives in BudgetRequest/InternalOrderRequest,
@@ -82,10 +81,13 @@ export async function getNpcForecastRows(npcSbu: string, authorizationHeader: st
     // until ioRows/finalizedLines are both in hand below; the extra rows
     // for other SBUs are just unused map entries, not a correctness issue.
     prisma.npcForecastEntry.findMany({ where: { fiscalYear: forecastYear } }),
-    // Best-effort: an NPC Forecast view shouldn't 500 just because the
-    // broker is briefly unreachable - IO Actual just falls back to null
-    // (same as "no matching SALR row") for every row in that case.
-    fetchSalrRows(forecastYear).catch(() => [] as SalrRow[]),
+    // Best-effort: an NPC Forecast view shouldn't 500 just because Python is
+    // briefly unreachable - IO Actual just falls back to null (same as "no
+    // matching SALR row") for every row in that case. Reads Python's local
+    // SALR cache (see pyBackendClient.ts's fetchSalrCache) instead of
+    // calling the broker directly - Internal Order Request's own SALR
+    // checks already need this exact same report.
+    fetchSalrCache(forecastYear).catch(() => [] as SalrCacheRow[]),
   ]);
   const ioByBudgetCode = new Map(ioRows.map((r) => [r.budgetCode, r]));
   const forecastByBudgetCode = new Map(forecastEntries.map((e) => [e.budgetCode, e]));
@@ -95,10 +97,10 @@ export async function getNpcForecastRows(npcSbu: string, authorizationHeader: st
   // AUFNR is a 12-digit zero-padded Internal Order number; indexed both as-is
   // and with leading zeros stripped so a sap_document_number stored either
   // way still resolves.
-  const salrByAufnr = new Map<string, SalrRow>();
+  const salrByAufnr = new Map<string, SalrCacheRow>();
   for (const row of salrRows) {
-    salrByAufnr.set(row.AUFNR, row);
-    salrByAufnr.set(row.AUFNR.replace(/^0+/, ""), row);
+    salrByAufnr.set(row.aufnr, row);
+    salrByAufnr.set(row.aufnr.replace(/^0+/, ""), row);
   }
 
   // The set of rows to show is the union of real finalized NPC lines and
@@ -130,8 +132,8 @@ export async function getNpcForecastRows(npcSbu: string, authorizationHeader: st
       } else {
         const matchedSalr = (io?.ioCodes ?? [])
           .map((code) => salrByAufnr.get(code) ?? salrByAufnr.get(code.replace(/^0+/, "")))
-          .filter((r): r is SalrRow => Boolean(r));
-        ioActual = matchedSalr.length > 0 ? matchedSalr.reduce((sum, r) => sum + (Number(r.Actual) || 0), 0) : null;
+          .filter((r): r is SalrCacheRow => Boolean(r));
+        ioActual = matchedSalr.length > 0 ? matchedSalr.reduce((sum, r) => sum + (Number(r.actual) || 0), 0) : null;
       }
 
       // Per-IO breakdown, not lumped - each entry keeps its own
@@ -142,7 +144,7 @@ export async function getNpcForecastRows(npcSbu: string, authorizationHeader: st
         let actual = detail.actual;
         if (actual == null) {
           const matched = salrByAufnr.get(detail.aufnr) ?? salrByAufnr.get(detail.aufnr.replace(/^0+/, ""));
-          actual = matched ? Number(matched.Actual) || 0 : null;
+          actual = matched ? Number(matched.actual) || 0 : null;
         }
         return { code: detail.aufnr, description: detail.description, budget: detail.budget, actual };
       });

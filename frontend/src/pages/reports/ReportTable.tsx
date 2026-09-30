@@ -53,18 +53,32 @@ export interface ComparisonMeta {
 
 // Note 12's "heatmap": a variance beyond +-10% (of the left/baseline figure)
 // gets a soft background - over budget in soft red, under budget in soft
-// green. Same +-10% threshold the Variance Alert View preset pre-expands on.
+// green. Same +-10% default the Variance Alert View preset pre-expands on;
+// its own % and ₱ threshold fields (ReportsPage) override this per-session.
 export const HEATMAP_THRESHOLD_PCT = 10;
-function heatmapClass(variancePct: number | null): string {
-  if (variancePct == null) return "";
-  if (variancePct > HEATMAP_THRESHOLD_PCT) return "bg-red-50";
-  if (variancePct < -HEATMAP_THRESHOLD_PCT) return "bg-emerald-50";
-  return "";
-}
 function variancePctFor(row: ReportRow | ReportLineItem, meta: ComparisonMeta): number | null {
   const left = metricValue(row, meta.leftKey);
   const varianceVal = metricValue(row, meta.varianceKey);
   return left && varianceVal != null ? (varianceVal / left) * 100 : null;
+}
+// A row is flagged when EITHER threshold is breached - a big % swing on a
+// small-peso line and a big-peso swing on a low-% line should both surface,
+// not just the intersection of the two.
+function isAlertRow(row: ReportRow | ReportLineItem, meta: ComparisonMeta, thresholdPct: number, thresholdPeso: number | null): boolean {
+  const variancePct = variancePctFor(row, meta);
+  const varianceAmt = metricValue(row, meta.varianceKey);
+  const pctHit = variancePct != null && Math.abs(variancePct) > thresholdPct;
+  const pesoHit = thresholdPeso != null && varianceAmt != null && Math.abs(varianceAmt) > thresholdPeso;
+  return pctHit || pesoHit;
+}
+function heatmapClass(row: ReportRow | ReportLineItem, meta: ComparisonMeta, thresholdPct: number, thresholdPeso: number | null): string {
+  if (!isAlertRow(row, meta, thresholdPct, thresholdPeso)) return "";
+  const variancePct = variancePctFor(row, meta);
+  const varianceAmt = metricValue(row, meta.varianceKey);
+  const sign = variancePct ?? varianceAmt ?? 0;
+  if (sign > 0) return "bg-red-50";
+  if (sign < 0) return "bg-emerald-50";
+  return "";
 }
 
 export function ReportTable({
@@ -74,6 +88,8 @@ export function ReportTable({
   onToggleNotes,
   initialSortByVariance,
   initialExpandOverThreshold,
+  thresholdPct = HEATMAP_THRESHOLD_PCT,
+  thresholdPeso = null,
 }: {
   rows: ReportRow[];
   meta: ComparisonMeta;
@@ -81,11 +97,13 @@ export function ReportTable({
   onToggleNotes: (group: string) => void;
   initialSortByVariance?: boolean;
   initialExpandOverThreshold?: boolean;
+  thresholdPct?: number;
+  thresholdPeso?: number | null;
 }) {
   const [search, setSearch] = useState("");
   const [sortBy, setSortBy] = useState<"category" | "variance-abs" | "variance-pct">(initialSortByVariance ? "variance-pct" : "category");
   const [openCategories, setOpenCategories] = useState<Set<string>>(
-    () => new Set(initialExpandOverThreshold ? rows.filter((r) => Math.abs(variancePctFor(r, meta) ?? 0) > HEATMAP_THRESHOLD_PCT).map((r) => r.expenseGroup) : [])
+    () => new Set(initialExpandOverThreshold ? rows.filter((r) => isAlertRow(r, meta, thresholdPct, thresholdPeso)).map((r) => r.expenseGroup) : [])
   );
 
   const filtered = useMemo(() => {
@@ -164,7 +182,7 @@ export function ReportTable({
                 const variancePct = variancePctFor(r, meta);
                 return (
                   <Fragment key={r.expenseGroup}>
-                    <tr className={`${notesGroup === r.expenseGroup ? "bg-emerald-50/50" : heatmapClass(variancePct)}`}>
+                    <tr className={`${notesGroup === r.expenseGroup ? "bg-emerald-50/50" : heatmapClass(r, meta, thresholdPct, thresholdPeso)}`}>
                       <td className="px-2 py-1 font-medium">
                         <button onClick={() => toggleCategory(r.expenseGroup)} className="flex items-center gap-1 hover:text-emerald-700" disabled={r.lineItems.length === 0}>
                           {r.lineItems.length > 0 && <span className="inline-block w-3 text-slate-400">{isOpen ? "▾" : "▸"}</span>}
@@ -185,7 +203,7 @@ export function ReportTable({
                       r.lineItems.map((li) => {
                         const liVariancePct = variancePctFor(li, meta);
                         return (
-                          <tr key={`${r.expenseGroup}-${li.id}`} className={heatmapClass(liVariancePct)}>
+                          <tr key={`${r.expenseGroup}-${li.id}`} className={heatmapClass(li, meta, thresholdPct, thresholdPeso)}>
                             <td className="py-1 pl-8 pr-2 text-slate-600">{li.name}</td>
                             <td className="px-2 py-1 text-slate-600">{pesoOrDash(metricValue(li, meta.leftKey))}</td>
                             <td className="px-2 py-1 text-slate-600">{pesoOrDash(metricValue(li, meta.rightKey))}</td>

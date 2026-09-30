@@ -29,7 +29,27 @@ function peso(n: number) {
 // Phase 2/3 page. Restricted to SBU Finance Officers (own SBU only) plus the
 // Budget Officer (all SBUs), enforced server-side; this page shows whatever
 // GET /dash-flow/tickets returns rather than re-deriving access here.
+// Switched off for everyone for now - the menu entry stays visible for SBU
+// Finance members, but the page shows this notice and the API refuses every
+// request (see backend-py/app/routers/dash_flow.py's DASH_FLOW_ENABLED). Set
+// both to true to restore it.
+const DASH_FLOW_ENABLED = false;
+
 export function DashFlowBudgetCheckPage() {
+  if (!DASH_FLOW_ENABLED) {
+    return (
+      <div className="space-y-4">
+        <PageHeader subtitle="Dash Flow Budget Check is temporarily unavailable." />
+        <div className="rounded-lg border border-dashed border-slate-300 bg-white p-8 text-center text-sm text-slate-500 shadow-sm">
+          This page is not open for use yet. You'll be notified once it is available.
+        </div>
+      </div>
+    );
+  }
+  return <DashFlowBudgetCheckContent />;
+}
+
+function DashFlowBudgetCheckContent() {
   const [showHistory, setShowHistory] = useState(false);
   const queryClient = useQueryClient();
 

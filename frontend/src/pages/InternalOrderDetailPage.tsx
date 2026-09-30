@@ -1,3 +1,4 @@
+import { formatAufnr } from "../lib/formatAufnr";
 import { useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -111,7 +112,7 @@ export function InternalOrderDetailPage() {
         <Field label="Amount (VAT excl.)" value={peso(io.amount)} accent />
         <Field label="Project Start" value={new Date(io.projectStart).toLocaleDateString()} />
         <Field label="Project End" value={new Date(io.projectEnd).toLocaleDateString()} />
-        {io.sapDocumentNumber && <Field label="SAP Document #" value={io.sapDocumentNumber} />}
+        {io.sapDocumentNumber && <Field label="SAP Document #" value={formatAufnr(io.sapDocumentNumber)} />}
       </div>
 
       <div className="rounded-lg border border-slate-200 bg-white p-4 text-sm shadow-sm">
@@ -123,7 +124,7 @@ export function InternalOrderDetailPage() {
             <div>Not yet budgeted — requesting {io.requestType === "REALLOCATION" ? "a reallocation" : "a supplement"}</div>
             {io.requestType === "REALLOCATION" && (
               <div className="text-slate-600">
-                Source: {io.reallocationSourceType === "NPC_BUDGET" ? `NPC Budget ${io.reallocationNpcBudgetCode}` : `IO Budget ${io.reallocationIoBudgetCode || "(pending SAP integration)"}`}
+                Source: {io.reallocationSourceType === "NPC_BUDGET" ? `NPC Budget ${io.reallocationNpcBudgetCode}` : `IO Budget ${io.reallocationIoBudgetCode ? formatAufnr(io.reallocationIoBudgetCode) : "(pending SAP integration)"}`}
               </div>
             )}
           </div>

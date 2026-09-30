@@ -84,3 +84,28 @@ class SapCommitment(Phase2Model, table=True):
     # No formal FK constraint - see SapActualTransaction's field comment above.
     expense_line_item_id: Optional[str] = Field(default=None, index=True)
     created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class SapSyncStatus(Phase2Model, table=True):
+    """One row per fiscal year - the durable record of sap_sync_service.py's
+    most recent sync attempt for that year, so "last synced" survives a
+    service restart and is visible to every user, not just whoever's
+    browser happened to poll while a sync was running (the in-memory-only
+    state this replaces couldn't do either). `status`/`started_at`/
+    `finished_at`/`error` describe the MOST RECENT attempt, which may have
+    failed - `last_success_at`/`actuals_synced`/`commitments_synced` are
+    only ever updated by a successful run, so the UI can keep showing
+    "last synced successfully at <x>" even right after a later attempt
+    errors out.
+    """
+
+    __tablename__ = "sap_sync_status"
+
+    fiscal_year: int = Field(primary_key=True)
+    status: str = "idle"  # "idle" | "running" | "success" | "error"
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+    last_success_at: Optional[datetime] = None
+    actuals_synced: Optional[int] = None
+    commitments_synced: Optional[int] = None
+    error: Optional[str] = None

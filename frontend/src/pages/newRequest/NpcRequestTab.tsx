@@ -1,7 +1,9 @@
 import { useState } from "react";
+import { ApproverPicker } from "../../components/ApproverPicker";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
-import { api, NPC_LOCATION_OPTIONS, NPC_SBU_OPTIONS, type BudgetRequest, type NpcLocation, type NpcSbu } from "../../api/client";
+import { npcGroupSbus } from "../../lib/groupScope";
+import { api, downloadFile, NPC_LOCATION_OPTIONS, NPC_SBU_OPTIONS, type BudgetRequest, type NpcLocation, type NpcSbu } from "../../api/client";
 import { useAuth } from "../../context/AuthContext";
 import { PageHeader } from "../../components/PageHeader";
 import { SectionLabel } from "../../components/TabBar";
@@ -19,11 +21,15 @@ export function NpcRequestTab({ subtitle }: { subtitle: string }) {
   const { targetYear: FISCAL_YEAR } = useFiscalYear();
 
   const [npcSbu, setNpcSbu] = useState<NpcSbu | "">("");
+  const { currentUser: authUser, hasRole: authHasRole } = useAuth();
+  const myNpcSbus = npcGroupSbus(authUser, authHasRole("BUDGET_OFFICER"));
   const [npcLocation, setNpcLocation] = useState<NpcLocation | "">("");
   const [projectTitle, setProjectTitle] = useState("");
   const [projectStartDate, setProjectStartDate] = useState("");
   const [projectEndDate, setProjectEndDate] = useState("");
   const [costCenter, setCostCenter] = useState("");
+  const [departmentHeadId, setDepartmentHeadId] = useState("");
+  const [sbuHeadId, setSbuHeadId] = useState("");
   const [amountInput, setAmountInput] = useState("");
   const [amountFocused, setAmountFocused] = useState(false);
   const [created, setCreated] = useState<BudgetRequest | null>(null);
@@ -67,6 +73,8 @@ export function NpcRequestTab({ subtitle }: { subtitle: string }) {
           projectEndDate,
           costCenter,
           amount,
+          departmentHeadId: departmentHeadId || undefined,
+          sbuHeadId: sbuHeadId || undefined,
         })
       ).data,
     onSuccess: (data) => {
@@ -89,7 +97,7 @@ export function NpcRequestTab({ subtitle }: { subtitle: string }) {
   });
 
   const submitMutation = useMutation({
-    mutationFn: async () => (await api.post<BudgetRequest>(`/budget-requests/${created!.id}/submit`)).data,
+    mutationFn: async () => (await api.post<BudgetRequest>(`/budget-requests/${created!.id}/submit`, { departmentHeadId: departmentHeadId || undefined, sbuHeadId: sbuHeadId || undefined })).data,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["my-requests"] });
       navigate("/requests/mine");
@@ -169,7 +177,7 @@ export function NpcRequestTab({ subtitle }: { subtitle: string }) {
             </label>
             <select className="mt-1 w-full rounded border border-slate-300 px-2 py-1.5 text-sm" value={npcSbu} onChange={(e) => setNpcSbu(e.target.value as NpcSbu)}>
               <option value="">— Select —</option>
-              {NPC_SBU_OPTIONS.map((o) => (
+              {NPC_SBU_OPTIONS.filter((o) => !myNpcSbus || myNpcSbus.includes(o.value)).map((o) => (
                 <option key={o.value} value={o.value}>
                   {o.label}
                 </option>
@@ -234,14 +242,28 @@ export function NpcRequestTab({ subtitle }: { subtitle: string }) {
         </div>
       </div>
 
+      <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+        <SectionLabel>Approval</SectionLabel>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <ApproverPicker label="Department Head / Approver" value={departmentHeadId} onChange={setDepartmentHeadId} />
+          <ApproverPicker label="SBU or Division Head" value={sbuHeadId} onChange={setSbuHeadId} />
+        </div>
+      </div>
+
       <div className="flex flex-wrap items-center gap-3 rounded-lg border border-slate-200 bg-white p-3 text-sm shadow-sm">
         <span className="font-medium text-slate-600">Bulk upload via spreadsheet:</span>
-        <a
-          href={`/api/budget-requests/npc-template?npcSbu=${npcSbu}&fiscalYear=${FISCAL_YEAR}`}
-          className={`rounded-md border px-3 py-1.5 text-xs font-medium ${!npcSbu ? "pointer-events-none border-slate-200 text-slate-400" : "border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100"}`}
+        <button
+          type="button"
+          disabled={!npcSbu}
+          onClick={() =>
+            downloadFile(`/budget-requests/npc-template?npcSbu=${npcSbu}&fiscalYear=${FISCAL_YEAR}`, `npc-request-template-${npcSbu.toLowerCase()}-${FISCAL_YEAR}.xlsx`).catch(() =>
+              setBulkStatus({ ok: false, message: "Failed to download the template." })
+            )
+          }
+          className={`rounded-md border px-3 py-1.5 text-xs font-medium ${!npcSbu ? "cursor-not-allowed border-slate-200 text-slate-400" : "border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100"}`}
         >
           Open Spreadsheet Template
-        </a>
+        </button>
         <label className={`rounded-md border px-3 py-1.5 text-xs font-medium ${!npcSbu ? "cursor-not-allowed border-slate-200 text-slate-400" : "cursor-pointer border-slate-300 text-slate-700 hover:bg-slate-100"}`}>
           {bulkUploadMutation.isPending ? "Uploading…" : "Upload Completed Template"}
           <input

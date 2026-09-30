@@ -53,6 +53,10 @@ enum RequestCategory {
   DOE
   NPC
   REVENUE
+  COMMISSION
+  COST_OF_SALES
+  DEPRECIATION_AMORTIZATION
+  INTEREST_EXPENSE
 }
 
 // Notes_8: the Strategic Business Units DOE/NPC/Revenue requests are tagged
@@ -95,6 +99,11 @@ enum RequestStage {
   REVENUE_BU_FINANCE_HEAD_REVIEW
   REVENUE_BUDGET_OFFICER_REVIEW
   REVENUE_BCA_HEAD_REVIEW
+  // "Budgeting System_Approval Workflow" - New Request chains for GAE/DOE/NPC.
+  BUDGET_OFFICER_VALIDATION
+  SF_VALIDATION
+  SF_HEAD_REVIEW
+  SBU_HEAD_REVIEW
 }
 
 enum HeadcountRequestStage {
@@ -164,6 +173,8 @@ enum ReviewDecisionType {
   APPROVE
   REJECT
   RETURN
+  REASSIGN
+  CANCEL
 }
 
 enum BulkUploadStatus {
@@ -252,6 +263,7 @@ model User {
 
   roleAssignments        RoleAssignment[] @relation("AssignedUser")
   sbuRoleAssignments     SbuRoleAssignment[] @relation("SbuAssignedUser")
+  groupMemberships       UserGroupMembership[]
   createdBudgetRequests  BudgetRequest[]  @relation("CreatedBy")
   finalizedBudgetLines   FinalizedBudgetLine[]
   npcForecastEntries     NpcForecastEntry[]
@@ -359,6 +371,20 @@ model ExpenseLineItem {
   // still shows every row regardless (management view, not the picker).
   visibleToDepartmentId String?
   visibleToDepartment   Department?           @relation("VisibleToDepartment", fields: [visibleToDepartmentId], references: [id])
+  // "Budgeting System_Expense Line Items" column J ("Centralized Dept
+  // Requestor/Reviewer") - who a GAE request against this line item is
+  // automatically routed to for Centralized L1 Review, once its Department
+  // Head has approved (see services/approvalChain.ts's chainFor). A loose
+  // reference to User.id (this app's cross-model convention - see e.g.
+  // BudgetRequest.departmentHeadId), not a FK.
+  centralizedReviewerId String?
+  // "Budgeting System_Expense Line Items" column K ("Centralized Dept
+  // Head") - same loose User.id reference convention as
+  // centralizedReviewerId above. Used to scope the GAE Forecast page down to
+  // just the line items assigned to the viewing Centralized Dept Requestor/
+  // Reviewer or Centralized Dept Head (see routes/forecast.ts), instead of
+  // showing every line item in their department.
+  centralizedHeadId String?
   isCustom          Boolean                @default(false)
   status            ExpenseLineItemStatus  @default(STANDARD)
   extraFieldsConfig Json                   @default("[]")
@@ -523,6 +549,49 @@ model FiscalCycleConfig {
   updatedAt          DateTime @updatedAt
 }
 
+// The Node-side counterpart to backend-py's SapSyncStatus (same idea, kept
+// separate per backend since each owns its own tables to write into) - one
+// row per background sync job ("historicalActuals", "manpower"), so a
+// synchronous "Sync from SAP"/"Run Manpower Budget" click that used to sit
+// on the request until it finished (and could hit the frontend's own
+// request timeout on a big pull) instead starts in the background
+// immediately and is polled here - see lib/backgroundSync.ts. `status`/
+// `startedAt`/`finishedAt`/`error` describe the most recent attempt, which
+// may have failed; `lastSuccessAt`/`resultJson` are only ever updated by a
+// successful run, so "last synced at <x>" survives a later failed attempt.
+model SapSyncStatus {
+  module        String    @id
+  status        String    @default("idle") // "idle" | "running" | "success" | "error"
+  startedAt     DateTime?
+  finishedAt    DateTime?
+  lastSuccessAt DateTime?
+  resultJson    Json?
+  error         String?
+}
+
+// A single global mutex, one row ("global"), claimed by whichever of the
+// three sync jobs (Node's "historicalActuals"/"manpower", Python's combined
+// "sap" job) starts first, released when it finishes - so the SAP broker
+// only ever sees ONE of these syncs running at a time instead of all of
+// them hammering it simultaneously (they used to all fire together at
+// startup and every 10-minute tick after). A losing job just skips that
+// tick and tries again on its own next one, rather than queuing/blocking -
+// individual syncs run well under 10 minutes, so in steady state every job
+// gets a clear turn.
+//
+// Deliberately NOT following models_phase1.py's "read-only shadow model"
+// convention on the Python side - this table is genuinely dual-write (both
+// backends claim/release the same row), not owned by either one, so
+// Python's own mirror of it (in services/sap_sync_service.py) is an
+// explicit, documented exception to that file's own rule. Migrated here
+// (Prisma) only - Python's copy stays outside Alembic's autogenerate scope
+// the same way every other Node-owned table already does.
+model SapSyncLock {
+  id      String    @id @default("global")
+  heldBy  String?
+  heldAt  DateTime?
+}
+
 model DepartmentalBudgetCap {
   id                   String     @id @default(cuid())
   departmentId         String
@@ -612,8 +681,18 @@ model BudgetRequest {
   departmentId          String
   department            Department    @relation(fields: [departmentId], references: [id])
   fiscalYear            Int
-  expenseLineItemId     String
-  expenseLineItem       ExpenseLineItem @relation(fields: [expenseLineItemId], references: [id])
+  // Optional - null for the SBU-batch categories (DOE/Commission/Cost of
+  // Sales/Depreciation & Amortization/Interest Expense - see
+  // approvalChain.ts's SBU_BATCH_CATEGORIES), which carry a raw Cost Center +
+  // GL Account pair directly (costCenter/glAccount below) instead of a
+  // catalog line item - the real SAP upload shape for these has no line-item
+  // name at all, just Cost Center/Cost Element + monthly amounts. Always
+  // non-null for GAE/NPC/REVENUE.
+  expenseLineItemId     String?
+  expenseLineItem       ExpenseLineItem? @relation(fields: [expenseLineItemId], references: [id])
+  // Only set (and only meaningful) when expenseLineItemId is null - see above.
+  costCenter            String?
+  glAccount             String?
   monthlyAmounts        Json          // number[12]
   proposedAmount        Float
   businessJustification String
@@ -647,6 +726,21 @@ model BudgetRequest {
   budgetCode             String?
   currentStage          RequestStage  @default(DRAFT)
   status                RequestStatus @default(DRAFT)
+  // Approval Workflow: the requestor picks the Department Head / Approver (and,
+  // for NPC, the SBU or Division Head) from the employee list at submission;
+  // assigneeId is whoever the CURRENT stage is assigned to when it isn't
+  // simply role-based (those dropdown picks, or a manual reassignment).
+  departmentHeadId      String?
+  sbuHeadId             String?
+  // Own-department GAE requests (no separate Department Head) - who the
+  // Centralized Department Requestor manually assigns their own Centralized
+  // Department Head review to, picked from the employee list at submission.
+  centralizedHeadId     String?
+  assigneeId            String?
+  // GAE: a Centralized Department Requestor raising a request for their OWN
+  // centralized department skips the Department Head and Centralized
+  // Requestor stages - it goes straight to the Centralized Department Head.
+  ownDeptInitiated      Boolean       @default(false)
   budgetCutAmount        Float        @default(0)
   isOverBudget           Boolean      @default(false)
   // Set at submit time when this is an over-limit Mobile Phone request;
@@ -1015,4 +1109,31 @@ model ForecastReviewDecision {
   decidedBy            User                    @relation(fields: [decidedById], references: [id])
   comment              String?
   timestamp            DateTime                @default(now())
+}
+
+// "Budgeting System_User Management" - which access group(s) (BCA/CD/NCD/MC/
+// SF/NPC) a person belongs to, driving module/page visibility on top of (not
+// instead of) the approval-workflow roles above. `scope` is the group's own
+// scoping value from the sheet: department name (CD/NCD), SBU (SF), NPC SBU
+// (NPC); null for BCA/MC. One row per (user, group, scope) - a person can
+// belong to several groups, or the same group under several scopes.
+model UserGroupMembership {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  group  String
+  scope  String @default("")
+
+  @@unique([userId, group, scope])
+}
+
+// Admin-edited overrides on top of the default group -> module access matrix
+// in src/lib/accessControl.ts (one row per cell the Budget Officer changed
+// from the workbook's default). allowed=true means "P", false means "X".
+model AccessMatrixCell {
+  key     String
+  group   String
+  allowed Boolean
+
+  @@id([key, group])
 }

@@ -1,36 +1,12 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, type AdditionalHeadcountRequest, type BudgetRequest, type HeadcountReviewDecision, type MobilePhoneBudgetRequest, type Office365AccountRequest, type ReviewDecision, type RevenueBatchSummary } from "../api/client";
+import { api, requestLineDisplay, type AdditionalHeadcountRequest, type BudgetRequest, type DemoUser, type HeadcountReviewDecision, type MobilePhoneBudgetRequest, type Office365AccountRequest, type ReviewDecision, type RevenueBatchSummary } from "../api/client";
 import { StatusBadge } from "../components/StatusBadge";
+import { SearchableSelect } from "../components/SearchableSelect";
 import { PageHeader } from "../components/PageHeader";
 import { roleLabel } from "../components/RoleSwitcher";
 import { useFiscalYear } from "../lib/fiscalCycle";
-
-// Mirrors workflowService.ts's approve-path transitions so the reviewer can
-// see where a request goes next before they act. Only the stages that pass
-// through this Inbox (not BUDGET_OFFICER_REVIEW, which lives on Step5) need
-// a "what happens on approve" entry — approving from BUDGET_OFFICER_REVIEW
-// itself isn't done from here.
-const BCA_THRESHOLD = 1_000_000;
-
-function nextApprovalTarget(r: BudgetRequest): string {
-  const ownerDept = r.expenseLineItem.ownerDepartment.name;
-  switch (r.currentStage) {
-    case "DEPT_HEAD_REVIEW":
-      return r.requiresCfoApproval ? roleLabel("CFO") : `${roleLabel("CENTRALIZED_FIRST_LEVEL_REVIEWER")} (${ownerDept})`;
-    case "CFO_APPROVAL":
-      return `${roleLabel("CENTRALIZED_FIRST_LEVEL_REVIEWER")} (${ownerDept})`;
-    case "CENTRALIZED_L1_REVIEW":
-      return `${roleLabel("CENTRALIZED_DEPARTMENT_HEAD")} (${ownerDept})`;
-    case "CENTRALIZED_HEAD_REVIEW":
-      return r.proposedAmount > BCA_THRESHOLD ? roleLabel("BCA_HEAD") : roleLabel("BUDGET_OFFICER");
-    case "BCA_HEAD_REVIEW":
-      return roleLabel("BUDGET_OFFICER");
-    default:
-      return roleLabel("BUDGET_OFFICER");
-  }
-}
 
 const HEADCOUNT_DECISION_ENDPOINT: Record<string, string> = {
   DEPT_HEAD_REVIEW: "dept-head",
@@ -489,19 +465,13 @@ function RevenueBatchInboxSection() {
   );
 }
 
-const DECISION_ENDPOINT: Record<string, string> = {
-  DEPT_HEAD_REVIEW: "dept-head",
-  CFO_APPROVAL: "cfo",
-  CENTRALIZED_L1_REVIEW: "centralized-l1",
-  CENTRALIZED_HEAD_REVIEW: "centralized-head",
-  BCA_HEAD_REVIEW: "bca-head",
-};
-
-const DECISION_LABELS: Record<string, string> = { APPROVE: "Approved", REJECT: "Rejected", RETURN: "Returned" };
+const DECISION_LABELS: Record<string, string> = { APPROVE: "Approved", REJECT: "Rejected", RETURN: "Returned", REASSIGN: "Reassigned", CANCEL: "Cancelled" };
 const DECISION_COLORS: Record<string, string> = {
   APPROVE: "bg-emerald-100 text-emerald-800",
   REJECT: "bg-red-100 text-red-700",
   RETURN: "bg-red-100 text-red-700",
+  REASSIGN: "bg-blue-100 text-blue-700",
+  CANCEL: "bg-slate-200 text-slate-600",
 };
 
 function DecisionBadge({ decision }: { decision: string }) {
@@ -547,10 +517,14 @@ function DecisionHistoryList({ decisions }: { decisions: DecisionLike[] }) {
 const STAGE_DISPLAY: Record<string, string> = {
   DEPT_HEAD_REVIEW: "Department Head",
   CFO_APPROVAL: "CFO",
-  CENTRALIZED_L1_REVIEW: "Centralized First-Level Reviewer",
+  CENTRALIZED_L1_REVIEW: "Centralized Department Requestor/Reviewer",
   CENTRALIZED_HEAD_REVIEW: "Centralized Department Head",
   BCA_HEAD_REVIEW: "BC&A Head",
   BUDGET_OFFICER_REVIEW: "Budget Officer",
+  BUDGET_OFFICER_VALIDATION: "Budget Officer Validation",
+  SF_VALIDATION: "SBU Finance Validation",
+  SF_HEAD_REVIEW: "SBU Finance Head",
+  SBU_HEAD_REVIEW: "SBU or Division Head",
   HR_ANALYST_REVIEW: "HR Analyst",
   HR_HEAD_REVIEW: "HR Head",
   HEAD_REVIEW: "Centralized Department Head",
@@ -609,8 +583,8 @@ function ReviewHistorySection() {
   const entries = [
     ...budgetHistory.map((r) => ({
       id: `budget-${r.id}`,
-      label: r.expenseLineItem.name,
-      sublabel: `${r.department.name} → ${r.expenseLineItem.ownerDepartment.name} · ₱${r.proposedAmount.toLocaleString()}`,
+      label: requestLineDisplay(r).name,
+      sublabel: `${r.department.name}${requestLineDisplay(r).ownerDepartmentName ? ` → ${requestLineDisplay(r).ownerDepartmentName}` : ""} · ₱${r.proposedAmount.toLocaleString()}`,
       link: `/requests/${r.id}`,
       decision: r.myDecision,
     })),
@@ -704,20 +678,36 @@ export function InboxPage() {
   const [comment, setComment] = useState("");
   const [error, setError] = useState<string | null>(null);
 
+  const { data: allUsers = [] } = useQuery({
+    queryKey: ["auth", "users"],
+    queryFn: async () => (await api.get<DemoUser[]>("/auth/users")).data,
+  });
+  const [reassignTo, setReassignTo] = useState("");
+
+  const refresh = () => {
+    queryClient.invalidateQueries({ queryKey: ["inbox"] });
+    queryClient.invalidateQueries({ queryKey: ["reviewed-by-me"] });
+    queryClient.invalidateQueries({ queryKey: ["my-requests"] });
+    setExpanded(null);
+    setComment("");
+    setReassignTo("");
+    setError(null);
+  };
   const decide = useMutation({
-    mutationFn: async ({ request, decision }: { request: BudgetRequest; decision: "APPROVE" | "REJECT" | "RETURN" }) => {
-      const endpoint = DECISION_ENDPOINT[request.currentStage];
-      const body = request.currentStage === "CENTRALIZED_L1_REVIEW" ? { decision, varianceJustification: comment || undefined } : { decision, comment: comment || undefined };
-      return (await api.post(`/budget-requests/${request.id}/decisions/${endpoint}`, body)).data;
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["inbox"] });
-      queryClient.invalidateQueries({ queryKey: ["reviewed-by-me"] });
-      setExpanded(null);
-      setComment("");
-      setError(null);
-    },
+    mutationFn: async ({ request, decision }: { request: BudgetRequest; decision: "APPROVE" | "RETURN_PREVIOUS" | "RETURN_REQUESTOR" }) =>
+      (await api.post(`/budget-requests/${request.id}/decision`, { decision, comment: comment || undefined })).data,
+    onSuccess: refresh,
     onError: (err: any) => setError(err.response?.data?.error ?? "Action failed."),
+  });
+  const reassign = useMutation({
+    mutationFn: async (request: BudgetRequest) => (await api.post(`/budget-requests/${request.id}/reassign`, { userId: reassignTo, comment: comment || undefined })).data,
+    onSuccess: refresh,
+    onError: (err: any) => setError(err.response?.data?.error ?? "Reassign failed."),
+  });
+  const cancel = useMutation({
+    mutationFn: async (request: BudgetRequest) => (await api.post(`/budget-requests/${request.id}/cancel`, { comment: comment || undefined })).data,
+    onSuccess: refresh,
+    onError: (err: any) => setError(err.response?.data?.error ?? "Cancel failed."),
   });
 
   if (isLoading) return <div className="text-sm text-slate-400">Loading…</div>;
@@ -740,20 +730,20 @@ export function InboxPage() {
           </div>
           {requests.map((r) => {
             const isOpen = expanded === r.id;
-            const approveLabel = r.currentStage === "CENTRALIZED_L1_REVIEW" ? "Approve" : "Approve";
-            const negativeLabel = r.currentStage === "CENTRALIZED_L1_REVIEW" ? "Reject" : "Return";
-            const negativeDecision = r.currentStage === "CENTRALIZED_L1_REVIEW" ? "REJECT" : "RETURN";
+            const nav = r as BudgetRequest & { nextStage?: string | null; previousStage?: string | null };
+            const busy = decide.isPending || reassign.isPending || cancel.isPending;
 
             return (
               <div key={r.id} className="rounded-lg border border-slate-200 border-l-4 border-l-amber-400 bg-white p-4 text-sm shadow-sm">
                 <div className="flex items-center justify-between">
                   <div>
-                    <div className="text-xs font-medium tracking-wide text-slate-400">{r.expenseLineItem.category}</div>
+                    <div className="text-xs font-medium tracking-wide text-slate-400">{requestLineDisplay(r).category}</div>
                     <Link to={`/requests/${r.id}`} className="font-medium text-emerald-800 hover:underline">
-                      {r.expenseLineItem.name}
+                      {requestLineDisplay(r).name}
                     </Link>
                     <div className="text-xs text-slate-500">
-                      {r.department.name} → {r.expenseLineItem.ownerDepartment.name} · ₱{r.proposedAmount.toLocaleString()} · by {r.createdBy.name}
+                      {r.department.name}
+                      {requestLineDisplay(r).ownerDepartmentName ? ` → ${requestLineDisplay(r).ownerDepartmentName}` : ""} · ₱{r.proposedAmount.toLocaleString()} · by {r.createdBy.name}
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
@@ -775,19 +765,35 @@ export function InboxPage() {
                   <div className="mt-3 space-y-2 border-t border-slate-100 pt-3">
                     <div className="text-slate-600">{r.businessJustification}</div>
                     <div className="text-xs text-slate-500">
-                      If approved, this moves to:{""}
-                      <span className="font-medium text-slate-700">{nextApprovalTarget(r)}</span>
+                      If you proceed, this moves to: <span className="font-medium text-slate-700">{nav.nextStage ? StageLabel(nav.nextStage) : "Finalize & Upload"}</span>
                     </div>
                     <DecisionHistoryList decisions={r.reviewDecisions} />
-                    <label className="block text-xs font-medium text-slate-600">{r.currentStage === "CENTRALIZED_L1_REVIEW" ? "Variance justification (required only if the department is over its cap)" : "Comment (required to Return)"}</label>
+                    <label className="block text-xs font-medium text-slate-600">Comment (required to return)</label>
                     <textarea className="w-full rounded border border-slate-300 px-2 py-1.5 text-sm" rows={2} value={comment} onChange={(e) => setComment(e.target.value)} />
                     {error && <div className="text-red-700">{error}</div>}
-                    <div className="flex gap-2">
-                      <button onClick={() => decide.mutate({ request: r, decision: "APPROVE" })} disabled={decide.isPending} className="rounded bg-emerald-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-600 disabled:opacity-50">
-                        {approveLabel}
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button onClick={() => decide.mutate({ request: r, decision: "APPROVE" })} disabled={busy} className="rounded bg-emerald-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-600 disabled:opacity-50">
+                        Proceed to next stage
                       </button>
-                      <button onClick={() => decide.mutate({ request: r, decision: negativeDecision as any })} disabled={decide.isPending} className="rounded bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-500 disabled:opacity-50">
-                        {negativeLabel}
+                      <button onClick={() => decide.mutate({ request: r, decision: "RETURN_PREVIOUS" })} disabled={busy} className="rounded bg-amber-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-500 disabled:opacity-50">
+                        {nav.previousStage ? `Return to ${StageLabel(nav.previousStage)}` : "Return to requestor"}
+                      </button>
+                      {nav.previousStage && (
+                        <button onClick={() => decide.mutate({ request: r, decision: "RETURN_REQUESTOR" })} disabled={busy} className="rounded bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-500 disabled:opacity-50">
+                          Return to requestor
+                        </button>
+                      )}
+                      <button onClick={() => cancel.mutate(r)} disabled={busy} className="rounded border border-red-300 px-3 py-1.5 text-xs font-medium text-red-700 hover:bg-red-50 disabled:opacity-50">
+                        Cancel ticket
+                      </button>
+                    </div>
+                    <div className="flex flex-wrap items-end gap-2 border-t border-slate-100 pt-2">
+                      <div className="w-64">
+                        <label className="mb-1 block text-xs font-medium text-slate-500">Reassign this stage to</label>
+                        <SearchableSelect placeholder="Search employees…" options={allUsers.filter((u) => u.isEmployee).map((u) => ({ value: u.id, label: u.name, sublabel: u.department?.name }))} value={reassignTo} onChange={setReassignTo} />
+                      </div>
+                      <button onClick={() => reassign.mutate(r)} disabled={busy || !reassignTo} className="rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-50">
+                        Reassign
                       </button>
                     </div>
                   </div>

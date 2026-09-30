@@ -16,6 +16,8 @@ import { BudgetCodesTab } from "./BudgetCodesTab";
 import { ForecastCategoryMappingsTab } from "./ForecastCategoryMappingsTab";
 import { ManpowerGlCcTab } from "./ManpowerGlCcTab";
 import { NpcMonitoringImportTab } from "./NpcMonitoringImportTab";
+import { SapSyncStatusTab } from "./SapSyncStatusTab";
+import { AccessControlTab } from "./AccessControlTab";
 
 // Shared with Layout.tsx's AdminConsoleSidebarNav, which renders this same
 // list as real `?tab=` links in the leftmost sidebar, grouped by `group`
@@ -32,12 +34,16 @@ export type AdminGroup = (typeof ADMIN_GROUPS)[number];
 export const ADMIN_TABS = [
   { id: "budget-cycle", label: "Budget Cycle", group: "General" },
   { id: "due-dates", label: "Stage Due Dates", group: "General" },
+  // Feeds Forecast GAE/DOE, Manpower, Utilization/Transfer/Dash Flow/Reports
+  // all at once - not one module's.
+  { id: "sap-sync-status", label: "SAP Sync Status", group: "General" },
   // Spans GAE's CENTRALIZED_DEPARTMENT prefix and NPC's NPC_HEAD prefix.
   { id: "budget-codes", label: "Budget Codes", group: "General" },
   // Classifies Forecast rows across GAE/DOE/NPC/Revenue - not one module's.
   { id: "forecast-categories", label: "Forecast Categories", group: "General" },
   { id: "reason-codes", label: "Reason Codes", group: "General" },
   { id: "roles", label: "Role Assignments", group: "General" },
+  { id: "access-control", label: "Access Control", group: "General" },
   // Assigns each Department to an NPC SBU, which also scopes Utilization's
   // NPC view - spans two modules, not owned by either alone.
   { id: "department-sbu", label: "Department SBU", group: "General" },
@@ -67,6 +73,7 @@ export function AdminConsolePage() {
 
   return (
     <div className="space-y-4">
+      {tab === "sap-sync-status" && <SapSyncStatusTab />}
       {tab === "expense-items" && <ExpenseLineItemsTab />}
       {tab === "budget-codes" && <BudgetCodesTab />}
       {tab === "forecast-categories" && <ForecastCategoryMappingsTab />}
@@ -74,6 +81,7 @@ export function AdminConsolePage() {
       {tab === "thresholds" && <ThresholdsTab />}
       {tab === "reason-codes" && <ReasonCodesTab />}
       {tab === "roles" && <RoleAssignmentsTab />}
+      {tab === "access-control" && <AccessControlTab />}
       {tab === "sbu-roles" && <SbuRoleAssignmentsTab />}
       {tab === "io-locations" && <IoLocationsTab />}
       {tab === "cc-gl-codes" && <CcGlCodesTab />}

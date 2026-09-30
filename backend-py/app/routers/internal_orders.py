@@ -31,7 +31,7 @@ from ..auth import AuthedUser, get_current_user, require_role
 from ..db import enum_eq, get_session
 from ..models_phase1 import BudgetRequest, Department, User
 from ..models_phase3 import InternalOrderRequest, IoLocation, IoReviewDecision
-from ..services.sap_broker import fetch_salr_rows
+from ..models_sap_raw import SapSalrRaw
 
 router = APIRouter(prefix="/internal-orders", tags=["internal-orders"])
 
@@ -291,54 +291,55 @@ class SalrOptionOut(BaseModel):
 
 
 @router.get("/salr-options", response_model=list[SalrOptionOut])
-def salr_options(fiscalYear: int, user: AuthedUser = Depends(get_current_user)):
-    """Live S_ALR_87013019-backed options for the "IO Budget" reallocation
-    source (spec: "IO Budget should have a dropdown list of the created IO
-    in SAP... This needs an automatic pull of data from SAP") - each Internal
-    Order's own live Budget/Available, one row per AUFNR, no caching.
+def salr_options(fiscalYear: int, user: AuthedUser = Depends(get_current_user), session: Session = Depends(get_session)):
+    """S_ALR_87013019-backed options for the "IO Budget" reallocation source
+    (spec: "IO Budget should have a dropdown list of the created IO in
+    SAP... This needs an automatic pull of data from SAP") - each Internal
+    Order's own Budget/Available, one row per AUFNR, read from the local
+    SapSalrRaw cache (sap_raw_sync_service.py keeps it fresh) instead of
+    hitting the broker on every request.
 
     `fiscalYear` is the current calendar year Internal Order Request is
     scoped to (Module 3 - reallocating already-in-force budget, not next
     year's ask), which is also the only year real SALR postings can exist for.
     """
-    rows = fetch_salr_rows(fiscalYear)
+    rows = session.exec(select(SapSalrRaw).where(SapSalrRaw.fiscal_year == fiscalYear)).all()
     options = [
         SalrOptionOut(
-            aufnr=row["AUFNR"],
-            description=row.get("OrderDescription") or row["AUFNR"],
-            budget=float(row["Budget"]),
-            available=float(row["Available"]),
+            aufnr=row.aufnr,
+            description=row.aufnr,
+            budget=row.budget,
+            available=row.available,
         )
         for row in rows
     ]
     return sorted(options, key=lambda o: o.description)
 
 
-def _find_salr_row(fiscal_year: int, aufnr: str) -> dict | None:
+def _find_salr_row(session: Session, fiscal_year: int, aufnr: str) -> SapSalrRaw | None:
     """`fiscal_year` is the IO's own current-year scope, same as
     salr_options() above.
     """
-    rows = fetch_salr_rows(fiscal_year)
+    rows = session.exec(select(SapSalrRaw).where(SapSalrRaw.fiscal_year == fiscal_year)).all()
     stripped = aufnr.lstrip("0") or "0"
     for row in rows:
-        if row["AUFNR"] == aufnr or (row["AUFNR"].lstrip("0") or "0") == stripped:
+        if row.aufnr == aufnr or (row.aufnr.lstrip("0") or "0") == stripped:
             return row
     return None
 
 
-def _assert_salr_available(fiscal_year: int, aufnr: str, amount: float) -> None:
+def _assert_salr_available(session: Session, fiscal_year: int, aufnr: str, amount: float) -> None:
     """Mirrors _assert_approved_npc_code's existence-check shape, plus a
-    balance check against the live SALR Available (there's no local mirror of
-    this data to validate against - every check hits the broker directly).
+    balance check against the cached SALR Available (see salr_options above
+    for why this reads the local cache instead of the broker directly).
     """
-    row = _find_salr_row(fiscal_year, aufnr)
+    row = _find_salr_row(session, fiscal_year, aufnr)
     if row is None:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f'"{aufnr}" is not a recognized Internal Order in SAP for {fiscal_year}.')
-    available = float(row["Available"])
-    if amount > available:
+    if amount > row.available:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
-            f'Internal Order "{aufnr}" only has {available:,.2f} available in SAP, less than the requested {amount:,.2f}.',
+            f'Internal Order "{aufnr}" only has {row.available:,.2f} available in SAP, less than the requested {amount:,.2f}.',
         )
 
 
@@ -352,6 +353,13 @@ def create_internal_order(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Your account has no department on file.")
     if body.sbu not in IO_SBU_INFO:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Unrecognized SBU.")
+    # NPC-group members (User Management workbook) may only raise IOs for their own NPC SBU(s).
+    if not user.has_role("BUDGET_OFFICER"):
+        from .utilization import _my_npc_sbus
+
+        own = [g for g, _ in user.groups if g == "NPC"] and _my_npc_sbus(user, session)
+        if own and body.sbu not in own:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "You can only request Internal Orders for your own NPC SBU.")
     if session.exec(select(IoLocation).where(IoLocation.code == body.location)).first() is None:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Unrecognized Location.")
 
@@ -372,7 +380,7 @@ def create_internal_order(
             elif body.reallocationSourceType == "IO_BUDGET":
                 if not body.reallocationIoBudgetCode:
                     raise HTTPException(status.HTTP_400_BAD_REQUEST, "reallocationIoBudgetCode is required for an IO Budget reallocation source.")
-                _assert_salr_available(body.fiscalYear, body.reallocationIoBudgetCode, body.amount)
+                _assert_salr_available(session, body.fiscalYear, body.reallocationIoBudgetCode, body.amount)
 
     _, classification = IO_SBU_INFO[body.sbu]
     io = InternalOrderRequest(
@@ -416,7 +424,7 @@ def submit_internal_order(
     # own submit-time re-check, transfers.py's submit_transfer) - the
     # Available balance can move between draft and submit.
     if io.reallocation_source_type == "IO_BUDGET" and io.reallocation_io_budget_code:
-        _assert_salr_available(io.fiscal_year, io.reallocation_io_budget_code, io.amount)
+        _assert_salr_available(session, io.fiscal_year, io.reallocation_io_budget_code, io.amount)
 
     io.current_stage = "DEPT_HEAD_REVIEW"
     io.status = "IN_REVIEW"

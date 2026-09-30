@@ -5,10 +5,15 @@ export const api = axios.create({ baseURL: "/api" });
 // same JWT, different base URL/port. See vite.config.ts's /api2 proxy entry.
 export const api2 = axios.create({ baseURL: "/api2" });
 
-// The JWT tracks in-memory login state (AuthContext.login/logout set it
-// directly via api.defaults) rather than being read from storage on every
-// request, since login is intentionally not persisted across reloads. Set on
-// both axios instances - the same token is valid on both backends.
+// The JWT is persisted to localStorage (not just tracked in-memory) so a
+// browser refresh stays logged in on the same page instead of bouncing back
+// to the login screen - AuthContext's userId state is lazily initialized
+// from AUTH_USER_ID_KEY, and the header below is set synchronously at module
+// load (before AuthContext even mounts) so no request racing that first
+// render goes out unauthenticated.
+export const AUTH_TOKEN_KEY = "authToken";
+export const AUTH_USER_ID_KEY = "authUserId";
+
 export function setAuthToken(token: string | null) {
   for (const instance of [api, api2]) {
     if (token) {
@@ -17,6 +22,50 @@ export function setAuthToken(token: string | null) {
       delete instance.defaults.headers.common["Authorization"];
     }
   }
+}
+
+// Restores the header from whatever was persisted last time, immediately on
+// import - covers every request fired before AuthProvider's own effects run.
+setAuthToken(localStorage.getItem(AUTH_TOKEN_KEY));
+
+// A persisted token can still go stale (12h expiry, or a changed
+// JWT_SECRET) - rather than every page silently keep re-sending a token the
+// backend now rejects, a 401 from either backend clears the stored session
+// and does a hard reload, landing cleanly on the login screen instead of
+// leaving the UI stuck mid-render with half-loaded, unauthorized data.
+function handleAuthError(error: unknown) {
+  if (axios.isAxiosError(error) && error.response?.status === 401 && localStorage.getItem(AUTH_TOKEN_KEY)) {
+    localStorage.removeItem(AUTH_TOKEN_KEY);
+    localStorage.removeItem(AUTH_USER_ID_KEY);
+    setAuthToken(null);
+    window.location.reload();
+  }
+  return Promise.reject(error);
+}
+for (const instance of [api, api2]) {
+  instance.interceptors.response.use((response) => response, handleAuthError);
+}
+
+// Every "Download Template"/"Export" link in the app hits an authenticated
+// /api route, but auth here is a bearer token attached to axios requests
+// only (see setAuthToken above) - there's no session cookie, so a plain
+// `<a href="/api/...">` navigation carries no Authorization header at all
+// and the backend 401s with "Select a demo user first." This fetches the
+// file through the same authenticated `api` instance every other call uses,
+// then hands the browser a save via a throwaway object URL - the server's
+// own Content-Disposition filename is preferred over the caller's fallback.
+export async function downloadFile(path: string, fallbackFilename: string) {
+  const res = await api.get(path, { responseType: "blob" });
+  const disposition = res.headers["content-disposition"] as string | undefined;
+  const filename = disposition?.match(/filename\*?=(?:UTF-8'')?"?([^";]+)"?/)?.[1] ?? fallbackFilename;
+  const blobUrl = URL.createObjectURL(res.data as Blob);
+  const a = document.createElement("a");
+  a.href = blobUrl;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(blobUrl);
 }
 
 export interface RoleAssignmentSummary {
@@ -28,12 +77,29 @@ export interface RoleAssignmentSummary {
   sbu?: Sbu;
 }
 
+// The User Management workbook's own labels for an NPC-group member's scope -> NPC SBU codes.
+export const NPC_GROUP_SCOPE_TO_SBU: Record<string, NpcSbu> = {
+  Malls: "MALLS",
+  Offices: "OFFICES",
+  Estates: "ESTATES",
+  Residential: "RESIDENTIAL",
+  Leisure: "LEISURE",
+  "Corporate - IT": "CORPORATE_IT",
+  "Corporate - HR": "CORPORATE_HR",
+  "Corporate - Admin": "CORPORATE_ADMIN",
+};
+
 export interface DemoUser {
   id: string;
   name: string;
   email: string;
   department: { id: string; name: string; sbu: NpcSbu | null } | null;
   roles: RoleAssignmentSummary[];
+  // User Management access groups; access is null when the user belongs to no
+  // group (not group-restricted - falls back to role-based visibility).
+  groups: { group: string; scope: string }[];
+  access: Record<string, boolean> | null;
+  isEmployee?: boolean;
 }
 
 export interface Department {
@@ -148,7 +214,7 @@ export interface ReviewDecision {
 // Notes_8: high-level New Request menu classification, layered on top of
 // (not instead of) ExpenseLineItem.category. NPC/REVENUE are reserved for
 // when those forms exist (still placeholder tabs today).
-export type RequestCategory = "GAE" | "DOE" | "NPC" | "REVENUE";
+export type RequestCategory = "GAE" | "DOE" | "NPC" | "REVENUE" | "COMMISSION" | "COST_OF_SALES" | "DEPRECIATION_AMORTIZATION" | "INTEREST_EXPENSE";
 // CORPORATE (Note 11) is a real SBU value now, not just a report-only bucket
 // label — used by the Approved Budget report's Corporate tab and SBU role
 // assignments. Distinct from the older "Corporate-GAE" report bucket string
@@ -381,7 +447,13 @@ export interface BudgetRequest {
   id: string;
   departmentId: string;
   fiscalYear: number;
-  expenseLineItemId: string;
+  // Null for the SBU-batch categories (DOE/Commission/Cost of Sales/
+  // Depreciation & Amortization/Interest Expense) - those carry
+  // costCenter/glAccount directly instead (see below), no catalog line item.
+  expenseLineItemId: string | null;
+  // Only set (and only meaningful) when expenseLineItemId is null.
+  costCenter: string | null;
+  glAccount: string | null;
   monthlyAmounts: number[];
   proposedAmount: number;
   businessJustification: string;
@@ -403,6 +475,13 @@ export interface BudgetRequest {
   budgetCode: string | null;
   currentStage: string;
   status: string;
+  // Approval Workflow: dropdown-picked approvers, and who the current stage is assigned to.
+  departmentHeadId: string | null;
+  sbuHeadId: string | null;
+  centralizedHeadId: string | null;
+  assigneeId: string | null;
+  // Set by GET /budget-requests/:id and /inbox: may the signed-in user act on the current stage.
+  canAct?: boolean;
   budgetCutAmount: number;
   isOverBudget: boolean;
   requiresCfoApproval: boolean;
@@ -412,7 +491,7 @@ export interface BudgetRequest {
   createdAt: string;
   createdById: string;
   department: Department;
-  expenseLineItem: ExpenseLineItem & { ownerDepartment: Department };
+  expenseLineItem: (ExpenseLineItem & { ownerDepartment: Department }) | null;
   attachments: Attachment[];
   reviewDecisions: ReviewDecision[];
   createdBy: { name: string; email: string };
@@ -420,6 +499,41 @@ export interface BudgetRequest {
   // server-side from its stage + department (see lib/pendingReviewers.ts).
   // Only present on /my-requests responses; empty for terminal stages.
   pendingReviewers?: string[];
+}
+
+const SBU_BATCH_CATEGORY_LABELS: Partial<Record<RequestCategory, string>> = {
+  DOE: "DOE",
+  COMMISSION: "Commission",
+  COST_OF_SALES: "Cost of Sales",
+  DEPRECIATION_AMORTIZATION: "Depreciation & Amortization",
+  INTEREST_EXPENSE: "Interest Expense",
+};
+
+// A single place to read "what line is this request against" for any
+// BudgetRequest - GAE/NPC/REVENUE always have a catalog expenseLineItem, but
+// the SBU-batch categories (DOE/Commission/Cost of Sales/Depreciation &
+// Amortization/Interest Expense) carry a raw Cost Center + GL Account pair
+// directly instead (see backend's approvalChain.ts SBU_BATCH_CATEGORIES) -
+// this picks whichever is present so shared list/detail views don't need
+// their own null-check at every callsite.
+export function requestLineDisplay(r: Pick<BudgetRequest, "expenseLineItem" | "costCenter" | "glAccount" | "requestCategory" | "budgetCode">) {
+  if (r.expenseLineItem) {
+    return {
+      name: r.expenseLineItem.name,
+      category: r.expenseLineItem.category,
+      ownerDepartmentName: r.expenseLineItem.ownerDepartment.name as string | null,
+      glCc: `${r.expenseLineItem.glAccount} / ${r.expenseLineItem.costCenter}`,
+      budgetCode: r.budgetCode ?? r.expenseLineItem.budgetCode ?? null,
+    };
+  }
+  const glCc = r.glAccount && r.costCenter ? `${r.glAccount} / ${r.costCenter}` : "—";
+  return {
+    name: r.costCenter && r.glAccount ? `CC ${r.costCenter} / GL ${r.glAccount}` : "—",
+    category: SBU_BATCH_CATEGORY_LABELS[r.requestCategory] ?? r.requestCategory,
+    ownerDepartmentName: null as string | null,
+    glCc,
+    budgetCode: r.budgetCode ?? null,
+  };
 }
 
 // Note 11 §3/§4 - the "Finalize & Upload" snapshot report, shared by the
@@ -500,6 +614,37 @@ export interface RevenueBatchDetail extends RevenueBatchSummary {
   uploadedByName: string;
   rows: RevenueBatchRow[];
   reviewDecisions: RevenueReviewDecision[];
+}
+
+// The SBU-batch flow (DOE/Commission/Cost of Sales/Depreciation &
+// Amortization/Interest Expense - doeBatches.ts's createSbuBatchRouter) -
+// same BulkUploadBatch model Revenue's batches use, but each row is a raw
+// Cost Center + GL Account pair (no catalog Expense Line Item at all - see
+// backend's approvalChain.ts SBU_BATCH_CATEGORIES comment) and, once
+// submitted, fans out into that category's normal per-row review chain
+// instead of traveling together - so this only ever describes a batch still
+// in DRAFT (see doeBatches.ts's own comment).
+export interface DoeBatchRow {
+  id: string;
+  costCenter: string | null;
+  glAccount: string | null;
+  budgetCode: string | null;
+  proposedAmount: number;
+  currentStage: string;
+}
+export interface DoeBatchDetail {
+  id: string;
+  fiscalYear: number;
+  sbu: Sbu | null;
+  company: { id: string; name: string; code: string } | null;
+  sourceFileRef: string;
+  rowCount: number;
+  totalAmount: number;
+  currentStage: string;
+  status: string;
+  createdAt: string;
+  validationErrors: { row: number; error: string }[];
+  rows: DoeBatchRow[];
 }
 
 export interface HeadcountReviewDecision {

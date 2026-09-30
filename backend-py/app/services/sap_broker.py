@@ -77,20 +77,38 @@ def _client(api_key: str) -> httpx.Client:
 
 def _get(client: httpx.Client, path: str, params: dict) -> httpx.Response:
     """One rate-limited GET with retry/backoff on 429 (rate limited - honors
-    a Retry-After header when the broker sends one) and 5xx (a transient
+    a Retry-After header when the broker sends one), 5xx (a transient
     server-side hiccup on the broker's own end - confirmed live: a 502
-    mid-sync that succeeded on retry).
+    mid-sync that succeeded on retry), and a network-level failure (read
+    timeout, connection reset, DNS) - confirmed live that the latter was
+    NOT retried before this fix: `client.get()` raises `httpx.HTTPError`
+    directly rather than returning a response to check the status code of,
+    so the loop below never even ran for it - one slow response anywhere in
+    a multi-page sync (more likely now that this runs automatically every
+    10 minutes) killed the entire sync immediately with zero retries,
+    surfacing as a bare "The read operation timed out" with no sign a retry
+    was even attempted.
     """
+    last_error: Exception | None = None
     for attempt in range(MAX_RETRIES):
         _rate_limiter.acquire()
-        resp = client.get(path, params=params)
+        try:
+            resp = client.get(path, params=params)
+        except httpx.HTTPError as exc:
+            last_error = exc
+            time.sleep(DEFAULT_RETRY_AFTER_SECONDS * (attempt + 1))
+            continue
         if resp.status_code < 500 and resp.status_code != 429:
             resp.raise_for_status()
             return resp
+        last_error = None
         retry_after = resp.headers.get("Retry-After")
         wait_seconds = float(retry_after) if retry_after else DEFAULT_RETRY_AFTER_SECONDS * (attempt + 1)
         time.sleep(wait_seconds)
-    # Retries exhausted - one final attempt, letting its error surface.
+    if last_error is not None:
+        raise last_error
+    # Retries exhausted (bad status codes, not a network error) - one final
+    # attempt, letting its error surface.
     _rate_limiter.acquire()
     resp = client.get(path, params=params)
     resp.raise_for_status()
@@ -160,6 +178,27 @@ def fetch_kssb_v2_rows(cost_centers: list[str], gjahr: int) -> list[dict]:
     ]
     with _client(settings.kssb_v2_api_key) as client:
         return _fetch_all(client, "/sap/budget_kssb_v2/rows/", chunk_params)
+
+
+def fetch_kssb_v1_rows(profit_centers: list[str], gl_accounts: list[str], gjahr: int) -> list[dict]:
+    """budget_kssb_v1 - Actual-only (no Plan/Commitment), per (KSTAR,
+    ProfitCenter, PostingPeriod). Python mirror of sapBroker.ts's own
+    fetchKssbV1Rows (Node had this, Python didn't, until the raw-cache
+    consolidation - see models_sap_raw.py). Chunked on BOTH dimensions
+    (cost centers x GL accounts), unlike FBL3N/KSSB V2's single-dimension
+    chunking - both callers must already be padded to SAP's "00"+8-digit
+    shape.
+    """
+    if not profit_centers or not gl_accounts:
+        return []
+    chunk_params = []
+    for i in range(0, len(profit_centers), CHUNK_SIZE):
+        cc_chunk = profit_centers[i : i + CHUNK_SIZE]
+        for j in range(0, len(gl_accounts), CHUNK_SIZE):
+            gl_chunk = gl_accounts[j : j + CHUNK_SIZE]
+            chunk_params.append({"ProfitCenter__in": ",".join(cc_chunk), "KSTAR__in": ",".join(gl_chunk), "GJAHR": gjahr, "PostingPeriod__lte": 12})
+    with _client(settings.kssb_v1_api_key) as client:
+        return _fetch_all(client, "/sap/budget_kssb_v1/rows/", chunk_params)
 
 
 def fetch_salr_rows(fiscal_year: int) -> list[dict]:

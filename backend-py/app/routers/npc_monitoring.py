@@ -8,6 +8,7 @@ hand every month. Runs the exact same import logic either way.
 from __future__ import annotations
 
 import io
+from datetime import datetime, timezone
 
 import openpyxl
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
@@ -27,6 +28,18 @@ def _require_budget_officer(user: AuthedUser) -> None:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "You do not hold a role permitted to perform this action.")
 
 
+def _utc_iso(dt: datetime | None) -> str | None:
+    """Stored via datetime.utcnow() - naive, no tzinfo - so a bare
+    .isoformat() has no UTC marker and a browser's `new Date(...)` reads it
+    as local time instead (confirmed live: an 8-hour-off "last synced"
+    display in a UTC+8 browser, same root cause as routers/utilization.py's
+    own copy of this same helper - see its longer comment there).
+    """
+    if dt is None:
+        return None
+    return dt.replace(tzinfo=timezone.utc).isoformat()
+
+
 class NpcMonitoringStatusOut(BaseModel):
     fiscalYear: int
     sourceFile: str | None
@@ -41,7 +54,6 @@ class NpcMonitoringUploadOut(BaseModel):
     projectCount: int
     ioCount: int
     projectsBySbu: dict[str, int]
-    skippedAdmin: bool
 
 
 @router.get("/status", response_model=NpcMonitoringStatusOut)
@@ -61,7 +73,7 @@ def npc_monitoring_status(
     return NpcMonitoringStatusOut(
         fiscalYear=fiscalYear,
         sourceFile=latest.source_file if latest else None,
-        importedAt=latest.imported_at.isoformat() if latest else None,
+        importedAt=_utc_iso(latest.imported_at) if latest else None,
         projectCount=len(projects),
         ioCount=len(ios),
     )

@@ -12,7 +12,6 @@ import { InboxPage } from "./pages/InboxPage";
 import { ForecastPage } from "./pages/ForecastPage";
 import { Step5DashboardPage } from "./pages/Step5DashboardPage";
 import { FinalizedBudgetReportPage } from "./pages/FinalizedBudgetReportPage";
-import { ApprovedBudgetPage } from "./pages/ApprovedBudgetPage";
 import { DashFlowBudgetCheckPage } from "./pages/DashFlowBudgetCheckPage";
 import { AdminConsolePage } from "./pages/admin/AdminConsolePage";
 import { ManpowerDashboardPage } from "./pages/manpower/ManpowerDashboardPage";
@@ -37,7 +36,6 @@ export default function App() {
         <Route path="requests/:id" element={<RequestDetailPage />} />
         <Route path="inbox" element={<InboxPage />} />
         <Route path="forecast" element={<ForecastPage />} />
-        <Route path="approved-budget" element={<ApprovedBudgetPage />} />
         <Route
           path="step5"
           element={
@@ -67,6 +65,7 @@ export default function App() {
           path="utilization"
           element={
             <RequireRole
+              access={["util.overview", "util.reconciliation", "util.npc"]}
               role={[
                 "BUDGET_OFFICER",
                 "CENTRALIZED_BUDGET_PREPARER",

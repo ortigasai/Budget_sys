@@ -1,12 +1,17 @@
 import { useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, type BudgetRequest } from "../api/client";
+import { api, requestLineDisplay, type BudgetRequest } from "../api/client";
+import { ApproverPicker } from "../components/ApproverPicker";
 import { StatusBadge } from "../components/StatusBadge";
 import { useAuth } from "../context/AuthContext";
 import { SectionLabel } from "../components/TabBar";
 
-const CANCELLABLE_STAGES = new Set(["DRAFT", "DEPT_HEAD_REVIEW"]);
+// The backend (workflowService.ts's cancelRequest) is the real authority on
+// who can cancel when - this is just when to show the button: the requestor
+// (their own draft, or their first pending stage) or whoever the current
+// stage is assigned to (request.canAct, set by GET /budget-requests/:id).
+const TERMINAL_STAGES = new Set(["APPROVED", "CANCELLED", "REJECTED", "UPLOADED_TO_SAP"]);
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 export function RequestDetailPage() {
@@ -15,6 +20,9 @@ export function RequestDetailPage() {
   const { currentUser } = useAuth();
   const queryClient = useQueryClient();
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [pickDeptHead, setPickDeptHead] = useState("");
+  const [pickSbuHead, setPickSbuHead] = useState("");
+  const [pickCentralizedHead, setPickCentralizedHead] = useState("");
   const { data: request, isLoading } = useQuery({
     queryKey: ["budget-request", id],
     queryFn: async () => (await api.get<BudgetRequest>(`/budget-requests/${id}`)).data,
@@ -29,7 +37,7 @@ export function RequestDetailPage() {
   });
 
   const submitMutation = useMutation({
-    mutationFn: async () => (await api.post<BudgetRequest>(`/budget-requests/${id}/submit`)).data,
+    mutationFn: async () => (await api.post<BudgetRequest>(`/budget-requests/${id}/submit`, { departmentHeadId: pickDeptHead || undefined, sbuHeadId: pickSbuHead || undefined, centralizedHeadId: pickCentralizedHead || undefined })).data,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["budget-request", id] });
       queryClient.invalidateQueries({ queryKey: ["my-requests"] });
@@ -40,8 +48,15 @@ export function RequestDetailPage() {
 
   if (isLoading || !request) return <div className="text-sm text-slate-400">Loading…</div>;
 
-  const canCancel = request.createdById === currentUser?.id && CANCELLABLE_STAGES.has(request.currentStage);
+  const canCancel = !TERMINAL_STAGES.has(request.currentStage) && (request.createdById === currentUser?.id || request.canAct);
   const canSubmit = request.createdById === currentUser?.id && request.currentStage === "DRAFT";
+  // Mirrors StandardRequestTab.tsx's own-department detection - no separate
+  // Department Head for these, they assign their own Centralized Department
+  // Head directly instead.
+  const ownDeptInitiated =
+    request.requestCategory === "GAE" &&
+    currentUser?.roles.some((r) => (r.roleType === "CENTRALIZED_BUDGET_PREPARER" || r.roleType === "CENTRALIZED_FIRST_LEVEL_REVIEWER") && r.department?.id === request.expenseLineItem!.ownerDepartmentId);
+  const line = requestLineDisplay(request);
 
   return (
     <div className="mx-auto max-w-3xl space-y-6">
@@ -53,7 +68,7 @@ export function RequestDetailPage() {
       </button>
 
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-lg font-bold tracking-tight text-slate-800">{request.expenseLineItem.name}</h1>
+        <h1 className="text-lg font-bold tracking-tight text-slate-800">{line.name}</h1>
         <div className="flex items-center gap-2">
           <StatusBadge stage={request.currentStage} />
           {canSubmit && (
@@ -69,13 +84,23 @@ export function RequestDetailPage() {
         </div>
       </div>
 
+      {canSubmit &&
+        (request.requestCategory === "GAE" || request.requestCategory === "NPC") &&
+        ((ownDeptInitiated && !request.centralizedHeadId) || (!ownDeptInitiated && !request.departmentHeadId) || (request.requestCategory === "NPC" && !request.sbuHeadId)) && (
+          <div className="grid grid-cols-1 gap-4 rounded-lg border border-slate-200 bg-white p-4 shadow-sm sm:grid-cols-2">
+            {ownDeptInitiated
+              ? !request.centralizedHeadId && <ApproverPicker label="Centralized Department Head" value={pickCentralizedHead} onChange={setPickCentralizedHead} />
+              : !request.departmentHeadId && <ApproverPicker label="Department Head / Approver" value={pickDeptHead} onChange={setPickDeptHead} />}
+            {request.requestCategory === "NPC" && !request.sbuHeadId && <ApproverPicker label="SBU or Division Head" value={pickSbuHead} onChange={setPickSbuHead} />}
+          </div>
+        )}
       {submitError && <div className="rounded bg-red-50 p-3 text-sm text-red-700">{submitError}</div>}
 
       <div className="grid grid-cols-2 gap-4 rounded-lg border border-slate-200 bg-white p-4 text-sm shadow-sm sm:grid-cols-3">
         <Field label="Originating Department" value={request.department.name} />
-        <Field label="Owning (Centralized) Department" value={request.expenseLineItem.ownerDepartment.name} />
-        <Field label="GL-CC" value={`${request.expenseLineItem.glAccount} / ${request.expenseLineItem.costCenter}`} />
-        <Field label="Budget Code" value={request.budgetCode ?? request.expenseLineItem.budgetCode ?? "—"} />
+        {line.ownerDepartmentName && <Field label="Owning (Centralized) Department" value={line.ownerDepartmentName} />}
+        <Field label="GL-CC" value={line.glCc} />
+        <Field label="Budget Code" value={line.budgetCode ?? "—"} />
         <Field label="Fiscal Year" value={String(request.fiscalYear)} />
         <Field label="Proposed Amount" value={`₱${request.proposedAmount.toLocaleString()}`} accent />
         {request.requestCategory === "NPC" && request.npcSbu && <Field label="SBU" value={request.npcSbu} />}

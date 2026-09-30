@@ -104,6 +104,13 @@ export function ReportsPage() {
   const [noteText, setNoteText] = useState("");
   const [activePreset, setActivePreset] = useState<PresetId>("executive-summary");
   const [tableResetKey, setTableResetKey] = useState(0);
+  // Note 12 follow-up - "Variance Alert View: Put a field to indicate a
+  // variance in % and in Peso." A row is flagged when EITHER is breached
+  // (see ReportTable's isAlertRow), so a Peso-only or %-only swing still
+  // surfaces. Peso threshold starts unset ("") - only the %-threshold (same
+  // default the heatmap always used) applies until the user opts into one.
+  const [varianceThresholdPct, setVarianceThresholdPct] = useState(10);
+  const [varianceThresholdPeso, setVarianceThresholdPeso] = useState<number | "">("");
 
   const calendarYears = calendarYearsEndingAt(forecastYear);
 
@@ -309,6 +316,36 @@ export function ReportsPage() {
           </button>
         </div>
 
+        {activePreset === "variance-alert" && (
+          <div className="mt-2 flex flex-wrap items-center gap-3 border-t border-slate-100 pt-2 text-xs">
+            <span className="font-medium text-slate-500">Flag a variance over:</span>
+            <label className="flex items-center gap-1">
+              <input
+                type="number"
+                min={0}
+                step={0.5}
+                className="w-16 rounded border border-slate-300 px-1.5 py-0.5 text-xs"
+                value={varianceThresholdPct}
+                onChange={(e) => setVarianceThresholdPct(e.target.value === "" ? 0 : Number(e.target.value))}
+              />
+              <span>%</span>
+            </label>
+            <span className="text-slate-400">or</span>
+            <label className="flex items-center gap-1">
+              <span>₱</span>
+              <input
+                type="number"
+                min={0}
+                step={1000}
+                placeholder="e.g. 500000"
+                className="w-28 rounded border border-slate-300 px-1.5 py-0.5 text-xs"
+                value={varianceThresholdPeso}
+                onChange={(e) => setVarianceThresholdPeso(e.target.value === "" ? "" : Number(e.target.value))}
+              />
+            </label>
+          </div>
+        )}
+
         {moreFiltersOpen && (
           <div className="mt-2 grid grid-cols-2 gap-2 border-t border-slate-100 pt-2 sm:grid-cols-3">
             <div>
@@ -374,6 +411,8 @@ export function ReportsPage() {
                 onToggleNotes={(group) => setNotesGroup(notesGroup === group ? null : group)}
                 initialSortByVariance={activePreset === "variance-alert"}
                 initialExpandOverThreshold={activePreset === "variance-alert"}
+                thresholdPct={varianceThresholdPct}
+                thresholdPeso={varianceThresholdPeso === "" ? null : varianceThresholdPeso}
               />
             </ExpandableSection>
           )}

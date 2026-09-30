@@ -1,8 +1,9 @@
 import { useLayoutEffect, useState, type ReactNode } from "react";
 import { Link, NavLink, Outlet, useLocation, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, type Department } from "../api/client";
+import { api, downloadFile, type Department } from "../api/client";
 import { useAuth } from "../context/AuthContext";
+import { SBU_TYPES } from "./SbuTypeSwitch";
 import { RoleSwitcher } from "./RoleSwitcher";
 import { UserMenu } from "./UserMenu";
 import { phaseForPath } from "../lib/phases";
@@ -90,21 +91,28 @@ function CollapsibleNavGroup({ to, icon, label, defaultOpen, children }: { to: s
 function NewRequestSubMenu() {
   const [searchParams] = useSearchParams();
   const currentTab = searchParams.get("tab");
+  const { gate } = useAuth();
 
   return (
     <div className="ml-7 mt-1 flex flex-col gap-0.5 border-l border-emerald-100 pl-3">
-      <NavLink to="/requests/new?tab=standard" className={subLinkClass(currentTab === "standard")}>
-        General &amp; Administrative Expenses (GAE)
-      </NavLink>
-      <NavLink to="/requests/new?tab=doe" className={subLinkClass(currentTab === "doe")}>
-        Direct Operating Expenses (DOE)
-      </NavLink>
-      <NavLink to="/requests/new?tab=revenue" className={subLinkClass(currentTab === "revenue")}>
-        Revenue
-      </NavLink>
-      <NavLink to="/requests/new?tab=npc" className={subLinkClass(currentTab === "npc")}>
-        Non-Project Capex (NPC)
-      </NavLink>
+      {gate("request.gae", true) && (
+        <NavLink to="/requests/new?tab=standard" className={subLinkClass(currentTab === "standard")}>
+          General &amp; Administrative Expenses (GAE)
+        </NavLink>
+      )}
+      {SBU_TYPES.some((t) => gate(`request.${t.access}`, t.key === "DOE" || t.key === "REVENUE")) && (
+        <NavLink
+          to={`/requests/new?tab=${SBU_TYPES.find((t) => gate(`request.${t.access}`, t.key === "DOE" || t.key === "REVENUE"))!.tab}`}
+          className={subLinkClass(SBU_TYPES.some((t) => t.tab === currentTab))}
+        >
+          SBU Budget (Upload Template)
+        </NavLink>
+      )}
+      {gate("request.npc", true) && (
+        <NavLink to="/requests/new?tab=npc" className={subLinkClass(currentTab === "npc")}>
+          Non-Project Capex (NPC)
+        </NavLink>
+      )}
       <NavLink to="/requests/new?tab=headcount" className={subLinkClass(currentTab === "headcount")}>
         Additional Manpower
       </NavLink>
@@ -112,11 +120,6 @@ function NewRequestSubMenu() {
   );
 }
 
-// Notes_6: "Fill Average Salary" and "Fill Headcount per Company" (manual
-// box-by-box entry) are replaced by a single Download/Upload Template flow -
-// Download is a plain link; Upload runs its own self-contained mutation (the
-// sidebar is mounted outside the Manpower page, so it can't share that
-// page's local state - it invalidates the same query keys instead).
 function ManpowerSubMenu() {
   const queryClient = useQueryClient();
   const location = useLocation();
@@ -154,9 +157,17 @@ function ManpowerSubMenu() {
       <NavLink to="/manpower" className={subLinkClass(isDashboardActive)}>
         Dashboard
       </NavLink>
-      <a href={`/api/manpower/headcount-salary-template?fiscalYear=${MANPOWER_FISCAL_YEAR}`} className={subLinkClass(false)}>
+      <button
+        type="button"
+        onClick={() =>
+          downloadFile(`/manpower/headcount-salary-template?fiscalYear=${MANPOWER_FISCAL_YEAR}`, `headcount-salary-template-${MANPOWER_FISCAL_YEAR}.xlsx`).catch(() =>
+            setUploadStatus({ ok: false, message: "Failed to download the template." })
+          )
+        }
+        className={`border-0 bg-transparent ${subLinkClass(false)}`}
+      >
         Download Headcount & Salary Template
-      </a>
+      </button>
       <label className={`cursor-pointer ${subLinkClass(false)}`}>
         Upload Headcount & Salary Template
         <input
@@ -192,6 +203,18 @@ function Step5SubMenu() {
       <NavLink to="/step5?category=DOE" className={subLinkClass(currentCategory === "DOE")}>
         Direct Operating Expenses (DOE)
       </NavLink>
+      <NavLink to="/step5?category=COMMISSION" className={subLinkClass(currentCategory === "COMMISSION")}>
+        Commission
+      </NavLink>
+      <NavLink to="/step5?category=COST_OF_SALES" className={subLinkClass(currentCategory === "COST_OF_SALES")}>
+        Cost of Sales
+      </NavLink>
+      <NavLink to="/step5?category=DEPRECIATION_AMORTIZATION" className={subLinkClass(currentCategory === "DEPRECIATION_AMORTIZATION")}>
+        Depreciation &amp; Amortization
+      </NavLink>
+      <NavLink to="/step5?category=INTEREST_EXPENSE" className={subLinkClass(currentCategory === "INTEREST_EXPENSE")}>
+        Interest Expense
+      </NavLink>
       <NavLink to="/step5?category=NPC" className={subLinkClass(currentCategory === "NPC")}>
         Non-Project Capex (NPC)
       </NavLink>
@@ -210,21 +233,28 @@ function Step5SubMenu() {
 function ForecastSubMenu() {
   const [searchParams] = useSearchParams();
   const currentCategory = searchParams.get("category");
+  const { gate } = useAuth();
 
   return (
     <div className="ml-7 mt-1 flex flex-col gap-0.5 border-l border-emerald-100 pl-3">
-      <NavLink to="/forecast?category=GAE" className={subLinkClass(currentCategory === "GAE")}>
-        General &amp; Administrative Expenses (GAE)
-      </NavLink>
-      <NavLink to="/forecast?category=DOE" className={subLinkClass(currentCategory === "DOE")}>
-        Direct Operating Expenses (DOE)
-      </NavLink>
-      <NavLink to="/forecast?category=REVENUE" className={subLinkClass(currentCategory === "REVENUE")}>
-        Revenue
-      </NavLink>
-      <NavLink to="/forecast?category=NPC" className={subLinkClass(currentCategory === "NPC")}>
-        Non-Project Capex (NPC)
-      </NavLink>
+      {gate("forecast.gae", true) && (
+        <NavLink to="/forecast?category=GAE" className={subLinkClass(currentCategory === "GAE")}>
+          General &amp; Administrative Expenses (GAE)
+        </NavLink>
+      )}
+      {SBU_TYPES.some((t) => gate(`forecast.${t.access}`, t.key === "DOE" || t.key === "REVENUE")) && (
+        <NavLink
+          to={`/forecast?category=${SBU_TYPES.find((t) => gate(`forecast.${t.access}`, t.key === "DOE" || t.key === "REVENUE"))!.key}`}
+          className={subLinkClass(SBU_TYPES.some((t) => t.key === currentCategory))}
+        >
+          SBU Budget (Upload Template)
+        </NavLink>
+      )}
+      {gate("forecast.npc", true) && (
+        <NavLink to="/forecast?category=NPC" className={subLinkClass(currentCategory === "NPC")}>
+          Non-Project Capex (NPC)
+        </NavLink>
+      )}
     </div>
   );
 }
@@ -240,6 +270,7 @@ function ForecastSubMenu() {
 // replaced that classification concept - SBU is now a field on the New
 // Transfer form itself), so this is a plain 3-link list.
 function TransferSidebarNav() {
+  const { gate } = useAuth();
   const location = useLocation();
   const [searchParams] = useSearchParams();
   const view = searchParams.get("view");
@@ -248,18 +279,24 @@ function TransferSidebarNav() {
 
   return (
     <>
-      <Link to="/transfers" className={linkClass({ isActive: isNewActive })}>
-        <Icon path={ICONS.newRequest} />
-        New Transfer
-      </Link>
-      <Link to="/transfers?view=mine" className={linkClass({ isActive: isTransfersPath && view === "mine" })}>
-        <Icon path={ICONS.myRequests} />
-        My Transfers
-      </Link>
-      <Link to="/transfers?view=inbox" className={linkClass({ isActive: isTransfersPath && view === "inbox" })}>
-        <Icon path={ICONS.inbox} />
-        Inbox
-      </Link>
+      {gate("transfer.new", true) && (
+        <Link to="/transfers" className={linkClass({ isActive: isNewActive })}>
+          <Icon path={ICONS.newRequest} />
+          New Transfer
+        </Link>
+      )}
+      {gate("transfer.mine", true) && (
+        <Link to="/transfers?view=mine" className={linkClass({ isActive: isTransfersPath && view === "mine" })}>
+          <Icon path={ICONS.myRequests} />
+          My Transfers
+        </Link>
+      )}
+      {gate("transfer.inbox", true) && (
+        <Link to="/transfers?view=inbox" className={linkClass({ isActive: isTransfersPath && view === "inbox" })}>
+          <Icon path={ICONS.inbox} />
+          Inbox
+        </Link>
+      )}
     </>
   );
 }
@@ -268,6 +305,7 @@ function TransferSidebarNav() {
 // Transfer (own model/router), given its own New/Mine/Inbox trio at
 // /internal-orders following the identical pattern above.
 function InternalOrderSidebarNav() {
+  const { gate } = useAuth();
   const location = useLocation();
   const [searchParams] = useSearchParams();
   const view = searchParams.get("view");
@@ -275,18 +313,24 @@ function InternalOrderSidebarNav() {
 
   return (
     <>
-      <Link to="/internal-orders" className={linkClass({ isActive: isIoPath && !view })}>
-        <Icon path={ICONS.newRequest} />
-        New Internal Order Request
-      </Link>
-      <Link to="/internal-orders?view=mine" className={linkClass({ isActive: isIoPath && view === "mine" })}>
-        <Icon path={ICONS.myRequests} />
-        My Internal Order Requests
-      </Link>
-      <Link to="/internal-orders?view=inbox" className={linkClass({ isActive: isIoPath && view === "inbox" })}>
-        <Icon path={ICONS.inbox} />
-        Inbox
-      </Link>
+      {gate("io.new", true) && (
+        <Link to="/internal-orders" className={linkClass({ isActive: isIoPath && !view })}>
+          <Icon path={ICONS.newRequest} />
+          New Internal Order Request
+        </Link>
+      )}
+      {gate("io.mine", true) && (
+        <Link to="/internal-orders?view=mine" className={linkClass({ isActive: isIoPath && view === "mine" })}>
+          <Icon path={ICONS.myRequests} />
+          My Internal Order Requests
+        </Link>
+      )}
+      {gate("io.inbox", true) && (
+        <Link to="/internal-orders?view=inbox" className={linkClass({ isActive: isIoPath && view === "inbox" })}>
+          <Icon path={ICONS.inbox} />
+          Inbox
+        </Link>
+      )}
     </>
   );
 }
@@ -309,6 +353,7 @@ function DashFlowSidebarNav() {
 // CollapsibleNavGroup/NavLink's own isActive) for the same reason as
 // TransferSidebarNav above - every view shares the /utilization pathname.
 function UtilizationSidebarNav() {
+  const { gate } = useAuth();
   const location = useLocation();
   const [searchParams] = useSearchParams();
   const view = searchParams.get("view");
@@ -321,6 +366,7 @@ function UtilizationSidebarNav() {
 
   return (
     <>
+      {(gate("util.overview", true) || gate("util.reconciliation", true)) && (
       <div>
         <div className="flex items-center gap-0.5">
           <div className="min-w-0 flex-1">
@@ -337,19 +383,26 @@ function UtilizationSidebarNav() {
         </div>
         {open && (
           <div className="ml-7 mt-1 flex flex-col gap-0.5 border-l border-emerald-100 pl-3">
-            <Link to="/utilization" className={subLinkClass(isOperatingExpensesActive && !view)}>
-              Departmental Overview
-            </Link>
-            <Link to="/utilization?view=reconciliation" className={subLinkClass(isOperatingExpensesActive && view === "reconciliation")}>
-              Live Reconciliation
-            </Link>
+            {gate("util.overview", true) && (
+              <Link to="/utilization" className={subLinkClass(isOperatingExpensesActive && !view)}>
+                Departmental Overview
+              </Link>
+            )}
+            {gate("util.reconciliation", true) && (
+              <Link to="/utilization?view=reconciliation" className={subLinkClass(isOperatingExpensesActive && view === "reconciliation")}>
+                Live Reconciliation
+              </Link>
+            )}
           </div>
         )}
       </div>
-      <Link to="/utilization?view=npc" className={linkClass({ isActive: isUtilizationPath && view === "npc" })}>
-        <Icon path={ICONS.capex} />
-        Non-Project Capex (NPC)
-      </Link>
+      )}
+      {gate("util.npc", true) && (
+        <Link to="/utilization?view=npc" className={linkClass({ isActive: isUtilizationPath && view === "npc" })}>
+          <Icon path={ICONS.capex} />
+          Non-Project Capex (NPC)
+        </Link>
+      )}
     </>
   );
 }
@@ -387,7 +440,7 @@ function AdminConsoleSidebarNav() {
 }
 
 export function Layout() {
-  const { currentUser, hasRole, hasSbuRole } = useAuth();
+  const { currentUser, hasRole, hasSbuRole, gate } = useAuth();
   const location = useLocation();
   // The root route is the post-login phase menu (PhaseMenuPage), not inside
   // any one phase yet - the phase-specific nav below doesn't make sense
@@ -539,23 +592,25 @@ export function Layout() {
                       collapse still sticks, since the effect that reopens it
                       only re-fires when defaultOpen itself changes value, which
                       it never does here. */}
-                  {isForecastEligible && (
+                  {gate("forecast.gae", isForecastEligible) || gate("forecast.doe", isForecastEligible) || gate("forecast.revenue", isForecastEligible) || gate("forecast.npc", isForecastEligible) || gate("forecast.commission", false) || gate("forecast.cos", false) || gate("forecast.da", false) || gate("forecast.interest", false) ? (
                     <CollapsibleNavGroup to="/forecast" icon="forecast" label="Forecast" defaultOpen>
                       <ForecastSubMenu />
                     </CollapsibleNavGroup>
-                  )}
+                  ) : null}
                   <CollapsibleNavGroup to="/requests/new" icon="newRequest" label="New Request" defaultOpen>
                     <NewRequestSubMenu />
                   </CollapsibleNavGroup>
-                  <NavItem to="/requests/mine" icon="myRequests">
-                    My Requests
-                  </NavItem>
+                  {gate("myRequests", true) && (
+                    <NavItem to="/requests/mine" icon="myRequests">
+                      My Requests
+                    </NavItem>
+                  )}
                   {/* Revenue Approvals merged into Inbox per user request -
                       isRevenueReviewer (isReviewer plus the two SBU Finance
                       roles) is the gate now, so a BU Finance-only user (no
                       base isReviewer role) still sees Inbox once Revenue
                       batches are waiting on them. */}
-                  {isRevenueReviewer && (
+                  {gate("inbox", isRevenueReviewer) && (
                     <NavItem to="/inbox" icon="inbox">
                       <span className="flex flex-1 items-center justify-between">
                         Inbox
@@ -573,7 +628,7 @@ export function Layout() {
                         Manpower Budget
                       </NavItem>
                     ))}
-                  {isBudgetOfficer && (
+                  {gate("finalization", isBudgetOfficer) && (
                     <>
                       <div className="mb-1 mt-4 border-t border-slate-100 pt-4 text-xs font-semibold tracking-wide text-emerald-800/70">Budget Officer</div>
                       <CollapsibleNavGroup to="/step5" icon="step5" label="Budget Finalization & Upload" defaultOpen>
@@ -586,7 +641,7 @@ export function Layout() {
               {!isAdminConsole && currentPhase.number === 2 && (
                 <>
                   <UtilizationSidebarNav />
-                  {canViewDashFlow && (
+                  {gate("util.dashflow", canViewDashFlow) && (
                     <>
                       <div className="my-1 border-t border-slate-100" />
                       <DashFlowSidebarNav />

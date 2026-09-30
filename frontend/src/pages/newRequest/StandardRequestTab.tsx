@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
+import { ApproverPicker } from "../../components/ApproverPicker";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
-import { api, SBU_OPTIONS, type BudgetRequest, type EmployeeOption, type ExpenseLineItem, type ExtraField, type MobilePhonePolicyTier, type RequestCategory, type Sbu } from "../../api/client";
+import { api, downloadFile, type BudgetRequest, type EmployeeOption, type ExpenseLineItem, type ExtraField, type MobilePhonePolicyTier, type RequestCategory } from "../../api/client";
 import { useAuth } from "../../context/AuthContext";
 import { PageHeader } from "../../components/PageHeader";
 import { SearchableSelect } from "../../components/SearchableSelect";
@@ -80,16 +81,15 @@ function parseGridPaste(text: string): number[] {
     .filter((n) => !Number.isNaN(n));
 }
 
-// Notes_8: DOE is the same request form as GAE, just tagged with a required
-// Strategic Business Unit — reusing this component avoids duplicating the
-// whole form for what's otherwise an identical workflow. NPC used to share
-// this form too but got its own dedicated one (see NpcRequestTab.tsx) once
-// spec item 12 gave it a distinct required-fields set.
+// GAE's manual request form. DOE and Revenue both moved to the same
+// SBU+Company Upload Template flow (see SbuBatchUploadTab.tsx/RevenueRequestTab.tsx)
+// - `requestCategory` is kept as a prop rather than hardcoded since NPC used
+// to share this form too before spec item 12 gave it its own (see
+// NpcRequestTab.tsx), so the shape is still generically GAE-only in practice.
 export function StandardRequestTab({ requestCategory, subtitle }: { requestCategory: RequestCategory; subtitle: string }) {
   const { currentUser } = useAuth();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
-  const [sbu, setSbu] = useState<Sbu | "">("");
   const { targetYear: FISCAL_YEAR } = useFiscalYear();
 
   // Notes_7: "limit the visibility of the departments for some expenses" —
@@ -138,14 +138,15 @@ export function StandardRequestTab({ requestCategory, subtitle }: { requestCateg
   const [customExpenseName, setCustomExpenseName] = useState("");
   const [monthlyAmounts, setMonthlyAmounts] = useState<number[]>(Array(12).fill(0));
   const [businessJustification, setBusinessJustification] = useState("");
+  const [departmentHeadId, setDepartmentHeadId] = useState("");
+  const [centralizedHeadId, setCentralizedHeadId] = useState("");
   const [otherFields, setOtherFields] = useState<Record<string, string>>({});
   const [headcountRows, setHeadcountRows] = useState<HeadcountRow[]>([EMPTY_HEADCOUNT_ROW]);
   const [created, setCreated] = useState<BudgetRequest | null>(null);
   const [error, setError] = useState<string | null>(null);
   // Note 11 §6 - "Open Spreadsheet Template": a bulk alternative to the
   // manual form above for requestors who'd rather fill many line items at
-  // once. Reuses the existing bulk-upload flow (see routes/bulkUpload.ts),
-  // now category/SBU-aware instead of GAE-only.
+  // once. Reuses the existing bulk-upload flow (see routes/bulkUpload.ts).
   const [bulkStatus, setBulkStatus] = useState<{ ok: boolean; message: string } | null>(null);
   const bulkUploadMutation = useMutation({
     mutationFn: async (file: File) => {
@@ -153,7 +154,6 @@ export function StandardRequestTab({ requestCategory, subtitle }: { requestCateg
       form.append("file", file);
       form.append("category", requestCategory);
       form.append("fiscalYear", String(FISCAL_YEAR));
-      if (requestCategory === "DOE") form.append("sbu", sbu);
       return (await api.post<{ created: number; errors: { row: number; error: string }[] }>("/bulk-upload", form)).data;
     },
     onSuccess: (data) => {
@@ -181,6 +181,13 @@ export function StandardRequestTab({ requestCategory, subtitle }: { requestCateg
 
   const itemsInCategory = useMemo(() => lineItems.filter((i) => i.category === category), [lineItems, category]);
   const selectedItem = lineItems.find((i) => i.id === expenseLineItemId);
+  // A Centralized Department Requestor raising a GAE request for their own
+  // department has no separate Department Head to pick - Submit sends it
+  // straight to their own Centralized Department Head (no L1 review stage).
+  const ownDeptInitiated =
+    requestCategory === "GAE" &&
+    !!selectedItem &&
+    !!currentUser?.roles.some((r) => (r.roleType === "CENTRALIZED_BUDGET_PREPARER" || r.roleType === "CENTRALIZED_FIRST_LEVEL_REVIEWER") && r.department?.id === selectedItem.ownerDepartmentId);
   const proposedAmount = monthlyAmounts.reduce((a, b) => a + b, 0);
   const needsAttachment = docThreshold && proposedAmount > docThreshold.amount;
 
@@ -316,7 +323,8 @@ export function StandardRequestTab({ requestCategory, subtitle }: { requestCateg
           businessJustification,
           otherRequiredFields: usesHeadcountTable && rateField ? headcountRowsToFields(headcountRows, rateField.label) : otherFields,
           requestCategory,
-          sbu: requestCategory === "DOE" ? sbu || undefined : undefined,
+          departmentHeadId: departmentHeadId || undefined,
+          centralizedHeadId: centralizedHeadId || undefined,
         })
       ).data,
     onSuccess: (data) => {
@@ -339,7 +347,7 @@ export function StandardRequestTab({ requestCategory, subtitle }: { requestCateg
   });
 
   const submitMutation = useMutation({
-    mutationFn: async () => (await api.post<BudgetRequest>(`/budget-requests/${created!.id}/submit`)).data,
+    mutationFn: async () => (await api.post<BudgetRequest>(`/budget-requests/${created!.id}/submit`, { departmentHeadId: departmentHeadId || undefined, centralizedHeadId: centralizedHeadId || undefined })).data,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["my-requests"] });
       navigate("/requests/mine");
@@ -389,7 +397,7 @@ export function StandardRequestTab({ requestCategory, subtitle }: { requestCateg
     );
   }
 
-  const saveDraftDisabled = createMutation.isPending || (!useCustom && !expenseLineItemId) || (useCustom && !customExpenseName) || (requestCategory === "DOE" && !sbu);
+  const saveDraftDisabled = createMutation.isPending || (!useCustom && !expenseLineItemId) || (useCustom && !customExpenseName);
 
   return (
     <div className="mx-auto max-w-6xl space-y-4">
@@ -401,7 +409,7 @@ export function StandardRequestTab({ requestCategory, subtitle }: { requestCateg
           </button>
         }
       />
-      <div className={`grid gap-4 rounded-lg border border-slate-200 bg-white p-4 text-sm shadow-sm ${requestCategory === "DOE" ? "grid-cols-3" : "grid-cols-2"}`}>
+      <div className="grid grid-cols-2 gap-4 rounded-lg border border-slate-200 bg-white p-4 text-sm shadow-sm">
         <div>
           <label className="block font-medium text-slate-600">Originating Department</label>
           <div className="mt-1 rounded border border-slate-200 bg-slate-100 px-2 py-1.5">{currentUser?.department?.name}</div>
@@ -410,38 +418,28 @@ export function StandardRequestTab({ requestCategory, subtitle }: { requestCateg
           <label className="block font-medium text-slate-600">Target Calendar Year</label>
           <div className="mt-1 rounded border border-slate-200 bg-slate-100 px-2 py-1.5">{FISCAL_YEAR}</div>
         </div>
-        {requestCategory === "DOE" && (
-          <div>
-            <label className="block font-medium text-slate-600">
-              SBU <span className="text-red-500">*</span>
-            </label>
-            <select className="mt-1 w-full rounded border border-slate-300 px-2 py-1.5" value={sbu} onChange={(e) => setSbu(e.target.value as Sbu)}>
-              <option value="">— Select —</option>
-              {SBU_OPTIONS.map((o) => (
-                <option key={o.value} value={o.value}>
-                  {o.label}
-                </option>
-              ))}
-            </select>
-          </div>
-        )}
       </div>
 
       <div className="flex flex-wrap items-center gap-3 rounded-lg border border-slate-200 bg-white p-3 text-sm shadow-sm">
         <span className="font-medium text-slate-600">Bulk upload via spreadsheet:</span>
-        <a
-          href={`/api/budget-requests/bulk-upload/template?category=${requestCategory}&fiscalYear=${FISCAL_YEAR}${requestCategory === "DOE" && sbu ? `&sbu=${sbu}` : ""}`}
-          className={`rounded-md border px-3 py-1.5 text-xs font-medium ${requestCategory === "DOE" && !sbu ? "pointer-events-none border-slate-200 text-slate-400" : "border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100"}`}
+        <button
+          type="button"
+          onClick={() =>
+            downloadFile(`/budget-requests/bulk-upload/template?category=${requestCategory}&fiscalYear=${FISCAL_YEAR}`, `budget-request-template-${requestCategory.toLowerCase()}-${FISCAL_YEAR}.xlsx`).catch(() =>
+              setBulkStatus({ ok: false, message: "Failed to download the template." })
+            )
+          }
+          className="rounded-md border border-emerald-300 bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-800 hover:bg-emerald-100"
         >
           Open Spreadsheet Template
-        </a>
-        <label className={`rounded-md border px-3 py-1.5 text-xs font-medium ${requestCategory === "DOE" && !sbu ? "cursor-not-allowed border-slate-200 text-slate-400" : "cursor-pointer border-slate-300 text-slate-700 hover:bg-slate-100"}`}>
+        </button>
+        <label className="cursor-pointer rounded-md border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100">
           {bulkUploadMutation.isPending ? "Uploading…" : "Upload Completed Template"}
           <input
             type="file"
             accept=".xlsx"
             className="hidden"
-            disabled={(requestCategory === "DOE" && !sbu) || bulkUploadMutation.isPending}
+            disabled={bulkUploadMutation.isPending}
             onChange={(e) => {
               const file = e.target.files?.[0];
               e.target.value = "";
@@ -796,6 +794,22 @@ export function StandardRequestTab({ requestCategory, subtitle }: { requestCateg
               })}
             </div>
           )}
+
+          <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+            <SectionLabel>Approval</SectionLabel>
+            {ownDeptInitiated ? (
+              <div className="space-y-2">
+                <div className="text-sm text-slate-500">This is your own centralized department's expense, so there's no Department Head to pick - instead, assign it directly to your Centralized Department Head.</div>
+                <div className="max-w-md">
+                  <ApproverPicker label="Centralized Department Head" value={centralizedHeadId} onChange={setCentralizedHeadId} />
+                </div>
+              </div>
+            ) : (
+              <div className="max-w-md">
+                <ApproverPicker label="Department Head / Approver" value={departmentHeadId} onChange={setDepartmentHeadId} />
+              </div>
+            )}
+          </div>
 
           <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
             <SectionLabel>Business Justification</SectionLabel>

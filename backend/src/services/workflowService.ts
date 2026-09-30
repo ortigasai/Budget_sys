@@ -5,8 +5,8 @@ import { computeDepartmentalCap } from "./budgetCalcService";
 import { determineRequiresCfoApproval } from "./mobilePolicyService";
 import { getFiscalCycle } from "../lib/fiscalCycle";
 import { uploadCostCenterPlanning } from "./sapMockAdapter";
-
-const BCA_THRESHOLD = 1_000_000;
+import type { AuthedUser } from "../middleware/auth";
+import { assigneeForStage, canActOnStage, chainFor, nextStageAfter, previousStageBefore, type ChainRequest } from "./approvalChain";
 
 const DUE_DATE_STAGE_LABELS: Record<DueDateStage, string> = {
   FINALIZE_FORECAST: "Finalize Forecast",
@@ -94,7 +94,7 @@ export async function submitRequest(requestId: string) {
     );
   }
 
-  const extraFieldsConfig = (request.expenseLineItem.extraFieldsConfig as unknown as ExtraField[]) ?? [];
+  const extraFieldsConfig = (request.expenseLineItem?.extraFieldsConfig as unknown as ExtraField[]) ?? [];
   const otherFields = (request.otherRequiredFields as Record<string, string>) ?? {};
 
   // Mirrors StandardRequestTab.tsx's usesHeadcountTable rule exactly: a
@@ -110,7 +110,7 @@ export async function submitRequest(requestId: string) {
   const usesHeadcountTable = !!(
     headcountField &&
     rateField &&
-    request.expenseLineItem.spendGridComputation &&
+    request.expenseLineItem?.spendGridComputation &&
     !hasDropdownField
   );
 
@@ -133,84 +133,146 @@ export async function submitRequest(requestId: string) {
 
   const requiresCfoApproval = await determineRequiresCfoApproval(extraFieldsConfig as any, otherFields);
 
+  // A Centralized Department Requestor initiating a GAE request for their own
+  // centralized department has no separate Department Head - their own Submit
+  // sends it straight to their Centralized Department Head (see
+  // approvalChain.ts's chainFor - no Centralized L1 Review stage).
+  let ownDeptInitiated = false;
+  if (request.requestCategory === "GAE") {
+    const creatorRoles = await prisma.roleAssignment.findMany({
+      where: {
+        userId: request.createdById,
+        departmentId: request.expenseLineItem!.ownerDepartmentId,
+        roleType: { in: ["CENTRALIZED_BUDGET_PREPARER", "CENTRALIZED_FIRST_LEVEL_REVIEWER"] },
+      },
+    });
+    ownDeptInitiated = creatorRoles.length > 0;
+  }
+  const chainReq = { ...request, requiresCfoApproval, ownDeptInitiated };
+  const chain = chainFor(chainReq);
+  if (chain[0] === RequestStage.DEPT_HEAD_REVIEW && !request.departmentHeadId) {
+    throw new HttpError(400, 'Select a "Department Head / Approver" for this request.');
+  }
+  if (chain.includes(RequestStage.SBU_HEAD_REVIEW) && !request.sbuHeadId) {
+    throw new HttpError(400, 'Select an "SBU or Division Head" for this request.');
+  }
+  if (ownDeptInitiated && !request.centralizedHeadId) {
+    throw new HttpError(400, 'Select a "Centralized Department Head" for this request.');
+  }
   return prisma.budgetRequest.update({
     where: { id: requestId },
-    data: { currentStage: RequestStage.DEPT_HEAD_REVIEW, status: "IN_REVIEW", requiresCfoApproval },
+    data: { currentStage: chain[0], status: "IN_REVIEW", requiresCfoApproval, ownDeptInitiated, assigneeId: assigneeForStage(chainReq, chain[0]) },
   });
 }
 
-export async function deptHeadDecision(
+
+
+
+const DUE_DATE_BY_STAGE: Partial<Record<RequestStage, DueDateStage>> = {
+  [RequestStage.DEPT_HEAD_REVIEW]: DueDateStage.REQUEST_AND_AUTHORIZATION,
+  [RequestStage.CENTRALIZED_L1_REVIEW]: DueDateStage.CENTRALIZED_L1_REVIEW,
+  [RequestStage.CENTRALIZED_HEAD_REVIEW]: DueDateStage.CENTRALIZED_HEAD_REVIEW,
+  [RequestStage.BUDGET_OFFICER_VALIDATION]: DueDateStage.BCA_AND_FINALIZATION,
+  [RequestStage.BCA_HEAD_REVIEW]: DueDateStage.BCA_AND_FINALIZATION,
+  [RequestStage.BUDGET_OFFICER_REVIEW]: DueDateStage.BCA_AND_FINALIZATION,
+};
+
+async function loadForChain(requestId: string) {
+  return prisma.budgetRequest.findUniqueOrThrow({ where: { id: requestId }, include: { expenseLineItem: true } });
+}
+
+/** Whether `user` may act on the request's current stage - drives the Inbox and the decision buttons. */
+export function userCanAct(user: AuthedUser, request: ChainRequest & { currentStage: RequestStage }) {
+  return canActOnStage(user, request, request.currentStage);
+}
+
+function assertCanAct(user: AuthedUser, request: ChainRequest & { currentStage: RequestStage }) {
+  if (!canActOnStage(user, request, request.currentStage)) {
+    throw new HttpError(403, "This request is not assigned to you at its current stage.");
+  }
+}
+
+function moveTo(request: ChainRequest, stage: RequestStage | null) {
+  if (stage === null) return { currentStage: RequestStage.DRAFT, status: "RETURNED" as const, assigneeId: null };
+  return { currentStage: stage, assigneeId: assigneeForStage(request, stage) };
+}
+
+/**
+ * The actions available at every stage of the approval chain: proceed to the
+ * next stage, return to the previous stage, or return to the requestor.
+ * (Finalize & Upload at the last stage stays in finalizeAtStep5.)
+ */
+export async function decideRequest(
   requestId: string,
-  userId: string,
-  decision: "APPROVE" | "RETURN",
+  user: AuthedUser,
+  decision: "APPROVE" | "RETURN_PREVIOUS" | "RETURN_REQUESTOR",
   comment?: string
 ) {
-  const request = await prisma.budgetRequest.findUniqueOrThrow({ where: { id: requestId } });
-  requireStage(request.currentStage, RequestStage.DEPT_HEAD_REVIEW);
-  await assertDueDateNotPassed(DueDateStage.REQUEST_AND_AUTHORIZATION);
+  const request = await loadForChain(requestId);
+  assertCanAct(user, request);
+  const stage = request.currentStage;
+  if (stage === RequestStage.BUDGET_OFFICER_REVIEW && decision === "APPROVE") {
+    throw new HttpError(409, "Use Finalize & Upload in Budget Finalization to complete this request.");
+  }
+  const dueDate = DUE_DATE_BY_STAGE[stage];
+  if (dueDate) await assertDueDateNotPassed(dueDate);
 
-  if (decision === "RETURN") {
+  if (decision !== "APPROVE") {
     if (!comment?.trim()) throw new HttpError(400, "A reason is required to return this request.");
-    await logDecision(requestId, request.currentStage, "RETURN", userId, comment);
-    return prisma.budgetRequest.update({
-      where: { id: requestId },
-      data: { currentStage: RequestStage.DRAFT, status: "RETURNED" },
-    });
+    await logDecision(requestId, stage, "RETURN", user.id, comment);
+    const target = decision === "RETURN_REQUESTOR" ? null : previousStageBefore(request, stage);
+    return prisma.budgetRequest.update({ where: { id: requestId }, data: moveTo(request, target) });
   }
 
-  await logDecision(requestId, request.currentStage, "APPROVE", userId, comment);
-  // Notes item 7 — an over-limit Mobile Phone request needs CFO sign-off,
-  // inserted right after Department Head approval and before Centralized
-  // First-Level Review (mirrors the conditional BC&A insertion pattern).
-  const nextStage = request.requiresCfoApproval ? RequestStage.CFO_APPROVAL : RequestStage.CENTRALIZED_L1_REVIEW;
-  return prisma.budgetRequest.update({
-    where: { id: requestId },
-    data: { currentStage: nextStage },
-  });
+  if (stage === RequestStage.CENTRALIZED_L1_REVIEW) {
+    // GAE-only stage - SBU-batch categories (raw Cost Center/GL Account) never reach it.
+    const forecastReady = await isForecastCompleteForDepartment(request.expenseLineItem!.ownerDepartmentId);
+    if (!forecastReady) {
+      const { forecastYear } = await getFiscalCycle();
+      throw new HttpError(
+        409,
+        `The ${forecastYear} Remaining Months Forecast must be completed for this department before Centralized First-Level Review can proceed.`
+      );
+    }
+  }
+  const next = nextStageAfter(request, stage);
+  if (!next) throw new HttpError(409, "There is no next stage for this request.");
+  await logDecision(requestId, stage, "APPROVE", user.id, comment);
+  return prisma.budgetRequest.update({ where: { id: requestId }, data: moveTo(request, next) });
 }
 
-export async function cfoDecision(
-  requestId: string,
-  userId: string,
-  decision: "APPROVE" | "RETURN",
-  comment?: string
-) {
-  const request = await prisma.budgetRequest.findUniqueOrThrow({ where: { id: requestId } });
-  requireStage(request.currentStage, RequestStage.CFO_APPROVAL);
-
-  if (decision === "RETURN") {
-    if (!comment?.trim()) throw new HttpError(400, "A reason is required to return this request.");
-    await logDecision(requestId, request.currentStage, "RETURN", userId, comment);
-    return prisma.budgetRequest.update({
-      where: { id: requestId },
-      data: { currentStage: RequestStage.DEPT_HEAD_REVIEW },
-    });
-  }
-
-  await logDecision(requestId, request.currentStage, "APPROVE", userId, comment);
-  return prisma.budgetRequest.update({
-    where: { id: requestId },
-    data: { currentStage: RequestStage.CENTRALIZED_L1_REVIEW },
-  });
+/** Hand the current stage to any other person (the workbook: "reassign current stage to anyone"). */
+export async function reassignRequest(requestId: string, user: AuthedUser, assigneeId: string, comment?: string) {
+  const request = await loadForChain(requestId);
+  assertCanAct(user, request);
+  const target = await prisma.user.findUnique({ where: { id: assigneeId } });
+  if (!target) throw new HttpError(400, "Unknown user.");
+  await logDecision(requestId, request.currentStage, "REASSIGN", user.id, `Reassigned to ${target.name}${comment ? ` - ${comment}` : ""}`);
+  return prisma.budgetRequest.update({ where: { id: requestId }, data: { assigneeId } });
 }
 
-// Notes item "Requestors' new budget request — requests not yet approved by
-// the Dept. Head can still be cancelled by the Requestor."
-export async function cancelRequest(requestId: string, userId: string) {
-  const request = await prisma.budgetRequest.findUniqueOrThrow({ where: { id: requestId } });
-  if (request.createdById !== userId) {
-    throw new HttpError(403, "You can only cancel your own requests.");
-  }
+// The requestor can cancel while the request is still theirs (draft, or before
+// its first reviewer has acted); whoever the current stage is assigned to can
+// cancel it too ("cancel ticket" is available in all stages).
+export async function cancelRequest(requestId: string, user: AuthedUser, comment?: string) {
+  const request = await loadForChain(requestId);
   if (request.requestCategory === "REVENUE") {
     throw new HttpError(400, "Revenue requests are cancelled as a batch - use the Revenue upload flow's Cancel action instead.");
   }
-  if (request.currentStage !== RequestStage.DRAFT && request.currentStage !== RequestStage.DEPT_HEAD_REVIEW) {
-    throw new HttpError(409, "This request has already been acted on by the Department Head and can no longer be cancelled.");
+  if (request.currentStage === RequestStage.APPROVED || request.currentStage === RequestStage.CANCELLED || request.currentStage === RequestStage.REJECTED) {
+    throw new HttpError(409, "This request is already closed.");
   }
-
+  const isRequestorWhileTheirs =
+    request.createdById === user.id && (request.currentStage === RequestStage.DRAFT || request.currentStage === chainFor(request)[0]);
+  if (!isRequestorWhileTheirs && !canActOnStage(user, request, request.currentStage)) {
+    throw new HttpError(403, "You can only cancel your own request before it has been acted on, or a request assigned to you.");
+  }
+  if (request.currentStage !== RequestStage.DRAFT) {
+    await logDecision(requestId, request.currentStage, "CANCEL", user.id, comment ?? null);
+  }
   return prisma.budgetRequest.update({
     where: { id: requestId },
-    data: { currentStage: RequestStage.CANCELLED, status: "CANCELLED" },
+    data: { currentStage: RequestStage.CANCELLED, status: "CANCELLED", assigneeId: null },
   });
 }
 
@@ -220,97 +282,8 @@ export async function isForecastCompleteForDepartment(departmentId: string) {
   return rows.every((r) => r.forecastCompletedAt !== null);
 }
 
-export async function centralizedL1Decision(
-  requestId: string,
-  userId: string,
-  decision: "APPROVE" | "REJECT",
-  comment?: string
-) {
-  const request = await prisma.budgetRequest.findUniqueOrThrow({
-    where: { id: requestId },
-    include: { expenseLineItem: true },
-  });
-  requireStage(request.currentStage, RequestStage.CENTRALIZED_L1_REVIEW);
-  await assertDueDateNotPassed(DueDateStage.CENTRALIZED_L1_REVIEW);
 
-  const ownerDepartmentId = request.expenseLineItem.ownerDepartmentId;
 
-  const forecastReady = await isForecastCompleteForDepartment(ownerDepartmentId);
-  if (!forecastReady) {
-    const { forecastYear } = await getFiscalCycle();
-    throw new HttpError(
-      409,
-      `The ${forecastYear} Remaining Months Forecast must be completed for this department before Centralized First-Level Review can proceed.`
-    );
-  }
-
-  if (decision === "REJECT") {
-    await logDecision(requestId, request.currentStage, "REJECT", userId);
-    return prisma.budgetRequest.update({
-      where: { id: requestId },
-      data: { currentStage: RequestStage.REJECTED, status: "REJECTED" },
-    });
-  }
-
-  await logDecision(requestId, request.currentStage, "APPROVE", userId, comment);
-  return prisma.budgetRequest.update({
-    where: { id: requestId },
-    data: { currentStage: RequestStage.CENTRALIZED_HEAD_REVIEW },
-  });
-}
-
-export async function centralizedHeadDecision(
-  requestId: string,
-  userId: string,
-  decision: "APPROVE" | "RETURN",
-  comment?: string
-) {
-  const request = await prisma.budgetRequest.findUniqueOrThrow({ where: { id: requestId } });
-  requireStage(request.currentStage, RequestStage.CENTRALIZED_HEAD_REVIEW);
-  await assertDueDateNotPassed(DueDateStage.CENTRALIZED_HEAD_REVIEW);
-
-  if (decision === "RETURN") {
-    if (!comment?.trim()) throw new HttpError(400, "A reason is required to return this request.");
-    await logDecision(requestId, request.currentStage, "RETURN", userId, comment);
-    return prisma.budgetRequest.update({
-      where: { id: requestId },
-      data: { currentStage: RequestStage.CENTRALIZED_L1_REVIEW },
-    });
-  }
-
-  await logDecision(requestId, request.currentStage, "APPROVE", userId, comment);
-  const nextStage = request.proposedAmount > BCA_THRESHOLD ? RequestStage.BCA_HEAD_REVIEW : RequestStage.BUDGET_OFFICER_REVIEW;
-  return prisma.budgetRequest.update({
-    where: { id: requestId },
-    data: { currentStage: nextStage },
-  });
-}
-
-export async function bcaHeadDecision(
-  requestId: string,
-  userId: string,
-  decision: "APPROVE" | "RETURN",
-  comment?: string
-) {
-  const request = await prisma.budgetRequest.findUniqueOrThrow({ where: { id: requestId } });
-  requireStage(request.currentStage, RequestStage.BCA_HEAD_REVIEW);
-  await assertDueDateNotPassed(DueDateStage.BCA_AND_FINALIZATION);
-
-  if (decision === "RETURN") {
-    if (!comment?.trim()) throw new HttpError(400, "A reason is required to return this request.");
-    await logDecision(requestId, request.currentStage, "RETURN", userId, comment);
-    return prisma.budgetRequest.update({
-      where: { id: requestId },
-      data: { currentStage: RequestStage.CENTRALIZED_HEAD_REVIEW },
-    });
-  }
-
-  await logDecision(requestId, request.currentStage, "APPROVE", userId, comment);
-  return prisma.budgetRequest.update({
-    where: { id: requestId },
-    data: { currentStage: RequestStage.BUDGET_OFFICER_REVIEW },
-  });
-}
 
 export async function applyBudgetCut(requestId: string, userId: string, cutAmount: number) {
   const request = await prisma.budgetRequest.findUniqueOrThrow({
@@ -323,14 +296,20 @@ export async function applyBudgetCut(requestId: string, userId: string, cutAmoun
     throw new HttpError(400, "Budget cut must be between 0 and the proposed amount.");
   }
 
-  const cap = await computeDepartmentalCap(request.expenseLineItem.ownerDepartmentId, request.fiscalYear);
   const net = request.proposedAmount - cutAmount;
+  // The Departmental Budget Cap (FR-1.4) is a GAE-specific concept, tied to
+  // a centralized department's expense line item - the SBU-batch categories
+  // (raw Cost Center/GL Account, no catalog line item) have no such cap to
+  // check against.
+  const isOverBudget = request.expenseLineItem
+    ? net > (await computeDepartmentalCap(request.expenseLineItem.ownerDepartmentId, request.fiscalYear)).value
+    : false;
 
   return prisma.budgetRequest.update({
     where: { id: requestId },
     data: {
       budgetCutAmount: cutAmount,
-      isOverBudget: net > cap.value,
+      isOverBudget,
     },
   });
 }
@@ -340,7 +319,14 @@ export async function returnAtStep5(
   userId: string,
   targetStage: Extract<
     RequestStage,
-    "DEPT_HEAD_REVIEW" | "CENTRALIZED_L1_REVIEW" | "CENTRALIZED_HEAD_REVIEW" | "BCA_HEAD_REVIEW"
+    | "DEPT_HEAD_REVIEW"
+    | "CENTRALIZED_L1_REVIEW"
+    | "CENTRALIZED_HEAD_REVIEW"
+    | "BCA_HEAD_REVIEW"
+    | "BUDGET_OFFICER_VALIDATION"
+    | "SF_VALIDATION"
+    | "SF_HEAD_REVIEW"
+    | "SBU_HEAD_REVIEW"
   >,
   reasonCodeId: string
 ) {
@@ -353,7 +339,7 @@ export async function returnAtStep5(
 
   return prisma.budgetRequest.update({
     where: { id: requestId },
-    data: { currentStage: targetStage, reasonCode: reason.label },
+    data: { currentStage: targetStage, reasonCode: reason.label, assigneeId: assigneeForStage({ ...request, requiresCfoApproval: request.requiresCfoApproval } as any, targetStage) },
   });
 }
 
@@ -373,11 +359,20 @@ export async function finalizeAtStep5(requestId: string, userId: string) {
   await assertDueDateNotPassed(DueDateStage.BCA_AND_FINALIZATION);
 
   const amount = request.proposedAmount - request.budgetCutAmount;
+  // SBU-batch categories (DOE/Commission/Cost of Sales/Depreciation &
+  // Amortization/Interest Expense) carry Cost Center/GL Account directly on
+  // the request (no catalog line item) - everything else still reads them
+  // off the catalog row.
+  const glAccount = request.expenseLineItem?.glAccount ?? request.glAccount;
+  const costCenter = request.expenseLineItem?.costCenter ?? request.costCenter;
+  if (!glAccount || !costCenter) {
+    throw new HttpError(500, "Request is missing its GL Account/Cost Center - cannot finalize.");
+  }
   const result = await uploadCostCenterPlanning([
     {
       budgetRequestId: request.id,
-      glAccount: request.expenseLineItem.glAccount,
-      costCenter: request.expenseLineItem.costCenter,
+      glAccount,
+      costCenter,
       fiscalYear: request.fiscalYear,
       monthlyAmounts: request.monthlyAmounts as number[],
     },
@@ -398,8 +393,8 @@ export async function finalizeAtStep5(requestId: string, userId: string) {
         requestCategory: request.requestCategory,
         sbu: request.sbu,
         npcSbu: request.npcSbu,
-        glAccount: request.expenseLineItem.glAccount,
-        costCenter: request.expenseLineItem.costCenter,
+        glAccount,
+        costCenter,
         amount,
         sapDocumentNumber: result.documentNumber,
         finalizedById: userId,
@@ -494,8 +489,8 @@ export async function revenueBatchDecision(
     const result = await uploadCostCenterPlanning(
       rows.map((r) => ({
         budgetRequestId: r.id,
-        glAccount: r.expenseLineItem.glAccount,
-        costCenter: r.expenseLineItem.costCenter,
+        glAccount: r.expenseLineItem!.glAccount,
+        costCenter: r.expenseLineItem!.costCenter,
         fiscalYear: r.fiscalYear,
         monthlyAmounts: r.monthlyAmounts as number[],
       }))
@@ -515,8 +510,8 @@ export async function revenueBatchDecision(
           requestCategory: r.requestCategory,
           sbu: r.sbu,
           npcSbu: r.npcSbu,
-          glAccount: r.expenseLineItem.glAccount,
-          costCenter: r.expenseLineItem.costCenter,
+          glAccount: r.expenseLineItem!.glAccount,
+          costCenter: r.expenseLineItem!.costCenter,
           amount: r.proposedAmount - r.budgetCutAmount,
           sapDocumentNumber: result.documentNumber,
           finalizedById: userId,

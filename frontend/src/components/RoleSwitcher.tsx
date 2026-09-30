@@ -11,7 +11,11 @@ const ROLE_LABELS: Record<string, string> = {
   BCA_HEAD: "BC&A Head",
   DEPARTMENT_HEAD: "Department Approver",
   DEPARTMENT_PREPARER: "Department Preparer",
-  CENTRALIZED_BUDGET_PREPARER: "Centralized Department Preparer",
+  // "Budgeting System_Approval Workflow"'s "Centralized Department Requestor" -
+  // renamed from "...Preparer" since this role both creates GAE requests for
+  // its department and (per that same file) is who a Centralized Department
+  // Requestor's own request gets forwarded through.
+  CENTRALIZED_BUDGET_PREPARER: "Centralized Department Requestor/Reviewer",
   CENTRALIZED_FIRST_LEVEL_REVIEWER: "Centralized Department Reviewer",
   CENTRALIZED_DEPARTMENT_HEAD: "Centralized Department Approver",
   CFO: "CFO",
@@ -66,7 +70,7 @@ export function RoleSwitcher() {
   // role to (via Admin Console > Role Assignments). Still a real, verified
   // login under the hood (every seeded user shares one known password) -
   // this just skips typing it in, it doesn't skip credential verification.
-  const roleAssignedUsers = users.filter((u) => u.roles.length > 0);
+  const roleAssignedUsers = users.filter((u) => u.isEmployee);
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -104,11 +108,11 @@ export function RoleSwitcher() {
         <div className="flex w-full flex-col gap-2">
           <div className="w-full text-xs font-semibold tracking-wide text-slate-400">Quick login (testing)</div>
           <SearchableSelect
-            placeholder="Select a role-assigned user…"
+            placeholder="Select an employee…"
             options={roleAssignedUsers.map((u) => ({
               value: u.id,
               label: u.name,
-              sublabel: u.roles.map((r) => roleLabel(r.roleType)).join(","),
+              sublabel: u.department?.name,
             }))}
             value={quickUserId}
             onChange={quickLogin}

@@ -13,3 +13,16 @@ NPC_SBU_LABELS: dict[str, str] = {
     "CORPORATE_HR": "Corporate HR",
     "CORPORATE_ADMIN": "Corporate Admin",
 }
+
+# The User Management workbook's own labels for the NPC group's scope (its
+# "NPC SBU" column) -> the 8 codes above.
+NPC_GROUP_SCOPE_TO_SBU: dict[str, str] = {
+    "Malls": "MALLS",
+    "Offices": "OFFICES",
+    "Estates": "ESTATES",
+    "Residential": "RESIDENTIAL",
+    "Leisure": "LEISURE",
+    "Corporate - IT": "CORPORATE_IT",
+    "Corporate - HR": "CORPORATE_HR",
+    "Corporate - Admin": "CORPORATE_ADMIN",
+}
