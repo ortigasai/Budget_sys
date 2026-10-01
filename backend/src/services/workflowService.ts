@@ -226,12 +226,24 @@ export async function decideRequest(
 
   if (stage === RequestStage.CENTRALIZED_L1_REVIEW) {
     // GAE-only stage - SBU-batch categories (raw Cost Center/GL Account) never reach it.
-    const forecastReady = await isForecastCompleteForDepartment(request.expenseLineItem!.ownerDepartmentId);
+    const { forecastYear } = await getFiscalCycle();
+    // isForecastCompleteForDepartment only ever becomes true via the full
+    // per-department Submit -> Head Review -> Budget Officer Review chain
+    // (forecastWorkflowService.ts's budgetOfficerDecision is the only place
+    // that sets HistoricalActuals.forecastCompletedAt). 2026 never runs that
+    // chain at all - the Budget Officer enters it directly via Upload
+    // Completed Template instead (same restriction as PATCH
+    // /forecast/entries/:id and POST /forecast/:departmentId/submit above),
+    // so this gate would otherwise block every GAE request at this stage
+    // for the entire cycle regardless of how complete the uploaded data is.
+    // Keyed off forecastYear, not hardcoded, so it lifts on its own once the
+    // cycle rolls to forecastYear 2027 and the normal per-department
+    // approval chain resumes.
+    const forecastReady = forecastYear === 2026 || (await isForecastCompleteForDepartment(request.expenseLineItem!.ownerDepartmentId));
     if (!forecastReady) {
-      const { forecastYear } = await getFiscalCycle();
       throw new HttpError(
         409,
-        `The ${forecastYear} Remaining Months Forecast must be completed for this department before Centralized First-Level Review can proceed.`
+        `The ${forecastYear} Remaining Months Forecast must be completed for this department before Centralized Department Requestor/Reviewer review can proceed.`
       );
     }
   }
