@@ -209,6 +209,17 @@ if (-not $SkipPrereqs) {
     # Equivalent of checking "Enable proxy" under IIS Manager > server node >
     # Application Request Routing Cache > Server Proxy Settings.
     Set-WebConfigurationProperty -pspath "MACHINE/WEBROOT/APPHOST" -filter "system.webServer/proxy" -name "enabled" -value "True"
+    # ARR's default proxy timeout (as short as 30s-2min depending on IIS
+    # version) is shorter than a few of this app's own synchronous requests
+    # - confirmed live: the NPC Monitoring import (parses a multi-sheet
+    # workbook and writes 100+ rows inline, no background job the way the
+    # automatic SAP syncs use) took long enough that ARR gave up and
+    # returned the browser a 502, even though the backend kept running and
+    # completed the import successfully regardless - a real user has no way
+    # to tell that apart from an actual failure. 10 minutes comfortably
+    # covers this and any similarly-sized upload without masking a genuine
+    # backend hang for that long.
+    Set-WebConfigurationProperty -pspath "MACHINE/WEBROOT/APPHOST" -filter "system.webServer/proxy" -name "timeout" -value "00:10:00"
 
     # --- NSSM ---
     $script:nssmExe = (Get-Command nssm -ErrorAction SilentlyContinue).Source
