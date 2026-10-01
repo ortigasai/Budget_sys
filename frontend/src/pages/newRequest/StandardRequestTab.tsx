@@ -368,12 +368,12 @@ export function StandardRequestTab({ requestCategory, subtitle }: { requestCateg
         />
         <div className="rounded-lg border border-slate-200 bg-white p-4 text-sm shadow-sm">
           <div>
-            <span className="font-medium">Expense line item:</span> {created.expenseLineItem.name}
+            <span className="font-medium">Expense line item:</span> {created.expenseLineItem?.name ?? "—"}
           </div>
           <div>
             <span className="font-medium">Budget Code:</span>
             {""}
-            {created.budgetCode ?? created.expenseLineItem.budgetCode ?? "—"}
+            {created.budgetCode ?? created.expenseLineItem?.budgetCode ?? "—"}
           </div>
           <div>
             <span className="font-medium">{FISCAL_YEAR} Proposed Amount:</span>

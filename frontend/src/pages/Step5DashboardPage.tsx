@@ -68,7 +68,7 @@ export function Step5DashboardPage() {
   // SBU_BATCH_TYPES covers DOE/Commission/Cost of Sales/Depreciation &
   // Amortization/Interest Expense - all SBU-scoped, same board-approved-
   // budget-breakdown shape Revenue already has.
-  const sbuBatchCategoryValues = new Set(SBU_BATCH_TYPES.map((t) => t.category));
+  const sbuBatchCategoryValues = new Set<string>(SBU_BATCH_TYPES.map((t) => t.category));
   const category: RequestCategory | null =
     categoryParam === "GAE" || categoryParam === "NPC" || categoryParam === "REVENUE" || sbuBatchCategoryValues.has(categoryParam as RequestCategory) ? (categoryParam as RequestCategory) : null;
   const usesSbuBreakdown = category === "REVENUE" || sbuBatchCategoryValues.has(category as RequestCategory);

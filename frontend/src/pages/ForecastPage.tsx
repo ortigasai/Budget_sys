@@ -72,6 +72,7 @@ interface HistoricalActualsBreakdownRow {
 // is synthetic ("group:...") and not itself PATCH-able - editing a merged
 // row happens per underlying item, inside the popup.
 interface HistoricalActualsRow extends HistoricalActualsBreakdownRow {
+  expenseCategory: string | null;
   requestCategory: RequestCategory;
   breakdown: HistoricalActualsBreakdownRow[];
 }
