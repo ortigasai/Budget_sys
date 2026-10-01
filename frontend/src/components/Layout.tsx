@@ -523,6 +523,21 @@ export function Layout() {
   });
   const pendingCount = budgetInboxCount + headcountInboxCount + forecastInboxCount + office365InboxCount + mobilePhoneBudgetInboxCount + revenueInboxCount;
 
+  // Budget Officer Review requests (GAE/DOE/Commission/Cost of Sales/D&A/
+  // Interest Expense/NPC) are deliberately excluded from the generic Inbox
+  // above - they're handled through the dedicated Budget Finalization &
+  // Upload / Step 5 dashboard instead (see routes/budgetRequests.ts's own
+  // /inbox query, which filters BUDGET_OFFICER_REVIEW out). That page had
+  // no pending-count indicator of its own, unlike Inbox - same badge style,
+  // same reused-query-for-just-the-count pattern as above.
+  const { data: step5PendingCount = 0 } = useQuery({
+    queryKey: ["step5-dashboard"],
+    queryFn: async () => (await api.get<unknown[]>("/budget-requests/step5-dashboard")).data,
+    select: (data) => data.length,
+    enabled: !!currentUser && isBudgetOfficer,
+    staleTime: 30_000,
+  });
+
   if (!currentUser) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-slate-100">
@@ -635,7 +650,17 @@ export function Layout() {
                   {gate("finalization", isBudgetOfficer) && (
                     <>
                       <div className="mb-1 mt-4 border-t border-slate-100 pt-4 text-xs font-semibold tracking-wide text-emerald-800/70">Budget Officer</div>
-                      <CollapsibleNavGroup to="/step5" icon="step5" label="Budget Finalization & Upload" defaultOpen>
+                      <CollapsibleNavGroup
+                        to="/step5"
+                        icon="step5"
+                        label={
+                          <span className="flex flex-1 items-center justify-between">
+                            Budget Finalization & Upload
+                            {step5PendingCount > 0 && <span className="rounded-full bg-red-500 px-1.5 py-0.5 text-[10px] font-bold leading-none text-white">{step5PendingCount}</span>}
+                          </span>
+                        }
+                        defaultOpen
+                      >
                         <Step5SubMenu />
                       </CollapsibleNavGroup>
                     </>
