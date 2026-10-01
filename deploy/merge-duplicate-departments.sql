@@ -23,21 +23,26 @@ WHERE "departmentId" = (SELECT id FROM "Department" WHERE name = 'Administrative
 DELETE FROM "Department" WHERE name = 'Administrative Services';
 
 -- Merge 2: TSG -> Technical Services (confirmed by the user: "TSG is
--- Technical Services")
+-- Technical Services"). The exact target name drifts per environment - dev
+-- has "Technical Services", this server has "Technical Services Group" -
+-- so this picks whichever one actually exists rather than hardcoding either
+-- (never "Estates & Property Management & Technical Services Group", a
+-- separate, real, combined department - the exact name match below won't
+-- accidentally hit it).
 UPDATE "User"
-SET "departmentId" = (SELECT id FROM "Department" WHERE name = 'Technical Services')
+SET "departmentId" = COALESCE((SELECT id FROM "Department" WHERE name = 'Technical Services'), (SELECT id FROM "Department" WHERE name = 'Technical Services Group'))
 WHERE "departmentId" = (SELECT id FROM "Department" WHERE name = 'TSG');
 
 UPDATE "ExpenseLineItem"
-SET "visibleToDepartmentId" = (SELECT id FROM "Department" WHERE name = 'Technical Services')
+SET "visibleToDepartmentId" = COALESCE((SELECT id FROM "Department" WHERE name = 'Technical Services'), (SELECT id FROM "Department" WHERE name = 'Technical Services Group'))
 WHERE "visibleToDepartmentId" = (SELECT id FROM "Department" WHERE name = 'TSG');
 
 UPDATE "HistoricalActuals"
-SET "departmentId" = (SELECT id FROM "Department" WHERE name = 'Technical Services')
+SET "departmentId" = COALESCE((SELECT id FROM "Department" WHERE name = 'Technical Services'), (SELECT id FROM "Department" WHERE name = 'Technical Services Group'))
 WHERE "departmentId" = (SELECT id FROM "Department" WHERE name = 'TSG');
 
 UPDATE "DepartmentalBudgetCap"
-SET "departmentId" = (SELECT id FROM "Department" WHERE name = 'Technical Services')
+SET "departmentId" = COALESCE((SELECT id FROM "Department" WHERE name = 'Technical Services'), (SELECT id FROM "Department" WHERE name = 'Technical Services Group'))
 WHERE "departmentId" = (SELECT id FROM "Department" WHERE name = 'TSG');
 
 DELETE FROM "Department" WHERE name = 'TSG';

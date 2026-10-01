@@ -605,12 +605,16 @@ export function Layout() {
                       My Requests
                     </NavItem>
                   )}
-                  {/* Revenue Approvals merged into Inbox per user request -
+                  {/* Every employee gets Inbox, not just reviewers - per
+                      user direction, it's not only approval queues, it's
+                      also where a returned-to-you request shows up as
+                      something needing YOUR action (see InboxPage's own
+                      "Returned to You" section). Used to be gated to
                       isRevenueReviewer (isReviewer plus the two SBU Finance
-                      roles) is the gate now, so a BU Finance-only user (no
-                      base isReviewer role) still sees Inbox once Revenue
-                      batches are waiting on them. */}
-                  {gate("inbox", isRevenueReviewer) && (
+                      roles), which made sense when Inbox was purely review
+                      queues, but hid it entirely from a plain requestor
+                      whose own request got sent back. */}
+                  {gate("inbox", true) && (
                     <NavItem to="/inbox" icon="inbox">
                       <span className="flex flex-1 items-center justify-between">
                         Inbox

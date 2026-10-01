@@ -14,6 +14,53 @@ const HEADCOUNT_DECISION_ENDPOINT: Record<string, string> = {
   HR_HEAD_REVIEW: "hr-head",
 };
 
+// Per user direction: Inbox isn't only approval queues - it's also where a
+// returned-to-you request becomes visible as something needing YOUR action,
+// not just a status badge buried in My Requests. Reuses the same
+// /budget-requests/my-requests list MyRequestsPage.tsx already fetches,
+// filtered to this user's own requests currently sitting back with them -
+// status "RETURNED" is set by workflowService.ts's returnRequest only when
+// the stage goes all the way back to DRAFT (i.e. to the requestor, not just
+// to an earlier reviewer - that case stays in that reviewer's own queue
+// instead). Shown first, ahead of the review queues below, since it's the
+// viewer's own pending action rather than something delegated to them.
+function MyReturnedRequestsSection() {
+  const { data: requests = [] } = useQuery({
+    queryKey: ["my-requests"],
+    queryFn: async () => (await api.get<BudgetRequest[]>("/budget-requests/my-requests")).data,
+  });
+  const returned = requests.filter((r) => r.status === "RETURNED");
+  if (returned.length === 0) return null;
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-2">
+        <span className="rounded bg-red-600 px-2 py-0.5 text-xs font-bold text-white">{returned.length}</span>
+        <h2 className="text-sm font-semibold tracking-wide text-red-700">Returned to You</h2>
+      </div>
+      {returned.map((r) => {
+        const lastDecision = r.reviewDecisions[r.reviewDecisions.length - 1];
+        return (
+          <Link key={r.id} to={`/requests/${r.id}`} className="block rounded-lg border border-slate-200 border-l-4 border-l-red-400 bg-white p-4 text-sm shadow-sm hover:bg-red-50/40">
+            <div className="flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-xs font-medium tracking-wide text-slate-400">{requestLineDisplay(r).category}</div>
+                <div className="font-medium text-emerald-800">{requestLineDisplay(r).name}</div>
+                <div className="text-xs text-slate-500">
+                  {r.department.name}
+                  {requestLineDisplay(r).ownerDepartmentName ? ` → ${requestLineDisplay(r).ownerDepartmentName}` : ""} · ₱{r.proposedAmount.toLocaleString()}
+                </div>
+              </div>
+              <StatusBadge stage={r.currentStage} />
+            </div>
+            {lastDecision?.comment && <div className="mt-1 text-xs italic text-slate-500">"{lastDecision.comment}"</div>}
+          </Link>
+        );
+      })}
+    </div>
+  );
+}
+
 function HeadcountInboxSection() {
   const queryClient = useQueryClient();
   const { data: requests = [] } = useQuery({
@@ -715,6 +762,7 @@ export function InboxPage() {
   return (
     <div className="space-y-6">
       <PageHeader subtitle="Requests, headcount asks, forecast, and Revenue batch approvals waiting on your review." />
+      <MyReturnedRequestsSection />
       <HeadcountInboxSection />
       <Office365InboxSection />
       <MobilePhoneBudgetInboxSection />

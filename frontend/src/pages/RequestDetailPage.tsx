@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, requestLineDisplay, type BudgetRequest } from "../api/client";
@@ -28,6 +28,25 @@ export function RequestDetailPage() {
     queryFn: async () => (await api.get<BudgetRequest>(`/budget-requests/${id}`)).data,
   });
 
+  // A DRAFT request is editable by its own requestor - either a brand-new
+  // one not yet submitted, or one RETURN_REQUESTOR sent all the way back to
+  // DRAFT (see workflowService.ts). Edited here, not re-derived from
+  // scratch via NewRequestPage, since a returned request needs to fix
+  // whatever the reviewer's comment called out, not start over. Synced from
+  // the loaded request once (not on every refetch) so the requestor's
+  // in-progress edits aren't clobbered by an unrelated background refetch.
+  const [editedMonthlyAmounts, setEditedMonthlyAmounts] = useState<number[]>(Array(12).fill(0));
+  const [editedBusinessJustification, setEditedBusinessJustification] = useState("");
+  const [editedOtherFields, setEditedOtherFields] = useState<Record<string, string>>({});
+  const [editsLoaded, setEditsLoaded] = useState(false);
+  useEffect(() => {
+    if (!request || editsLoaded) return;
+    setEditedMonthlyAmounts(request.monthlyAmounts);
+    setEditedBusinessJustification(request.businessJustification);
+    setEditedOtherFields(request.otherRequiredFields);
+    setEditsLoaded(true);
+  }, [request, editsLoaded]);
+
   const cancelMutation = useMutation({
     mutationFn: async () => (await api.post<BudgetRequest>(`/budget-requests/${id}/cancel`)).data,
     onSuccess: () => {
@@ -37,7 +56,18 @@ export function RequestDetailPage() {
   });
 
   const submitMutation = useMutation({
-    mutationFn: async () => (await api.post<BudgetRequest>(`/budget-requests/${id}/submit`, { departmentHeadId: pickDeptHead || undefined, sbuHeadId: pickSbuHead || undefined, centralizedHeadId: pickCentralizedHead || undefined })).data,
+    mutationFn: async () => {
+      // Save whatever was edited first - PATCH only accepts a DRAFT request
+      // from its own requestor, same as /submit right after it, so a
+      // returned request's fix and its resubmission land as one action from
+      // the requestor's point of view.
+      await api.patch<BudgetRequest>(`/budget-requests/${id}`, {
+        monthlyAmounts: editedMonthlyAmounts,
+        businessJustification: editedBusinessJustification,
+        otherRequiredFields: editedOtherFields,
+      });
+      return (await api.post<BudgetRequest>(`/budget-requests/${id}/submit`, { departmentHeadId: pickDeptHead || undefined, sbuHeadId: pickSbuHead || undefined, centralizedHeadId: pickCentralizedHead || undefined })).data;
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["budget-request", id] });
       queryClient.invalidateQueries({ queryKey: ["my-requests"] });
@@ -50,6 +80,14 @@ export function RequestDetailPage() {
 
   const canCancel = !TERMINAL_STAGES.has(request.currentStage) && (request.createdById === currentUser?.id || request.canAct);
   const canSubmit = request.createdById === currentUser?.id && request.currentStage === "DRAFT";
+  // NPC's own creation form (NpcRequestTab.tsx) never collects a 12-month
+  // grid or free-text Business Justification - amount is a single flat
+  // figure living in monthlyAmounts[0], and Business Justification is
+  // auto-derived ("NPC Project: ..."). Editing those here the same way GAE/
+  // DOE's spend grid is edited would let a resubmission drift from that
+  // convention, so NPC keeps both read-only; only its otherRequiredFields
+  // (none today, but schema-supported) and approver picks are editable.
+  const isNpc = request.requestCategory === "NPC";
   // Mirrors StandardRequestTab.tsx's own-department detection - no separate
   // Department Head for these, they assign their own Centralized Department
   // Head directly instead.
@@ -73,7 +111,7 @@ export function RequestDetailPage() {
           <StatusBadge stage={request.currentStage} />
           {canSubmit && (
             <button onClick={() => submitMutation.mutate()} disabled={submitMutation.isPending} className="rounded-md bg-emerald-700 px-2.5 py-1 text-xs font-semibold text-white hover:bg-emerald-600 disabled:opacity-50">
-              Submit for Approval
+              {request.status === "RETURNED" ? "Resubmit for Approval" : "Submit for Approval"}
             </button>
           )}
           {canCancel && (
@@ -120,7 +158,19 @@ export function RequestDetailPage() {
           {MONTHS.map((m, i) => (
             <div key={m} className="px-2 py-3 text-center">
               <div className="text-xs font-medium tracking-wide text-slate-400">{m}</div>
-              <div className="mt-1 font-semibold tabular-nums text-slate-700">{request.monthlyAmounts[i].toLocaleString()}</div>
+              {canSubmit && !isNpc ? (
+                <input
+                  type="number"
+                  className="mt-1 w-full rounded border border-slate-300 px-1 py-0.5 text-center text-sm tabular-nums"
+                  value={editedMonthlyAmounts[i]}
+                  onChange={(e) => {
+                    const value = Number(e.target.value) || 0;
+                    setEditedMonthlyAmounts((prev) => prev.map((v, j) => (j === i ? value : v)));
+                  }}
+                />
+              ) : (
+                <div className="mt-1 font-semibold tabular-nums text-slate-700">{request.monthlyAmounts[i].toLocaleString()}</div>
+              )}
             </div>
           ))}
         </div>
@@ -128,17 +178,37 @@ export function RequestDetailPage() {
 
       <div className="rounded-lg border border-slate-200 bg-white p-4 text-sm shadow-sm">
         <SectionLabel>Business Justification</SectionLabel>
-        <p className="text-slate-600">{request.businessJustification}</p>
+        {canSubmit && !isNpc ? (
+          <textarea className="w-full rounded border border-slate-300 px-2 py-1.5 text-sm" rows={3} value={editedBusinessJustification} onChange={(e) => setEditedBusinessJustification(e.target.value)} />
+        ) : (
+          <p className="text-slate-600">{request.businessJustification}</p>
+        )}
       </div>
 
-      {Object.keys(request.otherRequiredFields).length > 0 && (
+      {(Object.keys(request.otherRequiredFields).length > 0 || (canSubmit && Object.keys(editedOtherFields).length > 0)) && (
         <div className="rounded-lg border border-slate-200 bg-white p-4 text-sm shadow-sm">
           <SectionLabel>Other Fields</SectionLabel>
-          {Object.entries(request.otherRequiredFields).map(([k, v]) => (
-            <div key={k}>
-              <span className="font-medium">{k}:</span> {v}
+          {canSubmit ? (
+            <div className="space-y-2">
+              {Object.entries(editedOtherFields).map(([k, v]) => (
+                <div key={k}>
+                  <label className="mb-0.5 block text-xs font-medium text-slate-500">{k}</label>
+                  <input
+                    type="text"
+                    className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
+                    value={v}
+                    onChange={(e) => setEditedOtherFields((prev) => ({ ...prev, [k]: e.target.value }))}
+                  />
+                </div>
+              ))}
             </div>
-          ))}
+          ) : (
+            Object.entries(request.otherRequiredFields).map(([k, v]) => (
+              <div key={k}>
+                <span className="font-medium">{k}:</span> {v}
+              </div>
+            ))
+          )}
         </div>
       )}
 
