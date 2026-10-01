@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useSearchParams } from "react-router-dom";
-import { api, requestLineDisplay, NPC_SBU_OPTIONS, SBU_OPTIONS, type BudgetRequest, type NpcSbu, type RequestCategory, type Sbu } from "../api/client";
+import { api, requestLineDisplay, NPC_SBU_OPTIONS, SBU_OPTIONS, type BudgetRequest, type FinalizedBudgetReport, type NpcSbu, type RequestCategory, type Sbu } from "../api/client";
 import { SBU_BATCH_TYPES } from "../components/SbuTypeSwitch";
 import { PageHeader } from "../components/PageHeader";
 import { useFiscalYear } from "../lib/fiscalCycle";
@@ -91,11 +91,36 @@ export function Step5DashboardPage() {
     [allRequests, category, sbuFilter, npcHeadFilter, usesSbuBreakdown],
   );
 
-  const totalProposed = requests.reduce((sum, r) => sum + (r.proposedAmount - r.budgetCutAmount), 0);
+  // Pending (still awaiting Budget Officer Review, from step5-dashboard
+  // above) + already finalized/uploaded (FinalizedBudgetLine - written once
+  // at Finalize & Upload time, see workflowService.ts). Finalizing a request
+  // moves it off the pending list entirely, so summing only `requests`
+  // understated this as things got finalized - down to literally ₱0 once
+  // everything pending was done, even though the Board-Approved Budget was
+  // fully committed by then, not uncommitted. This is the total of
+  // everything proposed against the cap this cycle, pending or not.
+  const scopedSbu = usesSbuBreakdown ? (sbuFilter === "ALL" ? null : sbuFilter) : null;
+  const { data: finalizedReport } = useQuery({
+    queryKey: ["finalized-budget-report", FISCAL_YEAR, category, scopedSbu, category === "NPC" ? npcHeadFilter : null],
+    queryFn: async () =>
+      (
+        await api.get<FinalizedBudgetReport>("/budget-requests/finalized-budget-report", {
+          params: {
+            fiscalYear: FISCAL_YEAR,
+            requestCategory: category,
+            sbu: scopedSbu ?? undefined,
+            npcSbu: category === "NPC" && npcHeadFilter !== "ALL" ? npcHeadFilter : undefined,
+          },
+        })
+      ).data,
+    enabled: category !== null,
+  });
+  const totalPendingProposed = requests.reduce((sum, r) => sum + (r.proposedAmount - r.budgetCutAmount), 0);
+  const totalApproved = (finalizedReport?.lines ?? []).reduce((sum, l) => sum + l.amount, 0);
+  const totalProposed = totalPendingProposed + totalApproved;
   const [newBoardAmount, setNewBoardAmount] = useState("");
 
   const history = boardBudget?.history ?? [];
-  const scopedSbu = usesSbuBreakdown ? (sbuFilter === "ALL" ? null : sbuFilter) : null;
   // "All" on a DOE/Revenue tab has no single field to edit (the notes call
   // for 5 separate SBU fields, not a combined one) — board amount there is
   // just the sum of the 5 SBUs' current figures for comparison purposes.
@@ -213,6 +238,9 @@ export function Step5DashboardPage() {
           <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-4">
             <div className="text-xs font-semibold tracking-wide text-emerald-700">{FISCAL_YEAR} Total Proposed Budget</div>
             <div className="mt-1 text-xl font-bold text-emerald-800">₱{totalProposed.toLocaleString()}</div>
+            <div className="mt-0.5 text-[11px] text-emerald-700/70">
+              ₱{totalPendingProposed.toLocaleString()} pending + ₱{totalApproved.toLocaleString()} approved
+            </div>
           </div>
           <div className={`rounded-lg border p-4 ${variance < 0 ? "border-red-200 bg-red-50" : "border-amber-200 bg-amber-50"}`}>
             <div className={`text-xs font-semibold tracking-wide ${variance < 0 ? "text-red-700" : "text-amber-700"}`}>Variance</div>
