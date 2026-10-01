@@ -1,7 +1,7 @@
 import { useLayoutEffect, useState, type ReactNode } from "react";
 import { Link, NavLink, Outlet, useLocation, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, downloadFile, type Department } from "../api/client";
+import { api, downloadFile, type BudgetRequest, type Department } from "../api/client";
 import { useAuth } from "../context/AuthContext";
 import { SBU_TYPES } from "./SbuTypeSwitch";
 import { RoleSwitcher } from "./RoleSwitcher";
@@ -191,32 +191,59 @@ function ManpowerSubMenu() {
 // reads. NPC was added later, treated like GAE (a flat board-approved
 // figure, no SBU breakdown) since its own breakdown dimension is Head, not
 // SBU - a separate concept not tracked per-Head here.
+// A small red count next to a sub-menu link, same style as Inbox/Budget
+// Finalization's own badges - 0/missing renders nothing.
+function SubLinkBadge({ count }: { count: number }) {
+  if (count <= 0) return null;
+  return <span className="ml-1.5 rounded-full bg-red-500 px-1.5 py-0.5 text-[10px] font-bold leading-none text-white">{count}</span>;
+}
+
 function Step5SubMenu() {
   const [searchParams] = useSearchParams();
   const currentCategory = searchParams.get("category");
+
+  // Same query key/cache entry Layout's own step5PendingCount and
+  // Step5DashboardPage.tsx already use (TanStack Query dedupes the network
+  // call) - broken down per category here instead of one combined total, so
+  // each link shows its own pending count rather than lumping all 7
+  // categories into the parent group's badge. Revenue has no count here -
+  // it's a separate model/workflow (RevenueBatchSummary, reviewed via
+  // Inbox's own RevenueBatchInboxSection) that step5-dashboard doesn't cover.
+  const { data: step5Requests = [] } = useQuery({
+    queryKey: ["step5-dashboard"],
+    queryFn: async () => (await api.get<BudgetRequest[]>("/budget-requests/step5-dashboard")).data,
+  });
+  const countFor = (category: string) => step5Requests.filter((r) => r.requestCategory === category).length;
 
   return (
     <div className="ml-7 mt-1 flex flex-col gap-0.5 border-l border-emerald-100 pl-3">
       <NavLink to="/step5?category=GAE" className={subLinkClass(currentCategory === "GAE")}>
         General &amp; Administrative Expenses (GAE)
+        <SubLinkBadge count={countFor("GAE")} />
       </NavLink>
       <NavLink to="/step5?category=DOE" className={subLinkClass(currentCategory === "DOE")}>
         Direct Operating Expenses (DOE)
+        <SubLinkBadge count={countFor("DOE")} />
       </NavLink>
       <NavLink to="/step5?category=COMMISSION" className={subLinkClass(currentCategory === "COMMISSION")}>
         Commission
+        <SubLinkBadge count={countFor("COMMISSION")} />
       </NavLink>
       <NavLink to="/step5?category=COST_OF_SALES" className={subLinkClass(currentCategory === "COST_OF_SALES")}>
         Cost of Sales
+        <SubLinkBadge count={countFor("COST_OF_SALES")} />
       </NavLink>
       <NavLink to="/step5?category=DEPRECIATION_AMORTIZATION" className={subLinkClass(currentCategory === "DEPRECIATION_AMORTIZATION")}>
         Depreciation &amp; Amortization
+        <SubLinkBadge count={countFor("DEPRECIATION_AMORTIZATION")} />
       </NavLink>
       <NavLink to="/step5?category=INTEREST_EXPENSE" className={subLinkClass(currentCategory === "INTEREST_EXPENSE")}>
         Interest Expense
+        <SubLinkBadge count={countFor("INTEREST_EXPENSE")} />
       </NavLink>
       <NavLink to="/step5?category=NPC" className={subLinkClass(currentCategory === "NPC")}>
         Non-Project Capex (NPC)
+        <SubLinkBadge count={countFor("NPC")} />
       </NavLink>
       <NavLink to="/step5?category=REVENUE" className={subLinkClass(currentCategory === "REVENUE")}>
         Revenue
