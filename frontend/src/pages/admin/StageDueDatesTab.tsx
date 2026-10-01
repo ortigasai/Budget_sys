@@ -24,6 +24,10 @@ export function StageDueDatesTab() {
   });
 
   const [dueDates, setDueDates] = useState<Record<string, string>>({});
+  // No prior feedback after Save at all - a user had no way to tell it
+  // actually went through (or why it silently didn't, e.g. an incomplete
+  // date left the Save button disabled with nothing explaining that).
+  const [savedStage, setSavedStage] = useState<{ stage: string; ok: boolean; message?: string } | null>(null);
 
   const save = useMutation({
     mutationFn: async (stage: string) =>
@@ -33,7 +37,16 @@ export function StageDueDatesTab() {
           dueDate: new Date(dueDates[stage]).toISOString(),
         })
       ).data,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["workflow-stage-config"] }),
+    onSuccess: (_data, stage) => {
+      queryClient.invalidateQueries({ queryKey: ["workflow-stage-config"] });
+      setSavedStage({ stage, ok: true });
+      setDueDates((prev) => {
+        const next = { ...prev };
+        delete next[stage];
+        return next;
+      });
+    },
+    onError: (err: any, stage) => setSavedStage({ stage, ok: false, message: err.response?.data?.error ?? "Could not save this due date." }),
   });
 
   const existingFor = (stage: string) => configs.find((c) => c.stage === stage);
@@ -69,10 +82,18 @@ export function StageDueDatesTab() {
                 </td>
                 <td className="px-3 py-2">
                   <div className="flex items-center gap-2">
-                    <input type="date" className="rounded border border-slate-300 px-2 py-1" value={dueDates[s.stage] ?? ""} onChange={(e) => setDueDates({ ...dueDates, [s.stage]: e.target.value })} />
-                    <button onClick={() => save.mutate(s.stage)} disabled={!dueDates[s.stage]} className="rounded bg-emerald-700 px-2 py-1 text-xs font-medium text-white hover:bg-emerald-600 disabled:opacity-50">
-                      Save
+                    <input type="date" className="rounded border border-slate-300 px-2 py-1" value={dueDates[s.stage] ?? ""} onChange={(e) => { setDueDates({ ...dueDates, [s.stage]: e.target.value }); setSavedStage(null); }} />
+                    <button
+                      onClick={() => save.mutate(s.stage)}
+                      disabled={!dueDates[s.stage] || (save.isPending && save.variables === s.stage)}
+                      title={dueDates[s.stage] ? undefined : "Pick a complete date first - day, month, and year all need to be filled in."}
+                      className="rounded bg-emerald-700 px-2 py-1 text-xs font-medium text-white hover:bg-emerald-600 disabled:opacity-50"
+                    >
+                      {save.isPending && save.variables === s.stage ? "Saving…" : "Save"}
                     </button>
+                    {savedStage?.stage === s.stage && (
+                      <span className={`text-xs ${savedStage.ok ? "text-emerald-700" : "text-red-600"}`}>{savedStage.ok ? "Saved ✓" : savedStage.message}</span>
+                    )}
                   </div>
                 </td>
               </tr>
