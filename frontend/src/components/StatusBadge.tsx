@@ -1,4 +1,4 @@
-const STAGE_LABELS: Record<string, string> = {
+export const STAGE_LABELS: Record<string, string> = {
   DRAFT: "Draft",
   DEPT_HEAD_REVIEW: "Dept Head Review",
   CFO_APPROVAL: "CFO Approval",

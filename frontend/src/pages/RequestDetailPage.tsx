@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, requestLineDisplay, type BudgetRequest } from "../api/client";
+import { api, requestLineDisplay, type BudgetRequest, type DemoUser } from "../api/client";
 import { ApproverPicker } from "../components/ApproverPicker";
-import { StatusBadge } from "../components/StatusBadge";
+import { SearchableSelect } from "../components/SearchableSelect";
+import { StatusBadge, STAGE_LABELS } from "../components/StatusBadge";
 import { useAuth } from "../context/AuthContext";
 import { SectionLabel } from "../components/TabBar";
 
@@ -74,6 +75,39 @@ export function RequestDetailPage() {
       setSubmitError(null);
     },
     onError: (err: any) => setSubmitError(err.response?.data?.error ?? "Could not submit request."),
+  });
+
+  // Reviewer's own decision controls, same actions/endpoints as the Inbox's
+  // expanded review card (InboxPage.tsx) - lets whoever the current stage is
+  // assigned to (request.canAct) act straight from this page instead of
+  // having to go back to the Inbox list to find this same request again.
+  const [decisionComment, setDecisionComment] = useState("");
+  const [decisionError, setDecisionError] = useState<string | null>(null);
+  const [reassignTo, setReassignTo] = useState("");
+  const { data: allUsers = [] } = useQuery({
+    queryKey: ["auth", "users"],
+    queryFn: async () => (await api.get<DemoUser[]>("/auth/users")).data,
+    enabled: !!request?.canAct,
+  });
+  const refreshAfterDecision = () => {
+    queryClient.invalidateQueries({ queryKey: ["budget-request", id] });
+    queryClient.invalidateQueries({ queryKey: ["inbox"] });
+    queryClient.invalidateQueries({ queryKey: ["reviewed-by-me"] });
+    queryClient.invalidateQueries({ queryKey: ["my-requests"] });
+    setDecisionComment("");
+    setReassignTo("");
+    setDecisionError(null);
+  };
+  const decisionMutation = useMutation({
+    mutationFn: async (decision: "APPROVE" | "RETURN_PREVIOUS" | "RETURN_REQUESTOR") =>
+      (await api.post(`/budget-requests/${id}/decision`, { decision, comment: decisionComment || undefined })).data,
+    onSuccess: refreshAfterDecision,
+    onError: (err: any) => setDecisionError(err.response?.data?.error ?? "Action failed."),
+  });
+  const reassignMutation = useMutation({
+    mutationFn: async () => (await api.post(`/budget-requests/${id}/reassign`, { userId: reassignTo, comment: decisionComment || undefined })).data,
+    onSuccess: refreshAfterDecision,
+    onError: (err: any) => setDecisionError(err.response?.data?.error ?? "Reassign failed."),
   });
 
   if (isLoading || !request) return <div className="text-sm text-slate-400">Loading…</div>;
@@ -229,21 +263,85 @@ export function RequestDetailPage() {
         )}
       </div>
 
+      {request.canAct && request.status === "IN_REVIEW" && (
+        <div className="rounded-lg border border-slate-200 bg-white p-4 text-sm shadow-sm">
+          <SectionLabel>Take Action</SectionLabel>
+          <div className="mt-2 space-y-2">
+            <div className="text-xs text-slate-500">
+              If you proceed, this moves to:{" "}
+              <span className="font-medium text-slate-700">{request.nextStage ? (STAGE_LABELS[request.nextStage] ?? request.nextStage) : "Finalize & Upload"}</span>
+            </div>
+            <label className="block text-xs font-medium text-slate-600">Comment (required to return)</label>
+            <textarea className="w-full rounded border border-slate-300 px-2 py-1.5 text-sm" rows={2} value={decisionComment} onChange={(e) => setDecisionComment(e.target.value)} />
+            {decisionError && <div className="text-red-700">{decisionError}</div>}
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                onClick={() => decisionMutation.mutate("APPROVE")}
+                disabled={decisionMutation.isPending}
+                className="rounded bg-emerald-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-600 disabled:opacity-50"
+              >
+                Proceed to next stage
+              </button>
+              <button
+                onClick={() => decisionMutation.mutate("RETURN_PREVIOUS")}
+                disabled={decisionMutation.isPending}
+                className="rounded bg-amber-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-500 disabled:opacity-50"
+              >
+                {request.previousStage ? `Return to ${STAGE_LABELS[request.previousStage] ?? request.previousStage}` : "Return to requestor"}
+              </button>
+              {request.previousStage && (
+                <button
+                  onClick={() => decisionMutation.mutate("RETURN_REQUESTOR")}
+                  disabled={decisionMutation.isPending}
+                  className="rounded bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-500 disabled:opacity-50"
+                >
+                  Return to requestor
+                </button>
+              )}
+            </div>
+            <div className="flex flex-wrap items-end gap-2 border-t border-slate-100 pt-2">
+              <div className="w-64">
+                <label className="mb-1 block text-xs font-medium text-slate-500">Reassign this stage to</label>
+                <SearchableSelect placeholder="Search employees…" options={allUsers.filter((u) => u.isEmployee).map((u) => ({ value: u.id, label: u.name, sublabel: u.department?.name }))} value={reassignTo} onChange={setReassignTo} />
+              </div>
+              <button onClick={() => reassignMutation.mutate()} disabled={reassignMutation.isPending || !reassignTo} className="rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-50">
+                Reassign
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="rounded-lg border border-slate-200 bg-white p-4 text-sm shadow-sm">
-        <SectionLabel>Review History</SectionLabel>
-        {request.reviewDecisions.length === 0 ? (
+        <SectionLabel>Request Status History</SectionLabel>
+        {request.status === "DRAFT" && request.reviewDecisions.length === 0 ? (
           <div className="text-slate-500">No decisions recorded yet.</div>
         ) : (
           <ul className="space-y-2">
+            {request.status !== "DRAFT" && (
+              <li className="border-l-2 border-emerald-200 pl-3">
+                <div className="font-medium">Submitted — {request.createdBy.name}</div>
+                <div className="text-xs text-slate-500">{new Date(request.createdAt).toLocaleString()}</div>
+              </li>
+            )}
             {request.reviewDecisions.map((d) => (
               <li key={d.id} className="border-l-2 border-emerald-200 pl-3">
                 <div className="font-medium">
-                  {d.decision} at {d.stage} — {d.decidedBy.name}
+                  {d.decision} at {STAGE_LABELS[d.stage] ?? d.stage} — {d.decidedBy.name}
                 </div>
                 <div className="text-xs text-slate-500">{new Date(d.timestamp).toLocaleString()}</div>
                 {d.comment && <div className="text-slate-600">{d.comment}</div>}
               </li>
             ))}
+            {request.status === "IN_REVIEW" && (
+              <li className="border-l-2 border-amber-300 pl-3">
+                <div className="font-medium text-amber-700">
+                  Pending at {STAGE_LABELS[request.currentStage] ?? request.currentStage}
+                  {request.pendingReviewers && request.pendingReviewers.length > 0 && ` — ${request.pendingReviewers.join(", ")}`}
+                </div>
+                <div className="text-xs text-slate-500">Awaiting action</div>
+              </li>
+            )}
           </ul>
         )}
       </div>

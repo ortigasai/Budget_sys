@@ -482,6 +482,10 @@ export interface BudgetRequest {
   assigneeId: string | null;
   // Set by GET /budget-requests/:id and /inbox: may the signed-in user act on the current stage.
   canAct?: boolean;
+  // Set by GET /budget-requests/:id and /inbox: where "Proceed"/"Return" would send this
+  // request next - null at a terminal/DRAFT stage, or when there's nowhere earlier to return to.
+  nextStage?: string | null;
+  previousStage?: string | null;
   budgetCutAmount: number;
   isOverBudget: boolean;
   requiresCfoApproval: boolean;
@@ -497,7 +501,7 @@ export interface BudgetRequest {
   createdBy: { name: string; email: string };
   // Names of whoever currently needs to act on this request, resolved
   // server-side from its stage + department (see lib/pendingReviewers.ts).
-  // Only present on /my-requests responses; empty for terminal stages.
+  // Present on /my-requests and GET /:id responses; empty for terminal stages.
   pendingReviewers?: string[];
 }
 

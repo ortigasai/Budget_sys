@@ -461,7 +461,13 @@ budgetRequestsRouter.get(
       where: { id: req.params.id },
       include: DETAIL_INCLUDE,
     });
-    res.json({ ...request, canAct: userCanAct(req.user!, request) });
+    res.json({
+      ...request,
+      canAct: userCanAct(req.user!, request),
+      pendingReviewers: await resolveBudgetRequestPendingReviewers(request),
+      nextStage: nextStageAfter(request, request.currentStage),
+      previousStage: previousStageBefore(request, request.currentStage),
+    });
   })
 );
 
