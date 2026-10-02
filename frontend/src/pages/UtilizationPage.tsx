@@ -37,8 +37,13 @@ interface OverviewRow {
 }
 
 interface ReconciliationRow {
-  expenseLineItemId: string;
+  // Null for a DOE row - DOE has no Expense Line Item catalog, just a raw
+  // GL-CC pair (see glAccount/costCenter below), reconciled directly against
+  // SAP actuals the same way Overview already does.
+  expenseLineItemId: string | null;
   expenseLineItemName: string;
+  glAccount: string | null;
+  costCenter: string | null;
   approvedBudget: number;
   sapActual: number;
   statusText: string;
@@ -101,8 +106,9 @@ interface SapSyncStatus {
 
 
 export function UtilizationPage() {
-  const { hasRole, gate } = useAuth();
+  const { hasRole, gate, currentUser } = useAuth();
   const isBudgetOfficer = hasRole("BUDGET_OFFICER");
+  const isBca = currentUser?.groups.some((g) => g.group === "BCA") ?? false;
   // forecastYear, not targetYear - Budget Utilization Tracking follows the
   // current (already-in-force) calendar year, tracking actual spend against
   // the budget already finalized for it - not the next year's ask still
@@ -136,7 +142,8 @@ export function UtilizationPage() {
   });
 
   const [departmentId, setDepartmentId] = useState("");
-  const effectiveDeptId = departmentId || departments[0]?.id || "";
+  // BCA sees every department combined, always - no picker needed (or shown).
+  const effectiveDeptId = isBca ? "ALL" : departmentId || departments[0]?.id || "";
 
   const { data: overviewRows = [], isLoading: overviewLoading } = useQuery({
     queryKey: ["utilization", "overview", effectiveDeptId],
@@ -161,6 +168,16 @@ export function UtilizationPage() {
         return ovSort.dir === "asc" ? cmp : -cmp;
       })
     : filteredUnsorted;
+  const ovTotals = filteredOverviewRows.reduce(
+    (acc, r) => ({
+      approvedBudget: acc.approvedBudget + r.approvedBudget,
+      actualExpenditures: acc.actualExpenditures + r.actualExpenditures,
+      commitments: acc.commitments + r.commitments,
+      totalAllotted: acc.totalAllotted + r.totalAllotted,
+      available: acc.available + r.available,
+    }),
+    { approvedBudget: 0, actualExpenditures: 0, commitments: 0, totalAllotted: 0, available: 0 }
+  );
 
   const queryClient = useQueryClient();
   const reconciliationKey = ["utilization", "reconciliation", effectiveDeptId];
@@ -172,7 +189,7 @@ export function UtilizationPage() {
           params: { departmentId: effectiveDeptId, fiscalYear: FISCAL_YEAR },
         })
       ).data,
-    enabled: !!effectiveDeptId && tab === "reconciliation",
+    enabled: !!effectiveDeptId && tab === "reconciliation" && gate("util.reconciliationEnabled", false),
   });
 
   const { data: npcSbus = [] } = useQuery({
@@ -296,8 +313,9 @@ export function UtilizationPage() {
                 {startSyncMutation.isPending || syncInProgress ? "Syncing…" : "Sync Now"}
               </button>
             )}
-            {tab !== "npc" && departments.length > 1 && (
+            {!isBca && tab !== "npc" && departments.length > 1 && (
               <select value={effectiveDeptId} onChange={(e) => setDepartmentId(e.target.value)} className="rounded border border-slate-300 px-2 py-1.5 text-sm">
+                <option value="ALL">All Departments</option>
                 {departments.map((d) => (
                   <option key={d.id} value={d.id}>
                     {d.name}
@@ -444,6 +462,18 @@ export function UtilizationPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
+              {!overviewLoading && filteredOverviewRows.length > 0 && (
+                <tr className="border-b-2 border-slate-200 bg-slate-100 font-semibold text-slate-700">
+                  <td colSpan={4} className="px-4 py-2">
+                    Total ({filteredOverviewRows.length} row{filteredOverviewRows.length === 1 ? "" : "s"})
+                  </td>
+                  <td className="px-4 py-2 text-right">{peso(ovTotals.approvedBudget)}</td>
+                  <td className="px-4 py-2 text-right">{peso(ovTotals.actualExpenditures)}</td>
+                  <td className="px-4 py-2 text-right">{peso(ovTotals.commitments)}</td>
+                  <td className="px-4 py-2 text-right">{peso(ovTotals.totalAllotted)}</td>
+                  <td className={`px-4 py-2 text-right ${ovTotals.available < 0 ? "text-red-600" : ""}`}>{peso(ovTotals.available)}</td>
+                </tr>
+              )}
               {overviewLoading ? (
                 <tr>
                   <td colSpan={9} className="px-4 py-6 text-center text-slate-400">
@@ -478,7 +508,13 @@ export function UtilizationPage() {
         </div>
       )}
 
-      {effectiveDeptId && tab === "reconciliation" && (
+      {effectiveDeptId && tab === "reconciliation" && !gate("util.reconciliationEnabled", false) && (
+        <div className="rounded-xl border border-dashed border-slate-300 bg-white/60 p-6 text-center text-sm text-slate-500">
+          Live Reconciliation is temporarily unavailable. Please check back later.
+        </div>
+      )}
+
+      {effectiveDeptId && tab === "reconciliation" && gate("util.reconciliationEnabled", false) && (
         <div className="space-y-6">
           <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
             <table className="w-full text-sm">
@@ -505,7 +541,7 @@ export function UtilizationPage() {
                   </tr>
                 ) : (
                   reconciliation.rows.map((r) => (
-                    <tr key={r.expenseLineItemId}>
+                    <tr key={r.expenseLineItemId ?? `${r.glAccount}-${r.costCenter}`}>
                       <td className="px-4 py-2">{r.expenseLineItemName}</td>
                       <td className="px-4 py-2 text-right">{peso(r.approvedBudget)}</td>
                       <td className="px-4 py-2 text-right">{peso(r.sapActual)}</td>

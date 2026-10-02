@@ -71,8 +71,14 @@ class OverviewRow(BaseModel):
 
 
 class ReconciliationRow(BaseModel):
-    expenseLineItemId: str
+    # None for a DOE row (see below) - DOE has no Expense Line Item catalog,
+    # just a raw GL-CC pair, so there's no id to carry and nothing to "Map
+    # to" (its SAP actuals are already matched by GL-CC directly, not by a
+    # Budget Code or manual mapping).
+    expenseLineItemId: str | None
     expenseLineItemName: str
+    glAccount: str | None = None
+    costCenter: str | None = None
     approvedBudget: float
     sapActual: float
     statusText: str
@@ -186,6 +192,7 @@ def _utilization_department_names(session: Session) -> list[str]:
 
 
 SBU_SCOPE_PREFIX = "SBU:"
+ALL_SCOPE_ID = "ALL"
 
 
 def _sf_sbus(user: AuthedUser) -> list[str]:
@@ -199,11 +206,30 @@ def _sbu_cost_center_codes(session: Session, sbu: str) -> set[str]:
 
 
 def _scope_from_id(user: AuthedUser, scope_id: str, session: Session):
-    """Resolves the Overview/Reconciliation scope id: either a core department
-    id, or "SBU:<CODE>" for an SBU Finance member's own SBU (all cost centers
+    """Resolves the Overview/Reconciliation scope id: "ALL" (every department
+    this user can already view, combined), a core department id, or
+    "SBU:<CODE>" for an SBU Finance member's own SBU (all cost centers
     mapped to it, across departments). Returns (name, cost center codes, the
     ExpenseLineItem condition for that scope).
     """
+    if scope_id == ALL_SCOPE_ID:
+        viewable_ids = _viewable_department_ids(user, session)
+        if not viewable_ids:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "You do not have access to any department's utilization data.")
+        if _is_bca(user):
+            # BCA's "All" means every real SAP cost center (the full CC-GL
+            # master, per user direction), not just the ones the CC-GL
+            # workbook has tagged to one of the ~12 "core" department names -
+            # most of the company's 546 cost centers have no such tag, so the
+            # per-department-name lookup below would otherwise silently drop
+            # them even though BCA can now see every Department row.
+            ccs = {c.code for c in session.exec(select(CostCenter)).all()}
+        else:
+            dept_names = {d.name for d in session.exec(select(Department).where(Department.id.in_(viewable_ids))).all()}
+            ccs = set()
+            for name in dept_names:
+                ccs |= _department_cost_center_codes(session, name)
+        return "All Departments", ccs, ExpenseLineItem.ownerDepartmentId.in_(viewable_ids)
     if scope_id.startswith(SBU_SCOPE_PREFIX):
         sbu = scope_id[len(SBU_SCOPE_PREFIX) :].upper()
         if not user.has_role("BUDGET_OFFICER") and not (user.can("util.overview", False) and sbu in _sf_sbus(user)):
@@ -228,13 +254,24 @@ CD_SCOPE_TO_CORE_DEPARTMENT = {
 }
 
 
+def _is_bca(user: AuthedUser) -> bool:
+    return any(g == "BCA" for g, _ in user.groups)
+
+
 def _viewable_department_ids(user: AuthedUser, session: Session) -> set[str]:
     """Core departments whose utilization this user may view: everything for
-    the Budget Officer; otherwise their centralized roles' departments, plus -
-    for group members granted Departmental Overview/Live Reconciliation - the
-    departments their CD memberships name, or every core department for SBU
-    Finance/Mancom members (no department of their own to be scoped to).
+    the Budget Officer; literally every department in the system for BCA
+    (per user direction - BCA isn't limited to the CC-GL-mapped "core"
+    departments like Budget Officer is, since most of the other 72 have no
+    Expense Line Item catalog, so their Overview/Reconciliation will simply
+    read empty until the CC-GL master is extended to them); otherwise their
+    centralized roles' departments, plus - for group members granted
+    Departmental Overview/Live Reconciliation - the departments their CD
+    memberships name, or every core department for SBU Finance/Mancom
+    members (no department of their own to be scoped to).
     """
+    if _is_bca(user):
+        return {d.id for d in session.exec(select(Department)).all()}
     core = session.exec(select(Department).where(Department.name.in_(_utilization_department_names(session)))).all()
     if user.has_role("BUDGET_OFFICER"):
         return {d.id for d in core}
@@ -250,7 +287,9 @@ def _viewable_department_ids(user: AuthedUser, session: Session) -> set[str]:
 
 def _assert_department_access(user: AuthedUser, department_id: str, session: Session) -> Department:
     dept = session.get(Department, department_id)
-    if dept is None or dept.name not in _utilization_department_names(session):
+    if dept is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Department not found.")
+    if not _is_bca(user) and dept.name not in _utilization_department_names(session):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Department not found.")
     if department_id in _viewable_department_ids(user, session):
         return dept
@@ -262,11 +301,13 @@ def list_departments(
     user: AuthedUser = Depends(_require_utilization_access),
     session: Session = Depends(get_session),
 ):
-    core = session.exec(
-        select(Department).where(Department.name.in_(_utilization_department_names(session))).order_by(Department.name)
-    ).all()
+    pool = (
+        session.exec(select(Department).order_by(Department.name)).all()
+        if _is_bca(user)
+        else session.exec(select(Department).where(Department.name.in_(_utilization_department_names(session))).order_by(Department.name)).all()
+    )
     viewable = _viewable_department_ids(user, session)
-    eligible = [d for d in core if d.id in viewable]
+    eligible = [d for d in pool if d.id in viewable]
     out = [DepartmentOut(id=d.id, name=d.name) for d in eligible]
     # SBU Finance members see their own SBU (every cost center mapped to it),
     # not a department.
@@ -535,6 +576,14 @@ def overview_export(
     )
 
 
+def _reconciliation_status_text(approved_amount: float, actual_amount: float) -> str:
+    if actual_amount <= 0:
+        return "No Activity"
+    if actual_amount >= approved_amount:
+        return "Fully Utilized"
+    return f"Partially Utilized ({round(actual_amount / approved_amount * 100)}%)"
+
+
 @router.get("/reconciliation", response_model=ReconciliationOut)
 def reconciliation(
     departmentId: str,
@@ -542,7 +591,14 @@ def reconciliation(
     user: AuthedUser = Depends(_require_utilization_access),
     session: Session = Depends(get_session),
 ):
-    _, _, scope_cond = _scope_from_id(user, departmentId, session)
+    # Temporary kill-switch (see accessControl.ts's util.reconciliationEnabled
+    # row) - blocks the actual data, not just the frontend tab, until the
+    # Budget Officer says to lift it. legacy=False: an ungrouped user gets no
+    # benefit of the doubt here either.
+    if not user.can("util.reconciliationEnabled", False):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Live Reconciliation is temporarily unavailable.")
+
+    _, dept_ccs, scope_cond = _scope_from_id(user, departmentId, session)
 
     line_items = session.exec(select(ExpenseLineItem).where(scope_cond)).all()
     line_items_by_id = {li.id: li for li in line_items}
@@ -565,11 +621,47 @@ def reconciliation(
 
     approved_by_item = _approved_budget_by_line_item(session, departmentId, fiscalYear, scope_cond)
 
+    # DOE (this module's own "GAE & DOE" scope, see the Operating Expenses
+    # sidebar label) has no Expense Line Item catalog - its BudgetRequests
+    # carry a raw Cost Center + GL Account pair directly instead (see
+    # BudgetRequest.expenseLineItemId's own schema comment). FinalizedBudgetLine
+    # already denormalizes glAccount/costCenter onto itself (Note 11), so DOE
+    # is reconciled by GL-CC pair here, the same way Overview already does,
+    # rather than through the GAE-only expenseLineItemId path above. Same
+    # SAP Plan fallback as overview()'s own `approved` dict too, for a GL-CC
+    # whose Plan figure is nonzero but has no FinalizedBudgetLine snapshot
+    # yet this cycle.
+    doe_approved: dict[tuple[str, str], float] = {}
+    if dept_ccs:
+        for line in session.exec(
+            select(FinalizedBudgetLine).where(
+                FinalizedBudgetLine.fiscalYear == fiscalYear,
+                enum_eq(FinalizedBudgetLine.requestCategory, "DOE"),
+                FinalizedBudgetLine.costCenter.in_(dept_ccs),
+            )
+        ).all():
+            key = (line.glAccount, line.costCenter)
+            doe_approved[key] = doe_approved.get(key, 0.0) + line.amount
+        for gl, cc, total in session.exec(
+            select(SapKssbV2Raw.gl_account, SapKssbV2Raw.cost_center, func.sum(SapKssbV2Raw.plan))
+            .where(SapKssbV2Raw.fiscal_year == fiscalYear, SapKssbV2Raw.cost_center.in_(dept_ccs))
+            .group_by(SapKssbV2Raw.gl_account, SapKssbV2Raw.cost_center)
+        ).all():
+            # Skip anything already a GAE catalog item (dept_gl_cc, computed
+            # above) - this fallback is for DOE's own GL-CC pairs only, not a
+            # second copy of rows the catalog loop already covers.
+            if (gl, cc) in dept_gl_cc:
+                continue
+            plan = float(total or 0)
+            if plan != 0:
+                doe_approved[(gl, cc)] = plan
+
     actuals = session.exec(
         select(SapActualTransaction).where(SapActualTransaction.fiscal_year == fiscalYear)
     ).all()
 
     matched_by_item: dict[str, float] = {}
+    doe_actual_totals: dict[tuple[str, str], float] = {}
     unmapped: list[UnmappedRow] = []
     for a in actuals:
         # Budget Code (GL-CC + code) is the primary match now - what SAP PR
@@ -584,6 +676,10 @@ def reconciliation(
         )
         if target_id and target_id in line_items_by_id:
             matched_by_item[target_id] = matched_by_item.get(target_id, 0.0) + a.amount
+            continue
+        doe_key = (a.gl_account, a.cost_center)
+        if doe_key in doe_approved:
+            doe_actual_totals[doe_key] = doe_actual_totals.get(doe_key, 0.0) + a.amount
         elif target_id is None and (a.gl_account, a.cost_center) in dept_gl_cc:
             unmapped.append(
                 UnmappedRow(
@@ -602,20 +698,31 @@ def reconciliation(
         actual_amount = matched_by_item.get(li.id, 0.0)
         if approved_amount <= 0:
             continue  # nothing approved this cycle - not part of the reconciliation view
-        if actual_amount <= 0:
-            status_text = "No Activity"
-        elif actual_amount >= approved_amount:
-            status_text = "Fully Utilized"
-        else:
-            pct = round(actual_amount / approved_amount * 100)
-            status_text = f"Partially Utilized ({pct}%)"
         rows.append(
             ReconciliationRow(
                 expenseLineItemId=li.id,
                 expenseLineItemName=li.name,
                 approvedBudget=round(approved_amount, 2),
                 sapActual=round(actual_amount, 2),
-                statusText=status_text,
+                statusText=_reconciliation_status_text(approved_amount, actual_amount),
+            )
+        )
+
+    gl_names = {g.code: g.name for g in session.exec(select(GlAccount)).all()}
+    cc_names = {c.code: c.name for c in session.exec(select(CostCenter)).all()}
+    for (gl, cc), approved_amount in sorted(doe_approved.items()):
+        if approved_amount <= 0:
+            continue
+        actual_amount = doe_actual_totals.get((gl, cc), 0.0)
+        rows.append(
+            ReconciliationRow(
+                expenseLineItemId=None,
+                expenseLineItemName=f"{gl_names.get(gl, gl)} — {cc_names.get(cc, cc)}",
+                glAccount=gl,
+                costCenter=cc,
+                approvedBudget=round(approved_amount, 2),
+                sapActual=round(actual_amount, 2),
+                statusText=_reconciliation_status_text(approved_amount, actual_amount),
             )
         )
 
