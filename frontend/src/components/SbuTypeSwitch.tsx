@@ -26,7 +26,7 @@ export const SBU_BATCH_TYPES = SBU_TYPES.filter((t) => t.key !== "REVENUE");
 export function SbuTypeSwitch({ mode, current }: { mode: "forecast" | "request"; current: string | null }) {
   const { gate } = useAuth();
   const prefix = mode === "forecast" ? "forecast" : "request";
-  const allowed = SBU_TYPES.filter((t) => gate(`${prefix}.${t.access}`, t.key === "DOE" || t.key === "REVENUE"));
+  const allowed = SBU_TYPES.filter((t) => gate(`${prefix}.${t.access}`, mode === "request" && (t.key === "DOE" || t.key === "REVENUE")));
   return (
     <div className="flex flex-wrap gap-2">
       {allowed.map((t) => {

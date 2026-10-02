@@ -113,9 +113,11 @@ function NewRequestSubMenu() {
           Non-Project Capex (NPC)
         </NavLink>
       )}
-      <NavLink to="/requests/new?tab=headcount" className={subLinkClass(currentTab === "headcount")}>
-        Additional Manpower
-      </NavLink>
+      {gate("request.headcount", true) && (
+        <NavLink to="/requests/new?tab=headcount" className={subLinkClass(currentTab === "headcount")}>
+          Additional Manpower
+        </NavLink>
+      )}
     </div>
   );
 }
@@ -269,9 +271,9 @@ function ForecastSubMenu() {
           General &amp; Administrative Expenses (GAE)
         </NavLink>
       )}
-      {SBU_TYPES.some((t) => gate(`forecast.${t.access}`, t.key === "DOE" || t.key === "REVENUE")) && (
+      {SBU_TYPES.some((t) => gate(`forecast.${t.access}`, false)) && (
         <NavLink
-          to={`/forecast?category=${SBU_TYPES.find((t) => gate(`forecast.${t.access}`, t.key === "DOE" || t.key === "REVENUE"))!.key}`}
+          to={`/forecast?category=${SBU_TYPES.find((t) => gate(`forecast.${t.access}`, false))!.key}`}
           className={subLinkClass(SBU_TYPES.some((t) => t.key === currentCategory))}
         >
           SBU Budget (Upload Template)
@@ -639,9 +641,14 @@ export function Layout() {
                       <ForecastSubMenu />
                     </CollapsibleNavGroup>
                   ) : null}
-                  <CollapsibleNavGroup to="/requests/new" icon="newRequest" label="New Request" defaultOpen>
-                    <NewRequestSubMenu />
-                  </CollapsibleNavGroup>
+                  {gate("request.gae", true) ||
+                  SBU_TYPES.some((t) => gate(`request.${t.access}`, t.key === "DOE" || t.key === "REVENUE")) ||
+                  gate("request.npc", true) ||
+                  gate("request.headcount", true) ? (
+                    <CollapsibleNavGroup to="/requests/new" icon="newRequest" label="New Request" defaultOpen>
+                      <NewRequestSubMenu />
+                    </CollapsibleNavGroup>
+                  ) : null}
                   {gate("myRequests", true) && (
                     <NavItem to="/requests/mine" icon="myRequests">
                       My Requests

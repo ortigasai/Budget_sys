@@ -1,7 +1,9 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { api } from "../api/client";
+import { useAuth } from "../context/AuthContext";
 import { useFiscalYear } from "../lib/fiscalCycle";
+import { SBU_TYPES } from "./SbuTypeSwitch";
 
 interface CapPoolResult {
   value: number;
@@ -21,6 +23,15 @@ function peso(n: number) {
 export function CapPoolWidget({ departmentId, fiscalYear }: { departmentId: string; fiscalYear?: number }) {
   const { targetYear } = useFiscalYear();
   fiscalYear ??= targetYear;
+  const { gate } = useAuth();
+  const canViewForecast =
+    gate("forecast.gae", true) ||
+    SBU_TYPES.some((t) => gate(`forecast.${t.access}`, t.key === "DOE" || t.key === "REVENUE")) ||
+    gate("forecast.npc", true) ||
+    gate("forecast.commission", false) ||
+    gate("forecast.cos", false) ||
+    gate("forecast.da", false) ||
+    gate("forecast.interest", false);
   const { data, isLoading } = useQuery({
     queryKey: ["dashboard", departmentId, fiscalYear],
     queryFn: async () => (await api.get<CapPoolResult>(`/dashboard/${departmentId}?fiscalYear=${fiscalYear}`)).data,
@@ -40,9 +51,11 @@ export function CapPoolWidget({ departmentId, fiscalYear }: { departmentId: stri
           ({peso(data.actualsYtd2026)} YTD Actuals + {peso(data.remainingForecast2026)} Remaining Forecast) ×{""}
           {(1 + data.growthRateUsed / 100).toFixed(2)} ({data.growthRateUsed}% growth)
         </div>
-        <Link to="/forecast" className="mt-1.5 inline-block text-[11px] font-semibold text-emerald-700 hover:underline">
-          View Forecast →
-        </Link>
+        {canViewForecast && (
+          <Link to={`/forecast?category=GAE&departmentId=${departmentId}`} className="mt-1.5 inline-block text-[11px] font-semibold text-emerald-700 hover:underline">
+            View Forecast →
+          </Link>
+        )}
       </div>
       <Stat label={`${fiscalYear} Portal Requests`} value={peso(data.totalPortalRequests)} tone="blue" />
       <Stat label="Remaining Departmental Pool" value={peso(data.remainingPool)} tone={data.remainingPool < 0 ? "red" : "emerald"} />

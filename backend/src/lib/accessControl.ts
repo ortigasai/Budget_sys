@@ -19,12 +19,12 @@ const r = (key: string, label: string, scope: Row["scope"], flags: string): Row 
 
 export const ACCESS_MATRIX: Row[] = [
   r("forecast.gae", "Forecast - GAE", "Department", "PXXXX"),
-  r("forecast.doe", "Forecast - DOE", "SBU", "XXXPX"),
-  r("forecast.commission", "Forecast - Commission", "SBU", "XXXPX"),
-  r("forecast.revenue", "Forecast - Revenue", "SBU", "XXXPX"),
-  r("forecast.cos", "Forecast - Cost of Sales", "SBU", "XXXPX"),
-  r("forecast.da", "Forecast - Depreciation & Amortization", "SBU", "XXXPX"),
-  r("forecast.interest", "Forecast - Interest Expense", "SBU", "XXXPX"),
+  r("forecast.doe", "Forecast - DOE", "SBU", "XXXXX"),
+  r("forecast.commission", "Forecast - Commission", "SBU", "XXXXX"),
+  r("forecast.revenue", "Forecast - Revenue", "SBU", "XXXXX"),
+  r("forecast.cos", "Forecast - Cost of Sales", "SBU", "XXXXX"),
+  r("forecast.da", "Forecast - Depreciation & Amortization", "SBU", "XXXXX"),
+  r("forecast.interest", "Forecast - Interest Expense", "SBU", "XXXXX"),
   r("forecast.npc", "Forecast - NPC", "NPC SBU", "XXXXP"),
   r("request.gae", "New Request - GAE", "Department", "PPXXX"),
   r("request.doe", "New Request - DOE", "SBU", "XXXPX"),
@@ -34,11 +34,19 @@ export const ACCESS_MATRIX: Row[] = [
   r("request.da", "New Request - Depreciation & Amortization", "SBU", "XXXPX"),
   r("request.interest", "New Request - Interest Expense", "SBU", "XXXPX"),
   r("request.npc", "New Request - NPC", "NPC SBU", "XXXXP"),
+  r("request.headcount", "New Request - Additional Manpower", "N/A", "PPXPP"),
   r("myRequests", "My Requests", "N/A", "PPXPP"),
   r("inbox", "Inbox", "N/A", "PPPPP"),
   r("finalization", "Budget Finalization & Upload", "N/A", "XXXXX"),
   r("util.overview", "Utilization - Departmental Overview", "Department", "PXPXX"),
   r("util.reconciliation", "Utilization - Live Reconciliation", "Department", "PXPXX"),
+  // Temporary kill-switch (not a real menu-visibility row): the "Live
+  // Reconciliation" sub-link itself stays visible to whoever
+  // util.reconciliation above already shows it to - this instead gates the
+  // actual page content, blocking everyone except BCA until the Budget
+  // Officer says to restore it. Flip back to "PPPPP" (or delete this row)
+  // to lift the block.
+  r("util.reconciliationEnabled", "Utilization - Live Reconciliation (temporarily BCA-only)", "N/A", "XXXXX"),
   r("util.npc", "Utilization - NPC", "NPC SBU", "XXXXP"),
   r("util.dashflow", "Dash Flow Budget Check", "SBU", "XXXPX"),
   r("transfer.new", "New Transfer", "N/A", "PPXXX"),
