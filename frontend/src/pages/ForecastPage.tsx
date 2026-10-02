@@ -279,12 +279,12 @@ function GaeForecastTable({
         <tbody>
           {consolidated && (
             <tr className="border-t border-b-2 border-emerald-200 bg-emerald-50/70 font-semibold text-emerald-900">
-              <td className="sticky z-10 truncate bg-emerald-50/70 px-1.5 py-1" style={{ left: frozenLeft[0] }}>
+              <td className="sticky z-10 truncate bg-emerald-50 px-1.5 py-1" style={{ left: frozenLeft[0] }}>
                 Total
               </td>
-              <td className="sticky z-10 truncate bg-emerald-50/70 px-1.5 py-1" style={{ left: frozenLeft[1] }}></td>
-              <td className="sticky z-10 truncate bg-emerald-50/70 px-1.5 py-1" style={{ left: frozenLeft[2] }}></td>
-              <td className="sticky z-10 truncate bg-emerald-50/70 px-1.5 py-1 text-[10px] font-normal text-emerald-700" style={{ left: frozenLeft[3] }} title="Total row figures are shown in thousands of pesos - hover a number for its exact value.">
+              <td className="sticky z-10 truncate bg-emerald-50 px-1.5 py-1" style={{ left: frozenLeft[1] }}></td>
+              <td className="sticky z-10 truncate bg-emerald-50 px-1.5 py-1" style={{ left: frozenLeft[2] }}></td>
+              <td className="sticky z-10 truncate bg-emerald-50 px-1.5 py-1 text-[10px] font-normal text-emerald-700" style={{ left: frozenLeft[3] }} title="Total row figures are shown in thousands of pesos - hover a number for its exact value.">
                 (figures in ₱&apos;000)
               </td>
               <AmountTd value={totals.approvedBudget2026} thousands />
@@ -494,6 +494,10 @@ export function ForecastPage() {
   const [searchParams] = useSearchParams();
   const categoryParam = searchParams.get("category");
   const category: RequestCategory | null = categoryParam === "GAE" || categoryParam === "DOE" || categoryParam === "NPC" || categoryParam === "REVENUE" ? categoryParam : null;
+  // Lets a link from elsewhere (e.g. Home's per-department "View Forecast →")
+  // land straight on that department's own forecast instead of whatever the
+  // viewer's own default would otherwise be.
+  const deptParam = searchParams.get("departmentId");
 
   // Notes_6 (Forecast section): "Forecast is for Centralized Departments
   // only which are – Human Resources, Administrative Services Department,
@@ -513,8 +517,8 @@ export function ForecastPage() {
   });
   const viewableDepts = isBudgetOfficer ? eligibleDepts : eligibleDepts.filter((d) => myDeptIds.includes(d.id));
 
-  const [departmentId, setDepartmentId] = useState(() => viewableDepts[0]?.id ?? "");
-  const effectiveDeptId = departmentId || viewableDepts[0]?.id || "";
+  const [departmentId, setDepartmentId] = useState(() => deptParam || (isBudgetOfficer ? "ALL" : viewableDepts[0]?.id ?? ""));
+  const effectiveDeptId = departmentId || deptParam || (isBudgetOfficer ? "ALL" : viewableDepts[0]?.id || "");
   // Budget Officer only - "All Departments" shows every viewable
   // department's forecast at once, read-only (no single ForecastSubmission
   // to gate Submit/editing against when several are combined).
@@ -723,7 +727,7 @@ export function ForecastPage() {
   return (
     <div className="space-y-4">
       <PageHeader
-        subtitle={`Months through ${MONTH_NAMES[asOfMonth - 1]} are already in Actuals — only remaining months are editable.`}
+        subtitle={`Months through ${MONTH_NAMES[(fiscalCycle?.asOfMonth2026 ?? asOfMonth) - 1]} are already in Actuals — only remaining months are editable.`}
         actions={
           <div className="flex items-center gap-3">
             <StatusBadge stage={stage} />
@@ -735,7 +739,9 @@ export function ForecastPage() {
           </div>
         }
       />
-      <p className="rounded-lg border border-blue-100 bg-blue-50 px-4 py-2 text-sm text-blue-800">Completing this per CC-GL unblocks Centralized First-Level Review (Step 3A). Submission routes to the Centralized Department Head, then the Budget Officer, either of whom can return it.</p>
+      {forecastYear !== 2026 && (
+        <p className="rounded-lg border border-blue-100 bg-blue-50 px-4 py-2 text-sm text-blue-800">Completing this per CC-GL unblocks Centralized First-Level Review (Step 3A). Submission routes to the Centralized Department Head, then the Budget Officer, either of whom can return it.</p>
+      )}
 
       {isBudgetOfficer && (
         <div className="flex flex-wrap items-center gap-4 rounded-lg border border-slate-200 bg-white p-3 shadow-sm">
@@ -912,7 +918,7 @@ export function ForecastPage() {
               onUpdateMonth={(id, month, value) => updateMutation.mutate({ id, month, value })}
             />
           </ExpandableSection>
-          {rows.length > 0 && categoryRows.length === 0 && <div className="text-sm text-slate-500">No line items in this category yet.</div>}
+          {categoryRows.length === 0 && <div className="text-sm text-slate-500">No line items in this category yet.</div>}
 
           {is2026RestrictedToBudgetOfficer && (
             <div className="text-sm text-slate-500">{forecastYear} Remaining Months Forecast is entered by the Budget Officer only, via Upload Completed Template — the normal per-department process resumes for the next cycle.</div>

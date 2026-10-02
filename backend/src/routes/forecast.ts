@@ -231,13 +231,17 @@ function groupForecastRows<T extends ForecastRowLike>(rows: T[]): (T & { breakdo
 // centralized department cannot view another centralized department's
 // forecast — only the Budget Officer can view across departments.
 //
-// Row-level scoping: a Centralized Dept Requestor/Reviewer or Centralized
-// Dept Head only sees the line items "Budgeting System_Expense Line Items"
-// columns J/K assign to THEM specifically (ExpenseLineItem.
-// centralizedReviewerId/centralizedHeadId - see importCentralizedReviewers.ts),
-// not every line item in their department. The Budget Officer is exempt -
-// same full-oversight exception every other permission check in this app
-// already makes for that role.
+// Row-level scoping: originally restricted a Centralized Dept Requestor/
+// Reviewer or Centralized Dept Head to only the line items "Budgeting
+// System_Expense Line Items" columns J/K assigned to THEM specifically
+// (ExpenseLineItem.centralizedReviewerId/centralizedHeadId - see
+// importCentralizedReviewers.ts). Per user direction (after that per-item
+// assignment repeatedly turned out to be stale/incomplete - e.g. a real
+// CENTRALIZED_DEPARTMENT_HEAD never actually named in either column,
+// seeing zero rows despite legitimately heading the department) this is
+// now dropped entirely: anyone who passes canViewDepartment above (their
+// own department, or a CD group scope naming it) sees that department's
+// whole forecast, same full visibility the Budget Officer already had.
 forecastRouter.get(
   "/:departmentId",
   asyncHandler(async (req, res) => {
@@ -246,14 +250,10 @@ forecastRouter.get(
     }
 
     const cycle = await getFiscalCycle();
-    const isBudgetOfficer = hasRole(req.user, RoleType.BUDGET_OFFICER);
     const rows = await prisma.historicalActuals.findMany({
       where: {
         departmentId: req.params.departmentId,
         fiscalYear: cycle.targetCalendarYear,
-        ...(isBudgetOfficer
-          ? {}
-          : { expenseLineItem: { is: { OR: [{ centralizedReviewerId: req.user!.id }, { centralizedHeadId: req.user!.id }] } } }),
       },
       orderBy: { glDescription: "asc" },
     });
