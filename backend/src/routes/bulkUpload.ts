@@ -9,15 +9,16 @@ import { prisma } from "../prisma";
 import { asyncHandler } from "../asyncHandler";
 import { requireAuth } from "../middleware/auth";
 import { HttpError } from "../httpError";
-import { assertCycleOpen, submitRequest } from "../services/workflowService";
+import { assertCycleOpen, isPostUploadReviewerError, submitRequest } from "../services/workflowService";
 import { getFiscalCycle } from "../lib/fiscalCycle";
-import { nextBudgetCode, sbuBudgetCodePrefix } from "../lib/budgetCode";
+import { nextBudgetCode, nextTicketNumber, sbuBudgetCodePrefix } from "../lib/budgetCode";
 import { SBU_BATCH_CATEGORIES } from "../services/approvalChain";
 import { sbuBatchCategoryLabel } from "../lib/sbuBatchCategories";
 import { fetchCcGlOptions } from "../lib/pyBackendClient";
 import { NPC_LOCATION_VALUES, NPC_SBU_VALUES, npcSbuBudgetCodePrefix, type NpcLocation, type NpcSbu } from "../lib/npcSbu";
-import { EXPENSE_REQUEST_TEMPLATE_HEADER, parseExpenseRequestSheet, visibleLineItemsForRequest } from "../lib/expenseRequestTemplate";
+import { buildTemplateHeader, extraFieldLabelsFor, parseExpenseRequestSheet, visibleLineItemsForRequest } from "../lib/expenseRequestTemplate";
 import { assertCanAccessBulkUploadBatch } from "../lib/bulkUploadAccess";
+import { buildSapUploadTemplate, SapTemplateError } from "../services/sapUploadTemplate";
 
 export const bulkUploadRouter = Router();
 
@@ -40,7 +41,6 @@ function columnLetter(n: number): string {
   return s;
 }
 
-const HEADER = EXPENSE_REQUEST_TEMPLATE_HEADER;
 
 // Bulk upload is capped well below the exceljs/archiver DoS advisory's blast
 // radius (see plan notes) — small spreadsheets only, never arbitrary blobs.
@@ -99,6 +99,32 @@ async function writeSbuBatchTemplate(res: import("express").Response, category: 
   await workbook.xlsx.write(res);
   res.end();
 }
+
+// The blank SAP upload template (OPEX or Revenue, no rows) - the requestor's
+// starting point for an SBU batch upload, same file shape the Budget Officer's
+// "Generate SAP Upload Template" fills in with the approved budget later.
+bulkUploadRouter.get(
+  "/sap-template-blank",
+  asyncHandler(async (req, res) => {
+    const { targetCalendarYear } = await getFiscalCycle();
+    const fiscalYear = Number(req.query.fiscalYear ?? targetCalendarYear);
+    const requestCategory = req.query.requestCategory as RequestCategory;
+    if (!Object.values(RequestCategory).includes(requestCategory)) {
+      throw new HttpError(400, "Unrecognized category.");
+    }
+    const sbu = req.query.sbu as Sbu | undefined;
+    let built;
+    try {
+      built = await buildSapUploadTemplate({ fiscalYear, requestCategory, sbu, blank: true });
+    } catch (err) {
+      if (err instanceof SapTemplateError) throw new HttpError(400, err.message);
+      throw err;
+    }
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Disposition", `attachment; filename="${built.filename}"`);
+    res.send(built.buffer);
+  })
+);
 
 bulkUploadRouter.get(
   "/bulk-upload/template",
@@ -177,11 +203,10 @@ bulkUploadRouter.get(
     refSheet.getCell(blankKeyRow, 3).value = `Reference!$B$1:$B$${items.length}`;
 
     // Visible, read-only lookup so whoever fills the sheet can see which
-    // Expense Line Items belong to which Expense Category, and what each
-    // one's Other Required Fields actually are, without leaving Excel or
-    // guessing at the JSON shape the upload expects.
+    // Expense Line Items belong to which Expense Category, and which of the
+    // data sheet's own Additional Field columns their chosen item needs.
     const catalogSheet = workbook.addWorksheet("Catalog Reference");
-    catalogSheet.addRow(["Expense Category", "Expense Line Item", "Required Fields (fill into \"Other Required Fields (JSON)\")"]);
+    catalogSheet.addRow(["Expense Category", "Expense Line Item", "Required Fields (fill into their own columns on the data sheet)"]);
     catalogSheet.getRow(1).font = { bold: true };
     for (const item of items) {
       const extraFieldsConfig = (item.extraFieldsConfig as { label: string; required: boolean }[] | null) ?? [];
@@ -191,9 +216,28 @@ bulkUploadRouter.get(
     catalogSheet.columns = [{ width: 28 }, { width: 36 }, { width: 50 }];
     catalogSheet.autoFilter = { from: "A1", to: `C${items.length + 1}` };
 
-    const sheet = workbook.addWorksheet(`Budget Requests ${fiscalYear}`.slice(0, 31));
-    sheet.addRow(HEADER);
+    // Instructions tab, placed first so it's read before the data sheet. Excluded by name
+    // from the upload parsers below, the same way Catalog Reference is.
+    const instructions = workbook.addWorksheet("Instructions");
+    const dataSheetName = `Budget Requests ${fiscalYear}`.slice(0, 31);
+    [
+      [`What to update: the sheet named "${dataSheetName}"`],
+      [""],
+      ["1. Fill in only the sheet named above. Leave the other tabs as they are."],
+      ["2. One row per expense line item: pick the Expense Category, then the Expense Line Item."],
+      ["3. Enter the amount for each month (Jan to Dec) under the month columns."],
+      ["4. Fill in any Additional Field marked as required, in that field's own column on the data sheet (see the Catalog Reference tab for which fields your chosen item needs)."],
+      ["5. Save the file and upload it on the New Request page."],
+    ].forEach((row) => instructions.addRow(row));
+    instructions.getRow(1).font = { bold: true, size: 13 };
+    instructions.getColumn(1).width = 100;
+
+    const sheet = workbook.addWorksheet(dataSheetName);
+    const header = buildTemplateHeader(extraFieldLabelsFor(items));
+    sheet.addRow(header);
     sheet.getRow(1).font = { bold: true };
+    // Open on the sheet the user has to update, not the Instructions tab.
+    workbook.views = [{ x: 0, y: 0, width: 10000, height: 20000, firstSheet: 0, activeTab: workbook.worksheets.indexOf(sheet), visibility: "visible" }];
 
     for (let row = 2; row <= 201; row++) {
       sheet.getCell(`A${row}`).dataValidation = {
@@ -220,6 +264,8 @@ bulkUploadRouter.get(
         errorTitle: "Invalid Expense Line Item",
         error: "Pick a line item from the dropdown list for the chosen Expense Category - see the Catalog Reference sheet for the full list.",
       };
+      // Total (column O) - auto-sums the Jan-Dec months (C:N) for this row.
+      sheet.getCell(`O${row}`).value = { formula: `SUM(C${row}:N${row})` } as any;
     }
 
     sheet.columns.forEach((col) => {
@@ -292,7 +338,7 @@ bulkUploadRouter.post(
     // "Catalog Reference" is a visible read-only lookup sheet that sits
     // before the real data sheet in the template - excluded by name so it's
     // never mistaken for the one the user actually filled in.
-    const sheet = workbook.worksheets.find((w) => w.state !== "veryHidden" && w.name !== "Catalog Reference");
+    const sheet = workbook.worksheets.find((w) => w.state !== "veryHidden" && w.name !== "Catalog Reference" && w.name !== "Instructions");
     if (!sheet) throw new HttpError(400, "No usable worksheet found in the uploaded file.");
 
     const standardItems = await visibleLineItemsForRequest(departmentId);
@@ -326,6 +372,7 @@ bulkUploadRouter.post(
         // submission via the Save Draft form (lib/budgetCode.ts) - this
         // sheet is many independent DOE requests, not one batch total.
         const budgetCode = sbu ? await nextBudgetCode(sbuBudgetCodePrefix(sbu), targetCalendarYear) : undefined;
+        const ticketNumber = await nextTicketNumber(targetCalendarYear);
 
         const requestRecord = await prisma.budgetRequest.create({
           data: {
@@ -339,6 +386,7 @@ bulkUploadRouter.post(
             requestCategory: category,
             sbu,
             budgetCode,
+            ticketNumber,
             createdById: req.user!.id,
             bulkUploadBatchId: batch.id,
           },
@@ -347,10 +395,11 @@ bulkUploadRouter.post(
         try {
           await submitRequest(requestRecord.id);
         } catch (submitErr) {
-          // Attachment-threshold rows can't auto-submit (no attachment
-          // mechanism in the spreadsheet) — leave as a draft the Requestor
-          // finishes manually rather than failing the whole row.
-          if (!(submitErr instanceof HttpError) || !submitErr.message.includes("attachments")) {
+          // Attachment-threshold and reviewer-selection rows can't
+          // auto-submit (nothing in the spreadsheet supplies them) — leave
+          // as a draft the Requestor finishes on the request's own screen
+          // rather than failing the whole row.
+          if (!isPostUploadReviewerError(submitErr)) {
             throw submitErr;
           }
         }
@@ -439,7 +488,7 @@ bulkUploadRouter.post(
 
     const workbook = new ExcelJS.Workbook();
     await workbook.xlsx.load(req.file.buffer as unknown as ArrayBuffer);
-    const sheet = workbook.worksheets.find((w) => w.state !== "veryHidden");
+    const sheet = workbook.worksheets.find((w) => w.state !== "veryHidden" && w.name !== "Catalog Reference" && w.name !== "Instructions");
     if (!sheet) throw new HttpError(400, "No usable worksheet found in the uploaded file.");
 
     const sourceFileName = `${crypto.randomUUID()}-${req.file.originalname}`;
@@ -484,7 +533,8 @@ bulkUploadRouter.post(
         const amount = Number(row.getCell(6).value ?? 0);
         if (Number.isNaN(amount) || amount <= 0) throw new Error("Amount must be a positive number.");
 
-        const budgetCode = await nextBudgetCode(npcSbuBudgetCodePrefix(npcSbu as NpcSbu), targetCalendarYear);
+        const budgetCode = await nextBudgetCode(npcSbuBudgetCodePrefix(npcSbu as NpcSbu, location as NpcLocation), targetCalendarYear);
+        const ticketNumber = await nextTicketNumber(targetCalendarYear);
         const expenseLineItem = await prisma.expenseLineItem.create({
           data: {
             name: projectTitle,
@@ -515,6 +565,7 @@ bulkUploadRouter.post(
             projectStartDate,
             projectEndDate,
             budgetCode,
+            ticketNumber,
             createdById: req.user!.id,
             bulkUploadBatchId: batch.id,
           },
@@ -523,7 +574,7 @@ bulkUploadRouter.post(
         try {
           await submitRequest(requestRecord.id);
         } catch (submitErr) {
-          if (!(submitErr instanceof HttpError) || !submitErr.message.includes("attachments")) {
+          if (!isPostUploadReviewerError(submitErr)) {
             throw submitErr;
           }
         }

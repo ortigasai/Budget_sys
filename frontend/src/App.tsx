@@ -11,6 +11,7 @@ import { HeadcountRequestDetailPage } from "./pages/HeadcountRequestDetailPage";
 import { InboxPage } from "./pages/InboxPage";
 import { ForecastPage } from "./pages/ForecastPage";
 import { Step5DashboardPage } from "./pages/Step5DashboardPage";
+import { Step5PendingRequestsPage } from "./pages/Step5PendingRequestsPage";
 import { FinalizedBudgetReportPage } from "./pages/FinalizedBudgetReportPage";
 import { DashFlowBudgetCheckPage } from "./pages/DashFlowBudgetCheckPage";
 import { AdminConsolePage } from "./pages/admin/AdminConsolePage";
@@ -43,15 +44,23 @@ export default function App() {
         <Route
           path="step5"
           element={
-            <RequireRole role="BUDGET_OFFICER">
+            <RequireRole role="BUDGET_OFFICER" access={["finalization"]}>
               <Step5DashboardPage />
+            </RequireRole>
+          }
+        />
+        <Route
+          path="step5/pending"
+          element={
+            <RequireRole role="BUDGET_OFFICER" access={["finalization"]}>
+              <Step5PendingRequestsPage />
             </RequireRole>
           }
         />
         <Route
           path="step5/finalized-budget"
           element={
-            <RequireRole role="BUDGET_OFFICER">
+            <RequireRole role="BUDGET_OFFICER" access={["finalization"]}>
               <FinalizedBudgetReportPage />
             </RequireRole>
           }

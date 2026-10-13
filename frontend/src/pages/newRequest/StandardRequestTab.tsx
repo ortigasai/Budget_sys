@@ -9,7 +9,7 @@ import { SearchableSelect } from "../../components/SearchableSelect";
 import { SectionLabel } from "../../components/TabBar";
 import { evaluateSpendGridFormula, spreadByFrequency, spreadByMonthNumbers } from "../../lib/spendGridFormula";
 import { useFiscalYear } from "../../lib/fiscalCycle";
-import { startUpload, useUploadTask } from "../../lib/uploadManager";
+import { startUpload, useUploadTaskBySlot } from "../../lib/uploadManager";
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
@@ -150,11 +150,11 @@ export function StandardRequestTab({ requestCategory, subtitle }: { requestCateg
   // once. Reuses the existing bulk-upload flow (see routes/bulkUpload.ts).
   // The upload itself runs through the shared uploadManager (see
   // lib/uploadManager.ts) instead of a local mutation, so progress and the
-  // result toast survive navigating to a different page mid-upload - this
-  // tab just keeps the task id to show the same status inline while it's
-  // still mounted.
-  const [uploadTaskId, setUploadTaskId] = useState<string | null>(null);
-  const uploadTask = useUploadTask(uploadTaskId);
+  // result toast survive navigating to a different page mid-upload - looked
+  // up by slot (not a locally-tracked task id) so a rejected-rows list also
+  // survives switching New Request tabs and back, staying up until this
+  // category's next upload replaces it.
+  const uploadTask = useUploadTaskBySlot(requestCategory);
   const [templateError, setTemplateError] = useState<string | null>(null);
   const [frozenHeaderEl, setFrozenHeaderEl] = useState<HTMLDivElement | null>(null);
   const [frozenHeaderHeight, setFrozenHeaderHeight] = useState(0);
@@ -396,7 +396,7 @@ export function StandardRequestTab({ requestCategory, subtitle }: { requestCateg
 
   return (
     <div className="mx-auto max-w-6xl space-y-4">
-      <div ref={setFrozenHeaderEl} className="sticky top-0 z-30 space-y-4 bg-[#f5faf7] pb-3 pt-1">
+      <div ref={setFrozenHeaderEl} className="sticky top-0 z-30 space-y-4 bg-slate-50 pb-3 pt-1">
       <PageHeader
         subtitle={subtitle}
         actions={
@@ -448,7 +448,7 @@ export function StandardRequestTab({ requestCategory, subtitle }: { requestCateg
               form.append("file", file);
               form.append("category", requestCategory);
               form.append("fiscalYear", String(FISCAL_YEAR));
-              setUploadTaskId(startUpload({ label: `${requestCategory} bulk upload (${file.name})`, url: "/budget-requests/bulk-upload", form, invalidateKeys: [["my-requests"]] }));
+              startUpload({ label: `${requestCategory} bulk upload (${file.name})`, slot: requestCategory, url: "/budget-requests/bulk-upload", form, invalidateKeys: [["my-requests"]] });
             }}
           />
         </label>

@@ -124,7 +124,7 @@ export function MyRequestsPage() {
   const [filterText, setFilterText] = useState("");
   const rowText = (row: TopLevelRow) => {
     if (row.kind !== "budget") return row.kind;
-    return [REQUEST_CATEGORY_LABELS[row.data.requestCategory] ?? row.data.requestCategory, requestLineDisplay(row.data).name, requestLineDisplay(row.data).budgetCode ?? "", row.data.currentStage].join(" ");
+    return [REQUEST_CATEGORY_LABELS[row.data.requestCategory] ?? row.data.requestCategory, requestLineDisplay(row.data).name, row.data.ticketNumber ?? "", requestLineDisplay(row.data).budgetCode ?? "", row.data.currentStage].join(" ");
   };
   const visibleRows = useMemo(() => {
     const q = filterText.trim().toLowerCase();
@@ -163,13 +163,14 @@ export function MyRequestsPage() {
         <div className="rounded-lg border border-dashed border-slate-300 bg-white/60 p-6 text-center text-sm text-slate-400">No requests yet.</div>
       ) : (
         <>
-        <TableFilter value={filterText} onChange={setFilterText} placeholder="Filter by type, item, budget code, or stage…" count={visibleRows.length} total={rows.length} />
+        <TableFilter value={filterText} onChange={setFilterText} placeholder="Filter by type, item, ticket #, budget code, or stage…" count={visibleRows.length} total={rows.length} />
         <div className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
           <table className="w-full text-sm">
             <thead className="bg-emerald-50 text-left text-xs tracking-wide text-emerald-800">
               <tr>
                 <SortableHeader label="Type" sortKey="type" activeKey={sortKey} dir={sortDir} onToggle={toggle} className="px-4 py-2" />
                 <SortableHeader label="Item" sortKey="item" activeKey={sortKey} dir={sortDir} onToggle={toggle} className="px-4 py-2" />
+                <th className="px-4 py-2">Ticket #</th>
                 <SortableHeader label="Budget Code" sortKey="budgetCode" activeKey={sortKey} dir={sortDir} onToggle={toggle} className="px-4 py-2" />
                 <SortableHeader label="Proposed Amount" sortKey="proposed" activeKey={sortKey} dir={sortDir} onToggle={toggle} align="right" className="px-4 py-2" />
                 <SortableHeader label="Budget Cut" sortKey="cut" activeKey={sortKey} dir={sortDir} onToggle={toggle} align="right" className="px-4 py-2" />
@@ -198,6 +199,7 @@ export function MyRequestsPage() {
                             </button>
                           )}
                         </td>
+                        <td className="px-4 py-2 text-slate-500">{row.data.ticketNumber ?? "—"}</td>
                         <td className="px-4 py-2 text-slate-500">{requestLineDisplay(row.data).budgetCode ?? "—"}</td>
                         <td className="px-4 py-2 font-medium text-slate-700">{row.data.proposedAmount.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>
                         {/* Notes_10: "Budget Cut" and "Approved Amount" —
@@ -229,6 +231,7 @@ export function MyRequestsPage() {
                         <td className="px-4 py-2 text-slate-400">N/A</td>
                         <td className="px-4 py-2 text-slate-400">N/A</td>
                         <td className="px-4 py-2 text-slate-400">N/A</td>
+                        <td className="px-4 py-2 text-slate-400">N/A</td>
                         <td className="px-4 py-2">
                           <StatusBadge stage={row.data.currentStage} />
                           <PendingReviewers names={row.data.pendingReviewers} />
@@ -249,6 +252,7 @@ export function MyRequestsPage() {
                             that don't apply, same convention headcount uses
                             above. */}
                         <td className="px-4 py-2 text-slate-400">N/A</td>
+                        <td className="px-4 py-2 text-slate-400">N/A</td>
                         <td className="px-4 py-2 font-medium text-slate-700">{row.data.totalAmount.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>
                         <td className="px-4 py-2 text-slate-400">N/A</td>
                         <td className="px-4 py-2 text-slate-400">N/A</td>
@@ -267,6 +271,7 @@ export function MyRequestsPage() {
                             Code/Budget Cut/Approved Amount once submitted -
                             this row only exists pre-submit, so N/A for the
                             same reason Revenue's does above. */}
+                        <td className="px-4 py-2 text-slate-400">N/A</td>
                         <td className="px-4 py-2 text-slate-400">N/A</td>
                         <td className="px-4 py-2 font-medium text-slate-700">{row.data.totalAmount.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>
                         <td className="px-4 py-2 text-slate-400">N/A</td>

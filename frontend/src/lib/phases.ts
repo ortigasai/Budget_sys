@@ -15,29 +15,25 @@ export const PHASES: Phase[] = [
   {
     number: 1,
     title: "Annual Budget Setting",
-    description:
-      "Requestors build departmental budget requests from the standardized expense catalog, routed through the 5-stage approval workflow with real-time cap/pool tracking, culminating in Board-Approved Budget sign-off and a manual SAP upload.",
+    description: "Set and approve each year's budget by department and SBU.",
     to: "/phase1",
   },
   {
     number: 2,
     title: "Budget Utilization Tracking",
-    description:
-      "Approved budget vs. actual expenditures and open commitments, per department and GL-CC, with live reconciliation against posted SAP activity and an exception queue for unmatched transactions.",
+    description: "Follow actual spending, commitments and balances against budget.",
     to: "/utilization",
   },
   {
     number: 3,
     title: "Budget Transfer & Reallocation",
-    description:
-      "Fund transfers and supplemental budget requests routed by SBU and amount, through Department Head, SBU Finance, and (for larger amounts) CFO/CEO approval, with balance validation and audit tracking throughout.",
+    description: "Move budget between cost centers with a documented approval trail.",
     to: "/transfers",
   },
   {
     number: 4,
     title: "Budget Report & Analysis",
-    description:
-      "Dynamic budget-vs-actual-vs-forecast dashboards at the CC-GL level, multi-year trend comparisons, and Excel extraction, without manual data consolidation.",
+    description: "Compare budget, actual and forecast across periods and categories.",
     to: "/reports",
   },
 ];

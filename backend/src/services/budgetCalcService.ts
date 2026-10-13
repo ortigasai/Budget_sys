@@ -12,6 +12,7 @@ const POOL_CONSUMING_STAGES: RequestStage[] = [
   RequestStage.BUDGET_OFFICER_VALIDATION,
   RequestStage.SF_VALIDATION,
   RequestStage.SF_HEAD_REVIEW,
+  RequestStage.BUDGET_OFFICER_ROUTING,
   RequestStage.SBU_HEAD_REVIEW,
   RequestStage.BCA_HEAD_REVIEW,
   RequestStage.BUDGET_OFFICER_REVIEW,

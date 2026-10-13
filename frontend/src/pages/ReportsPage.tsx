@@ -21,7 +21,7 @@ import { KpiCards } from "./reports/KpiCards";
 import { ComparisonChart } from "./reports/ComparisonChart";
 import { ReportTable, type ComparisonMeta } from "./reports/ReportTable";
 import { TrendTable } from "./reports/TrendTable";
-import { GaeReportSection, gaeChartSeries, gaeKpiTotals, gaeSingleSeries, useGaeReport, type SingleMeasure } from "./reports/GaeReportSection";
+import { GaeReportSection, gaeChartSeries, gaeKpiTotals, gaeSingleSeries, useGaeReport, LAST_YEAR_COMPARISON_IDS, type SingleMeasure } from "./reports/GaeReportSection";
 
 function peso(n: number) {
   return `${n.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
@@ -41,14 +41,27 @@ function calendarYearsEndingAt(latestYear: number): number[] {
 // "5-Year Trend" is deliberately NOT one of them - it's reachable only via
 // the "5-Year Trend" Saved View below, same as before this revision just
 // under its new name (still the same "trend" internal id/state value).
-type ComparisonId = "budget-actual" | "budget-forecast" | "forecast-actual" | "yoy-actual" | "yoy-forecast" | "yoy-budget" | "monthly-comparison" | "quarterly-comparison" | "trend";
+type ComparisonId =
+  | "budget-actual"
+  | "budget-forecast"
+  | "forecast-actual"
+  | "cy-actual-ly-actual"
+  | "cy-budget-ly-budget"
+  | "cy-budget-ly-actual"
+  | "cy-forecast-ly-actual"
+  | "cy-forecast-ly-budget"
+  | "monthly-comparison"
+  | "quarterly-comparison"
+  | "trend";
 const COMPARISON_OPTIONS: { value: Exclude<ComparisonId, "trend">; label: string }[] = [
   { value: "budget-actual", label: "Budget vs Actual" },
   { value: "budget-forecast", label: "Budget vs Forecast" },
   { value: "forecast-actual", label: "Forecast vs Actual" },
-  { value: "yoy-actual", label: "Last Year Actual vs Current Year Actual" },
-  { value: "yoy-forecast", label: "Last Year Actual vs Current Year Forecast" },
-  { value: "yoy-budget", label: "Last Year Actual vs Current Year Budget" },
+  { value: "cy-actual-ly-actual", label: "Current Year Actual vs Last Year Actual" },
+  { value: "cy-budget-ly-budget", label: "Current Year Budget vs Last Year Budget" },
+  { value: "cy-budget-ly-actual", label: "Current Year Budget vs Last Year Actual" },
+  { value: "cy-forecast-ly-actual", label: "Current Year Forecast vs Last Year Actual" },
+  { value: "cy-forecast-ly-budget", label: "Current Year Forecast vs Last Year Budget" },
 ];
 const MEASURE_OPTIONS: { value: SingleMeasure; label: string }[] = [
   { value: "actual", label: "Actual" },
@@ -56,18 +69,20 @@ const MEASURE_OPTIONS: { value: SingleMeasure; label: string }[] = [
   { value: "forecast", label: "Forecast" },
 ];
 
-type SingleComparisonId ="budget-actual" | "budget-forecast" | "forecast-actual" | "yoy-actual" | "yoy-forecast" | "yoy-budget";
+// "Last Year Comparisons" (the cy-*-ly-* ids) are handled entirely by
+// GaeReportSection's own PAIRS - COMPARISON_META here only covers the
+// Budget/Actual/Forecast group, as a fallback for when the GAE-specific
+// report hasn't loaded yet (gaeKpi/gaeChart null).
+type SingleComparisonId = "budget-actual" | "budget-forecast" | "forecast-actual";
 const COMPARISON_META: Record<SingleComparisonId, ComparisonMeta & { baselineLabel: string; targetLabel: string }> = {
   "budget-actual": { leftLabel: "Budget", leftKey: "budgetCurrent", rightLabel: "Actual", rightKey: "actualCurrent", varianceLabel: "Budget vs Actual", varianceKey: "variance", baselineLabel: "Budget", targetLabel: "Actual" },
   "budget-forecast": { leftLabel: "Budget", leftKey: "budgetCurrent", rightLabel: "Forecast", rightKey: "forecastCurrent", varianceLabel: "Budget vs Forecast", varianceKey: "varianceBudgetForecast", baselineLabel: "Budget", targetLabel: "Forecast" },
   "forecast-actual": { leftLabel: "Forecast", leftKey: "forecastCurrent", rightLabel: "Actual", rightKey: "actualCurrent", varianceLabel: "Forecast vs Actual", varianceKey: "varianceActualForecast", baselineLabel: "Forecast", targetLabel: "Actual" },
-  "yoy-actual": { leftLabel: "LY Actual", leftKey: "actualPrior", rightLabel: "CY Actual", rightKey: "actualCurrent", varianceLabel: "YoY Actual", varianceKey: "varianceActualYoY", baselineLabel: "LY Actual", targetLabel: "CY Actual" },
-  "yoy-forecast": { leftLabel: "LY Actual", leftKey: "actualPrior", rightLabel: "CY Forecast", rightKey: "forecastCurrent", varianceLabel: "LY Actual vs CY Forecast", varianceKey: "varianceLYActualCYForecast", baselineLabel: "LY Actual", targetLabel: "CY Forecast" },
-  "yoy-budget": { leftLabel: "LY Actual", leftKey: "actualPrior", rightLabel: "CY Budget", rightKey: "budgetCurrent", varianceLabel: "LY Actual vs CY Budget", varianceKey: "varianceLYActualCYBudget", baselineLabel: "LY Actual", targetLabel: "CY Budget" },
 };
 function isSingleComparison(c: ComparisonId): c is SingleComparisonId {
   return c in COMPARISON_META;
 }
+const isLastYearComparison = (c: string) => (LAST_YEAR_COMPARISON_IDS as readonly string[]).includes(c);
 
 // Note 12 revision - Time Granularity now only governs the table's period
 // for the 6 single-pair comparisons above (Monthly/Quarterly moved out to
@@ -88,7 +103,7 @@ const PRESETS: { id: PresetId; label: string }[] = [{ id: "executive-summary", l
 // (App.tsx) before this even mounts. FR-4.8's period sign-off lives in the
 // Admin Console (PeriodSignOffTab) instead of here.
 export function ReportsPage() {
-  const { forecastYear } = useFiscalYear();
+  const { forecastYear, targetYear } = useFiscalYear();
   const queryClient = useQueryClient();
 
   const [searchParams] = useSearchParams();
@@ -119,7 +134,11 @@ export function ReportsPage() {
   const [varianceThresholdPct, setVarianceThresholdPct] = useState(10);
   const [varianceThresholdPeso, setVarianceThresholdPeso] = useState<number | "">("");
 
-  const calendarYears = calendarYearsEndingAt(forecastYear);
+  // The picker itself goes through targetYear (2027) - a year ahead of the
+  // real current year (forecastYear) - so budget-prep-year figures are also
+  // reachable here, even though "current year only" views below pin to
+  // forecastYear specifically.
+  const calendarYears = calendarYearsEndingAt(targetYear);
 
   const navigate = useNavigate();
   const applyPreset = (id: PresetId) => {
@@ -136,8 +155,11 @@ export function ReportsPage() {
 
   const isPeriodGrid = comparison === "monthly-comparison" || comparison === "quarterly-comparison";
   const isTrend = comparison === "trend";
-  // Last Year, Monthly and Quarterly comparisons are for the current calendar year only.
-  const currentYearOnly = comparison.startsWith("yoy") || isPeriodGrid;
+  // Monthly and Quarterly comparisons are for the current calendar year only
+  // - Last Year Comparisons (the cy-*-ly-* ids) picks its own Calendar Year
+  // below (useGaeReport already takes fiscalYear and derives "last year" as
+  // fiscalYear - 1 from it, so any year works, not just the current one).
+  const currentYearOnly = isPeriodGrid;
   useEffect(() => {
     if (currentYearOnly) setFiscalYear(forecastYear);
   }, [currentYearOnly, forecastYear]);
@@ -187,7 +209,7 @@ export function ReportsPage() {
     // 2-year monthly series this pass doesn't build (out of scope) - the
     // chart is skipped for those, the KPI cards + table still show the real
     // prior-vs-current totals.
-    enabled: !isTrend && !isPeriodGrid && comparison !== "yoy-actual" && comparison !== "yoy-forecast" && comparison !== "yoy-budget",
+    enabled: !isTrend && !isPeriodGrid && !isLastYearComparison(comparison),
   });
 
   const { data: trendPoints = [] } = useQuery({
@@ -272,7 +294,7 @@ export function ReportsPage() {
               ) : (
                 <select className="mt-0.5 w-full rounded border border-slate-300 px-2 py-1 text-xs" value={comparison} onChange={(e) => setComparison(e.target.value as ComparisonId)}>
                   {/* Only this sidebar menu's own comparisons: Budget/Actual/Forecast, or Last Year. */}
-                  {COMPARISON_OPTIONS.filter((o) => o.value.startsWith("yoy") === comparison.startsWith("yoy")).map((o) => (
+                  {COMPARISON_OPTIONS.filter((o) => isLastYearComparison(o.value) === isLastYearComparison(comparison)).map((o) => (
                     <option key={o.value} value={o.value}>
                       {o.label}
                     </option>
@@ -409,7 +431,7 @@ export function ReportsPage() {
                 <ExpandableSection title="Comparison Chart">
                   <ComparisonChart title="Comparison Chart" baselineLabel={gaeChart.baselineLabel} targetLabel={gaeChart.targetLabel} points={gaeChart.points} singleLabel={isPeriodGrid ? gaeChart.targetLabel : undefined} asLine={isPeriodGrid} />
                 </ExpandableSection>
-              ) : meta && comparison !== "yoy-actual" && comparison !== "yoy-forecast" && comparison !== "yoy-budget" ? (
+              ) : meta ? (
                 <ExpandableSection title="Comparison Chart">
                   <ComparisonChart title="Comparison Chart" baselineLabel={meta.baselineLabel} targetLabel={meta.targetLabel} points={seriesPoints.map((p) => ({ period: p.period, baseline: p.budget, target: comparison === "forecast-actual" ? p.forecast ?? 0 : comparison === "budget-forecast" ? p.forecast ?? 0 : p.actual, variancePct: p.variancePct }))} />
                 </ExpandableSection>

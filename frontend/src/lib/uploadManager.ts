@@ -6,6 +6,12 @@ import { queryClient } from "./queryClient";
 export interface UploadTask {
   id: string;
   label: string;
+  // Groups every upload of the same kind (e.g. one per request category's
+  // bulk-upload button) so a caller can ask "what's my latest task" without
+  // tracking its own id across remounts (see useUploadTaskBySlot below), and
+  // so starting a new upload for that slot supersedes - not just adds to -
+  // whatever the previous one left behind.
+  slot?: string;
   status: "uploading" | "success" | "error";
   progress: number; // 0-100
   message?: string;
@@ -55,6 +61,18 @@ export function useUploadTask(id: string | null): UploadTask | undefined {
   );
 }
 
+// The latest task for a given slot - looked up fresh from the shared store
+// every render, so (unlike tracking a task id in component state) it
+// survives the component unmounting and remounting, e.g. switching New
+// Request tabs and back. Pass a stable identifier for "this upload button"
+// (e.g. the request category), not startUpload's own per-upload `label`
+// (which includes the filename and changes every time).
+export function useUploadTaskBySlot(slot: string | null): UploadTask | undefined {
+  const all = useAllUploadTasks();
+  if (!slot) return undefined;
+  return all.find((t) => t.slot === slot);
+}
+
 export function dismissUploadTask(id: string) {
   tasks.delete(id);
   notify();
@@ -62,13 +80,23 @@ export function dismissUploadTask(id: string) {
 
 export function startUpload<T = { created: number; errors: { row: number; error: string }[] }>(opts: {
   label: string;
+  slot?: string;
   url: string;
   form: FormData;
   invalidateKeys?: QueryKey[];
   onDone?: (data: T) => void;
 }): string {
+  // A new upload for the same slot replaces whatever that slot's last
+  // upload left behind (success, error, or a still-unread rejected-rows
+  // list) - this is what makes a rejection list "retained until a new
+  // template is uploaded" instead of just timing out.
+  if (opts.slot) {
+    for (const [taskId, t] of tasks) {
+      if (t.slot === opts.slot) tasks.delete(taskId);
+    }
+  }
   const id = crypto.randomUUID();
-  tasks.set(id, { id, label: opts.label, status: "uploading", progress: 0, startedAt: Date.now() });
+  tasks.set(id, { id, label: opts.label, slot: opts.slot, status: "uploading", progress: 0, startedAt: Date.now() });
   notify();
 
   api
@@ -92,13 +120,13 @@ export function startUpload<T = { created: number; errors: { row: number; error:
             ? `Created ${data.created} request(s).`
             : "Uploaded successfully."
           : `Created ${data.created ?? 0} request(s). ${errors.length} row(s) were rejected - see details below.`;
-      tasks.set(id, { id, label: opts.label, status: "success", progress: 100, message, errors, startedAt: Date.now() });
+      tasks.set(id, { id, label: opts.label, slot: opts.slot, status: "success", progress: 100, message, errors, startedAt: Date.now() });
       notify();
       opts.onDone?.(res.data);
     })
     .catch((err) => {
       const message = err?.response?.data?.error ?? "Upload failed.";
-      tasks.set(id, { id, label: opts.label, status: "error", progress: 0, message, startedAt: Date.now() });
+      tasks.set(id, { id, label: opts.label, slot: opts.slot, status: "error", progress: 0, message, startedAt: Date.now() });
       notify();
     });
 

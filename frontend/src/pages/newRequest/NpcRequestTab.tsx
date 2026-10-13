@@ -1,14 +1,15 @@
 import { useLayoutEffect, useState } from "react";
 import { ApproverPicker } from "../../components/ApproverPicker";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { npcGroupSbus } from "../../lib/groupScope";
-import { api, downloadFile, NPC_LOCATION_OPTIONS, NPC_SBU_OPTIONS, type BudgetRequest, type NpcLocation, type NpcSbu } from "../../api/client";
+import { api, api2, downloadFile, type CcGlOptions, NPC_LOCATION_OPTIONS, NPC_SBU_OPTIONS, type BudgetRequest, type NpcLocation, type NpcSbu } from "../../api/client";
 import { useAuth } from "../../context/AuthContext";
 import { PageHeader } from "../../components/PageHeader";
+import { SearchableSelect } from "../../components/SearchableSelect";
 import { SectionLabel } from "../../components/TabBar";
 import { useFiscalYear } from "../../lib/fiscalCycle";
-import { startUpload, useUploadTask } from "../../lib/uploadManager";
+import { startUpload, useUploadTaskBySlot } from "../../lib/uploadManager";
 
 // Spec item 12: NPC is not the same form as GAE/DOE — its own required
 // fields (SBU, Location, Project Title/Start/End, Amount, Cost Center), no
@@ -29,8 +30,12 @@ export function NpcRequestTab({ subtitle }: { subtitle: string }) {
   const [projectStartDate, setProjectStartDate] = useState("");
   const [projectEndDate, setProjectEndDate] = useState("");
   const [costCenter, setCostCenter] = useState("");
+  // Cost Center master list (admin-maintained, the same list the Transfers page uses).
+  const { data: ccGlOptions = { costCenters: [], glAccounts: [] } } = useQuery({
+    queryKey: ["transfers", "cc-gl-options"],
+    queryFn: async () => (await api2.get<CcGlOptions>("/transfers/cc-gl-options")).data,
+  });
   const [departmentHeadId, setDepartmentHeadId] = useState("");
-  const [sbuHeadId, setSbuHeadId] = useState("");
   const [amountInput, setAmountInput] = useState("");
   const [amountFocused, setAmountFocused] = useState(false);
   const [created, setCreated] = useState<BudgetRequest | null>(null);
@@ -41,9 +46,9 @@ export function NpcRequestTab({ subtitle }: { subtitle: string }) {
   // Note 11 §6 - "Open Spreadsheet Template", NPC's own shape (Location/
   // Project Title/Dates/Cost Center/Amount) - see routes/bulkUpload.ts's
   // /npc-template + /npc-template-upload. Runs through the shared
-  // uploadManager (see lib/uploadManager.ts), same as StandardRequestTab.
-  const [uploadTaskId, setUploadTaskId] = useState<string | null>(null);
-  const uploadTask = useUploadTask(uploadTaskId);
+  // uploadManager (see lib/uploadManager.ts), same as StandardRequestTab -
+  // looked up by slot so a rejected-rows list survives switching tabs.
+  const uploadTask = useUploadTaskBySlot("NPC");
   const [templateError, setTemplateError] = useState<string | null>(null);
   const [frozenHeaderEl, setFrozenHeaderEl] = useState<HTMLDivElement | null>(null);
   const [frozenHeaderHeight, setFrozenHeaderHeight] = useState(0);
@@ -65,7 +70,6 @@ export function NpcRequestTab({ subtitle }: { subtitle: string }) {
           costCenter,
           amount,
           departmentHeadId: departmentHeadId || undefined,
-          sbuHeadId: sbuHeadId || undefined,
         })
       ).data,
     onSuccess: (data) => {
@@ -88,7 +92,7 @@ export function NpcRequestTab({ subtitle }: { subtitle: string }) {
   });
 
   const submitMutation = useMutation({
-    mutationFn: async () => (await api.post<BudgetRequest>(`/budget-requests/${created!.id}/submit`, { departmentHeadId: departmentHeadId || undefined, sbuHeadId: sbuHeadId || undefined })).data,
+    mutationFn: async () => (await api.post<BudgetRequest>(`/budget-requests/${created!.id}/submit`, { departmentHeadId: departmentHeadId || undefined })).data,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["my-requests"] });
       navigate("/requests/mine");
@@ -142,7 +146,7 @@ export function NpcRequestTab({ subtitle }: { subtitle: string }) {
 
   return (
     <div className="mx-auto max-w-6xl space-y-4">
-      <div ref={setFrozenHeaderEl} className="sticky top-0 z-30 space-y-4 bg-[#f5faf7] pb-3 pt-1">
+      <div ref={setFrozenHeaderEl} className="sticky top-0 z-30 space-y-4 bg-slate-50 pb-3 pt-1">
       <PageHeader
         subtitle={subtitle}
         actions={
@@ -195,7 +199,7 @@ export function NpcRequestTab({ subtitle }: { subtitle: string }) {
               form.append("file", file);
               form.append("npcSbu", npcSbu);
               form.append("fiscalYear", String(FISCAL_YEAR));
-              setUploadTaskId(startUpload({ label: `NPC bulk upload (${file.name})`, url: "/budget-requests/npc-template-upload", form, invalidateKeys: [["my-requests"]] }));
+              startUpload({ label: `NPC bulk upload (${file.name})`, slot: "NPC", url: "/budget-requests/npc-template-upload", form, invalidateKeys: [["my-requests"]] });
             }}
           />
         </label>
@@ -256,19 +260,26 @@ export function NpcRequestTab({ subtitle }: { subtitle: string }) {
             <label className="block text-sm font-medium text-slate-600">
               Project Start <span className="text-red-500">*</span>
             </label>
-            <input type="date" className="mt-1 w-full rounded border border-slate-300 px-2 py-1.5 text-sm" value={projectStartDate} onChange={(e) => setProjectStartDate(e.target.value)} />
+            <input type="month" className="mt-1 w-full rounded border border-slate-300 px-2 py-1.5 text-sm" value={projectStartDate} onChange={(e) => setProjectStartDate(e.target.value)} />
           </div>
           <div>
             <label className="block text-sm font-medium text-slate-600">
               Project End <span className="text-red-500">*</span>
             </label>
-            <input type="date" className="mt-1 w-full rounded border border-slate-300 px-2 py-1.5 text-sm" value={projectEndDate} onChange={(e) => setProjectEndDate(e.target.value)} />
+            <input type="month" className="mt-1 w-full rounded border border-slate-300 px-2 py-1.5 text-sm" value={projectEndDate} onChange={(e) => setProjectEndDate(e.target.value)} />
           </div>
           <div>
             <label className="block text-sm font-medium text-slate-600">
               Cost Center <span className="text-red-500">*</span>
             </label>
-            <input className="mt-1 w-full rounded border border-slate-300 px-2 py-1.5 text-sm" value={costCenter} onChange={(e) => setCostCenter(e.target.value)} />
+            <div className="mt-1">
+              <SearchableSelect
+                options={ccGlOptions.costCenters.map((c) => ({ value: c.code, label: c.code, sublabel: c.name }))}
+                value={costCenter}
+                onChange={setCostCenter}
+                placeholder="Search cost centers…"
+              />
+            </div>
           </div>
           <div>
             <label className="block text-sm font-medium text-slate-600">
@@ -295,7 +306,6 @@ export function NpcRequestTab({ subtitle }: { subtitle: string }) {
         <SectionLabel>Approval</SectionLabel>
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <ApproverPicker label="Department Head / Approver" value={departmentHeadId} onChange={setDepartmentHeadId} />
-          <ApproverPicker label="SBU or Division Head" value={sbuHeadId} onChange={setSbuHeadId} />
         </div>
       </div>
 
@@ -307,9 +317,9 @@ export function NpcRequestTab({ subtitle }: { subtitle: string }) {
           <SectionLabel>Quick Guide</SectionLabel>
           <ol className="list-decimal space-y-1.5 pl-5 text-xs text-slate-700">
             <li>Choose the SBU and Location for the project.</li>
-            <li>Enter the Project Title, Project Start, and Project End dates.</li>
+            <li>Enter the Project Title, and the Project Start and Project End months.</li>
             <li>Enter the Cost Center and the Amount (VAT exclusive).</li>
-            <li>Pick the Department Head / Approver and the SBU or Division Head.</li>
+            <li>Pick the Department Head / Approver.</li>
             <li>Save Draft to keep working on it later, then submit it for approval.</li>
           </ol>
           <div className="border-t border-emerald-200 pt-2 text-xs text-slate-600">

@@ -27,34 +27,39 @@ export const NPC_SBU_OPTIONS: { value: NpcSbu; label: string }[] = [
   { value: "CORPORATE_ADMIN", label: "Corporate Admin" },
 ];
 
-// Deliberately distinct 3-letter codes from DOE's MAL/RES/OFF/EST/LEI (see
+// NPC Budget Code prefixes, from "Budgeting System_CC-GL" tab CC (NPC SBU ->
+// NPC Budget Code). Malls splits by location: GH -> Malls GH (JLC), any other
+// location -> Malls NonGH (RFT). Leisure has no CC-tab row, so its admin Head
+// code (LEI) is used. Distinct from DOE's MAL/RES/OFF/EST/LEI (see
 // budgetCode.ts's SBU_CODE) so NPC requests never share a (prefixCode, year)
 // budget-code sequence counter with a DOE request.
-const NPC_SBU_CODE: Record<NpcSbu, string> = {
-  MALLS: "NMA",
-  OFFICES: "NOF",
-  ESTATES: "NES",
-  RESIDENTIAL: "NRE",
-  LEISURE: "NLE",
-  CORPORATE_IT: "NIT",
-  CORPORATE_HR: "NHR",
-  CORPORATE_ADMIN: "NAD",
+const NPC_SBU_CODE: Record<Exclude<NpcSbu, "MALLS">, string> = {
+  OFFICES: "WPD",
+  ESTATES: "RGM",
+  RESIDENTIAL: "JJB",
+  LEISURE: "LEI",
+  CORPORATE_IT: "RBQ",
+  CORPORATE_HR: "MGM",
+  CORPORATE_ADMIN: "LPA",
 };
 
-export function npcSbuBudgetCodePrefix(sbu: NpcSbu): string {
+export function npcSbuBudgetCodePrefix(sbu: NpcSbu, location: NpcLocation): string {
+  if (sbu === "MALLS") return location === "GH" ? "JLC" : "RFT";
   return NPC_SBU_CODE[sbu];
 }
 
-// Spec item 12's fixed 4-value Location list — plain hardcoded list, not an
+// Spec item 12's fixed Location list — plain hardcoded list, not an
 // admin-configurable table (unlike Phase 3's IoLocation), since the spec
-// didn't ask for editability here.
-export const NPC_LOCATION_VALUES = ["OE", "CC", "GH", "CV"] as const;
+// didn't ask for editability here. ES, like every location other than GH,
+// resolves to Malls NonGH (RFT) in npcSbuBudgetCodePrefix above.
+export const NPC_LOCATION_VALUES = ["OE", "CC", "GH", "CV", "ES"] as const;
 export type NpcLocation = (typeof NPC_LOCATION_VALUES)[number];
 export const NPC_LOCATION_OPTIONS: { value: NpcLocation; label: string }[] = [
   { value: "OE", label: "OE" },
   { value: "CC", label: "CC" },
   { value: "GH", label: "GH" },
   { value: "CV", label: "CV" },
+  { value: "ES", label: "ES" },
 ];
 
 // The User Management workbook's own labels for the NPC group's scope -> the

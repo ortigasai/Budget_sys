@@ -78,7 +78,10 @@ export function chainFor(r: ChainRequest): RequestStage[] {
     return [S.SF_VALIDATION, S.SF_HEAD_REVIEW, S.BUDGET_OFFICER_REVIEW];
   }
   if (r.requestCategory === RequestCategory.NPC) {
-    return [S.DEPT_HEAD_REVIEW, S.SF_VALIDATION, S.SF_HEAD_REVIEW, S.SBU_HEAD_REVIEW, S.BUDGET_OFFICER_VALIDATION, S.BCA_HEAD_REVIEW, S.BUDGET_OFFICER_REVIEW];
+    // Per the revised "Budgeting System_Approval Workflow": Budget Officer
+    // validates before SBU Finance, then routes the request on (no BCA, no
+    // SBU or Division Head) after SBU Finance Head Review.
+    return [S.DEPT_HEAD_REVIEW, S.BUDGET_OFFICER_VALIDATION, S.SF_VALIDATION, S.SF_HEAD_REVIEW, S.BUDGET_OFFICER_ROUTING, S.BUDGET_OFFICER_REVIEW];
   }
   // GAE (and anything else on the shared expense chain). No Centralized L1
   // Review stage - a Centralized Department Requestor raising it for their
@@ -92,7 +95,8 @@ export function chainFor(r: ChainRequest): RequestStage[] {
   // ("Budgeting System_Expense Line Items" column J), not a department-wide
   // role lookup (see assigneeForStage below).
   chain.push(S.CENTRALIZED_L1_REVIEW, S.CENTRALIZED_HEAD_REVIEW, S.BUDGET_OFFICER_VALIDATION);
-  if (r.proposedAmount >= BCA_THRESHOLD) chain.push(S.BCA_HEAD_REVIEW);
+  // Per the revised "Budgeting System_Approval Workflow": GAE's New Request chain
+  // no longer has a BCA Head step at any amount (was: 1,000,000 and above).
   chain.push(S.BUDGET_OFFICER_REVIEW);
   return chain;
 }
@@ -154,12 +158,14 @@ export function canActOnStage(user: AuthedUser, r: ChainRequest, stage: RequestS
     case S.CENTRALIZED_HEAD_REVIEW:
       return !!r.expenseLineItem && hasDeptRole(user, RoleType.CENTRALIZED_DEPARTMENT_HEAD, r.expenseLineItem.ownerDepartmentId);
     case S.SF_VALIDATION:
-      return hasSbuRole(user, RoleType.BU_FINANCE_OFFICER, requestSbu(r)) || hasSbuRole(user, RoleType.BU_FINANCE_HEAD, requestSbu(r));
+      // SBU Finance Reviewer only; the SBU Finance Head acts at SF_HEAD_REVIEW.
+      return hasSbuRole(user, RoleType.BU_FINANCE_OFFICER, requestSbu(r));
     case S.SF_HEAD_REVIEW:
       return hasSbuRole(user, RoleType.BU_FINANCE_HEAD, requestSbu(r));
     case S.SBU_HEAD_REVIEW:
       return false; // only ever via assigneeId (the dropdown pick)
     case S.BUDGET_OFFICER_VALIDATION:
+    case S.BUDGET_OFFICER_ROUTING:
     case S.BUDGET_OFFICER_REVIEW:
       return hasAnyRole(user, RoleType.BUDGET_OFFICER);
     case S.BCA_HEAD_REVIEW:
@@ -176,6 +182,7 @@ export const ACTIVE_STAGES: RequestStage[] = [
   RequestStage.CENTRALIZED_HEAD_REVIEW,
   RequestStage.SF_VALIDATION,
   RequestStage.SF_HEAD_REVIEW,
+  RequestStage.BUDGET_OFFICER_ROUTING,
   RequestStage.SBU_HEAD_REVIEW,
   RequestStage.BUDGET_OFFICER_VALIDATION,
   RequestStage.BCA_HEAD_REVIEW,

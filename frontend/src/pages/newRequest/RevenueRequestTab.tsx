@@ -7,7 +7,7 @@ import { api, SBU_OPTIONS, type Company, type RevenueBatchDetail, type Sbu } fro
 import { PageHeader } from "../../components/PageHeader";
 import { SectionLabel } from "../../components/TabBar";
 import { useFiscalYear } from "../../lib/fiscalCycle";
-import { startUpload, useUploadTask } from "../../lib/uploadManager";
+import { startUpload, useUploadTaskBySlot } from "../../lib/uploadManager";
 
 interface BoardBudgetRow {
   id: string;
@@ -75,40 +75,37 @@ export function RevenueRequestTab({ subtitle }: { subtitle: string }) {
 
   // Both uploads run through the shared uploadManager (see
   // lib/uploadManager.ts) instead of a local mutation, so progress and the
-  // result toast survive navigating to a different page mid-upload.
-  const [uploadTaskId, setUploadTaskId] = useState<string | null>(null);
-  const uploadTask = useUploadTask(uploadTaskId);
+  // result toast survive navigating to a different page mid-upload - looked
+  // up by slot so a rejected-rows list also survives switching tabs.
+  const uploadTask = useUploadTaskBySlot("Revenue-upload");
   function startBatchUpload(file: File) {
     const form = new FormData();
     form.append("file", file);
     form.append("sbu", sbu);
     form.append("companyId", companyId);
     form.append("fiscalYear", String(FISCAL_YEAR));
-    setUploadTaskId(
-      startUpload<RevenueBatchDetail>({
-        label: `Revenue bulk upload (${file.name})`,
-        url: "/revenue-batches",
-        form,
-        invalidateKeys: [["revenue-batches", "mine"]],
-        onDone: (data) => setActiveBatchId(data.id),
-      })
-    );
+    startUpload<RevenueBatchDetail>({
+      label: `Revenue bulk upload (${file.name})`,
+      slot: "Revenue-upload",
+      url: "/revenue-batches",
+      form,
+      invalidateKeys: [["revenue-batches", "mine"]],
+      onDone: (data) => setActiveBatchId(data.id),
+    });
   }
 
-  const [overrideTaskId, setOverrideTaskId] = useState<string | null>(null);
-  const overrideTask = useUploadTask(overrideTaskId);
+  const overrideTask = useUploadTaskBySlot("Revenue-override");
   function startOverrideUpload(file: File) {
     const form = new FormData();
     form.append("file", file);
-    setOverrideTaskId(
-      startUpload<RevenueBatchDetail>({
-        label: `Revenue override file (${file.name})`,
-        url: `/revenue-batches/${activeBatchId}/upload`,
-        form,
-        invalidateKeys: [["revenue-batches", "mine"]],
-        onDone: () => refetchActive(),
-      })
-    );
+    startUpload<RevenueBatchDetail>({
+      label: `Revenue override file (${file.name})`,
+      slot: "Revenue-override",
+      url: `/revenue-batches/${activeBatchId}/upload`,
+      form,
+      invalidateKeys: [["revenue-batches", "mine"]],
+      onDone: () => refetchActive(),
+    });
   }
 
   const submitMutation = useMutation({
@@ -139,7 +136,7 @@ export function RevenueRequestTab({ subtitle }: { subtitle: string }) {
 
   return (
     <div className="mx-auto max-w-6xl space-y-4">
-      <div ref={setFrozenHeaderEl} className="sticky top-0 z-30 space-y-4 bg-[#f5faf7] pb-3 pt-1">
+      <div ref={setFrozenHeaderEl} className="sticky top-0 z-30 space-y-4 bg-slate-50 pb-3 pt-1">
         <PageHeader subtitle={subtitle} />
         <div className="grid grid-cols-2 gap-4 rounded-lg border border-emerald-200 bg-emerald-50 p-4 text-sm shadow-sm">
           <div>
@@ -189,10 +186,12 @@ export function RevenueRequestTab({ subtitle }: { subtitle: string }) {
               </label>
               <select className="mt-1 w-full rounded border border-slate-300 px-2 py-1.5 text-sm" value={companyId} onChange={(e) => setCompanyId(e.target.value)}>
                 <option value="">— Select —</option>
-                {companies.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
-                  </option>
+                {companies
+                  .filter((c) => !/Project|Outsourced/i.test(c.name))
+                  .map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
                 ))}
               </select>
             </div>

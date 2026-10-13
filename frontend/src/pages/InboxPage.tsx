@@ -571,6 +571,7 @@ const STAGE_DISPLAY: Record<string, string> = {
   BUDGET_OFFICER_VALIDATION: "Budget Officer Validation",
   SF_VALIDATION: "SBU Finance Validation",
   SF_HEAD_REVIEW: "SBU Finance Head",
+  BUDGET_OFFICER_ROUTING: "Budget Officer Routing",
   SBU_HEAD_REVIEW: "SBU or Division Head",
   HR_ANALYST_REVIEW: "HR Analyst",
   HR_HEAD_REVIEW: "HR Head",
@@ -857,6 +858,7 @@ export function InboxPage() {
                         {requestLineDisplay(r).name}
                       </Link>
                       <div className="text-xs text-slate-500">
+                        {r.ticketNumber && `Ticket #${r.ticketNumber} · `}
                         {r.department.name}
                         {requestLineDisplay(r).ownerDepartmentName ? ` → ${requestLineDisplay(r).ownerDepartmentName}` : ""} · {r.proposedAmount.toLocaleString(undefined, { maximumFractionDigits: 0 })} · by {r.createdBy.name}
                       </div>
@@ -890,6 +892,7 @@ export function InboxPage() {
                     <div className="text-slate-600">{r.businessJustification}</div>
                     <div className="text-xs text-slate-500">
                       If you proceed, this moves to: <span className="font-medium text-slate-700">{nav.nextStage ? StageLabel(nav.nextStage) : "Finalize & Upload"}</span>
+                      {(r.nextPendingReviewers ?? []).length > 0 && <span> — {r.nextPendingReviewers!.join(", ")}</span>}
                     </div>
                     <DecisionHistoryList decisions={r.reviewDecisions} />
                     <label className="block text-xs font-medium text-slate-600">Comment (required to return)</label>

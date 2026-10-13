@@ -13,6 +13,8 @@ import { HttpError } from "../httpError";
 import { assertSfSbu } from "../lib/groupScope";
 import { parseRevenueTemplate } from "../lib/revenueTemplate";
 import { fetchCcGlOptions } from "../lib/pyBackendClient";
+import { nextTicketNumber } from "../lib/budgetCode";
+import { getFiscalCycle } from "../lib/fiscalCycle";
 import { assertCycleOpen, cancelRevenueBatch, revenueBatchDecision, submitRevenueBatch } from "../services/workflowService";
 
 // Spec item 16 - Revenue's own per-CC-GL template upload. A separate router
@@ -112,7 +114,9 @@ async function createBatchRows(
   createdById: string,
   parsedRows: { costCenter: string; glAccount: string; monthlyAmounts: number[]; total: number }[]
 ) {
+  const { targetCalendarYear } = await getFiscalCycle();
   for (const row of parsedRows) {
+    const ticketNumber = await nextTicketNumber(targetCalendarYear);
     const lineItem = await prisma.expenseLineItem.create({
       data: {
         name: `Revenue - CC ${row.costCenter} / GL ${row.glAccount}`,
@@ -135,6 +139,7 @@ async function createBatchRows(
         businessJustification: `Revenue Budget Request - ${sbu} / ${companyName} - CC ${row.costCenter} / GL ${row.glAccount}`,
         requestCategory: "REVENUE",
         sbu,
+        ticketNumber,
         bulkUploadBatchId: batchId,
         createdById,
       },

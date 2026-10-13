@@ -7,12 +7,13 @@ import ExcelJS from "exceljs";
 import { Prisma, RequestCategory, RequestStage, RoleType, Sbu } from "@prisma/client";
 import { prisma } from "../prisma";
 import { asyncHandler } from "../asyncHandler";
-import { hasRole, requireAuth, requireRole } from "../middleware/auth";
+import { hasRole, requireAuth, requireRole, requireRoleOrAccess } from "../middleware/auth";
 import { assertNpcSbu } from "../lib/groupScope";
 import { HttpError } from "../httpError";
 import { getFiscalCycle } from "../lib/fiscalCycle";
-import { getFinalizedBudgetReport } from "../services/finalizedBudgetReportService";
-import { nextBudgetCode, sbuBudgetCodePrefix } from "../lib/budgetCode";
+import { getFinalizedBudgetLineDetails, getFinalizedBudgetReport } from "../services/finalizedBudgetReportService";
+import { buildSapUploadTemplate, SapTemplateError } from "../services/sapUploadTemplate";
+import { nextBudgetCode, nextTicketNumber, sbuBudgetCodePrefix } from "../lib/budgetCode";
 import { NPC_LOCATION_VALUES, NPC_SBU_VALUES, npcSbuBudgetCodePrefix } from "../lib/npcSbu";
 import { resolveBudgetRequestPendingReviewers } from "../lib/pendingReviewers";
 import {
@@ -25,8 +26,9 @@ import {
   returnAtStep5,
   submitRequest,
   userCanAct,
+  userCanCancel,
 } from "../services/workflowService";
-import { ACTIVE_STAGES, nextStageAfter, previousStageBefore } from "../services/approvalChain";
+import { ACTIVE_STAGES, chainFor, nextStageAfter, previousStageBefore } from "../services/approvalChain";
 
 export const budgetRequestsRouter = Router();
 
@@ -112,7 +114,8 @@ budgetRequestsRouter.post(
       if (!body.amount) throw new HttpError(400, "Enter an Amount.");
 
       const { targetCalendarYear } = await getFiscalCycle();
-      const budgetCode = await nextBudgetCode(npcSbuBudgetCodePrefix(body.npcSbu), targetCalendarYear);
+      const budgetCode = await nextBudgetCode(npcSbuBudgetCodePrefix(body.npcSbu, body.npcLocation), targetCalendarYear);
+      const ticketNumber = await nextTicketNumber(targetCalendarYear);
 
       const expenseLineItem = await prisma.expenseLineItem.create({
         data: {
@@ -145,6 +148,7 @@ budgetRequestsRouter.post(
           projectStartDate: body.projectStartDate,
           projectEndDate: body.projectEndDate,
           budgetCode,
+          ticketNumber,
           departmentHeadId: body.departmentHeadId,
           sbuHeadId: body.sbuHeadId,
           createdById: req.user!.id,
@@ -169,11 +173,13 @@ budgetRequestsRouter.post(
       throw new HttpError(400, "Select an SBU for this Direct Operating Expenses request.");
     }
 
+    const { targetCalendarYear } = await getFiscalCycle();
+    const ticketNumber = await nextTicketNumber(targetCalendarYear);
+
     // DOE gets a fresh "SBU-YY-Num" Budget Code at creation (GAE's is read
     // from expenseLineItem.budgetCode instead - see lib/budgetCode.ts).
     let budgetCode: string | undefined;
     if (requestCategory === RequestCategory.DOE) {
-      const { targetCalendarYear } = await getFiscalCycle();
       budgetCode = await nextBudgetCode(sbuBudgetCodePrefix(body.sbu!), targetCalendarYear);
     }
 
@@ -211,6 +217,7 @@ budgetRequestsRouter.post(
         requestCategory,
         sbu: requestCategory === RequestCategory.DOE ? body.sbu : undefined,
         budgetCode,
+        ticketNumber,
         departmentHeadId: body.departmentHeadId,
         centralizedHeadId: body.centralizedHeadId,
         createdById: req.user!.id,
@@ -335,10 +342,20 @@ budgetRequestsRouter.get(
       include: DETAIL_INCLUDE,
       orderBy: { updatedAt: "asc" },
     });
+    const acted = candidates.filter((r) => userCanAct(req.user!, r));
     res.json(
-      candidates
-        .filter((r) => userCanAct(req.user!, r))
-        .map((r) => ({ ...r, canAct: true, nextStage: nextStageAfter(r, r.currentStage), previousStage: previousStageBefore(r, r.currentStage) }))
+      await Promise.all(
+        acted.map(async (r) => {
+          const nextStage = nextStageAfter(r, r.currentStage);
+          return {
+            ...r,
+            canAct: true,
+            nextStage,
+            previousStage: previousStageBefore(r, r.currentStage),
+            nextPendingReviewers: nextStage ? await resolveBudgetRequestPendingReviewers(r, nextStage) : [],
+          };
+        })
+      )
     );
   })
 );
@@ -373,7 +390,14 @@ budgetRequestsRouter.get(
       include: DETAIL_INCLUDE,
       orderBy: { updatedAt: "asc" },
     });
-    res.json(requests);
+    // The "Return…" dropdown's own stages - this category's chain, minus the
+    // Budget Officer Review stage every one of these requests is already at.
+    res.json(
+      requests.map((r) => ({
+        ...r,
+        returnTargets: chainFor(r as unknown as Parameters<typeof chainFor>[0]).filter((s) => s !== RequestStage.BUDGET_OFFICER_REVIEW),
+      }))
+    );
   })
 );
 
@@ -415,33 +439,82 @@ const finalizedBudgetReportQuerySchema = z.object({
 
 budgetRequestsRouter.get(
   "/finalized-budget-report",
-  requireRole(RoleType.BUDGET_OFFICER),
+  requireRoleOrAccess([RoleType.BUDGET_OFFICER], "finalization"),
   asyncHandler(async (req, res) => {
     const filter = finalizedBudgetReportQuerySchema.parse(req.query);
     res.json(await getFinalizedBudgetReport(filter));
   })
 );
 
+// The individual requests behind one Finalized Budget Report row, opened
+// from its "# Requests" count. Same grouping key as the report above, but
+// every field required - this always names one exact row, not a filter.
+const finalizedBudgetLineDetailsQuerySchema = z.object({
+  fiscalYear: z.coerce.number().int(),
+  requestCategory: z.nativeEnum(RequestCategory),
+  sbu: z.nativeEnum(Sbu).optional(),
+  npcSbu: z.string().optional(),
+  glAccount: z.string(),
+  costCenter: z.string(),
+});
+
+budgetRequestsRouter.get(
+  "/finalized-budget-report/group-details",
+  requireRoleOrAccess([RoleType.BUDGET_OFFICER], "finalization"),
+  asyncHandler(async (req, res) => {
+    const filter = finalizedBudgetLineDetailsQuerySchema.parse(req.query);
+    res.json(await getFinalizedBudgetLineDetails({ ...filter, sbu: filter.sbu ?? null, npcSbu: filter.npcSbu ?? null }));
+  })
+);
+
+const sapTemplateQuerySchema = z.object({
+  fiscalYear: z.coerce.number().int(),
+  requestCategory: z.nativeEnum(RequestCategory),
+  sbu: z.nativeEnum(Sbu).optional(),
+});
+
+budgetRequestsRouter.get(
+  "/finalized-budget-report/sap-template",
+  requireRoleOrAccess([RoleType.BUDGET_OFFICER], "finalization"),
+  asyncHandler(async (req, res) => {
+    const query = sapTemplateQuerySchema.parse(req.query);
+    let built;
+    try {
+      built = await buildSapUploadTemplate(query);
+    } catch (err) {
+      if (err instanceof SapTemplateError) throw new HttpError(400, err.message);
+      throw err;
+    }
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Disposition", `attachment; filename="${built.filename}"`);
+    res.send(built.buffer);
+  })
+);
+
 budgetRequestsRouter.get(
   "/finalized-budget-report/export",
-  requireRole(RoleType.BUDGET_OFFICER),
+  requireRoleOrAccess([RoleType.BUDGET_OFFICER], "finalization"),
   asyncHandler(async (req, res) => {
     const filter = finalizedBudgetReportQuerySchema.parse(req.query);
     const report = await getFinalizedBudgetReport(filter);
 
     const workbook = new ExcelJS.Workbook();
     const sheet = workbook.addWorksheet(`Finalized Budget ${filter.fiscalYear}`);
-    sheet.addRow(["Category", "SBU", "NPC SBU", "Cost Center", "Cost Center Name", "GL Account", "GL Account Name", "Amount", "# Requests"]);
+    sheet.addRow(["Category", "SBU", "NPC SBU", "Ticket #", "Budget Code", "Cost Center", "Cost Center Name", "GL Account", "GL Account Name", "Request", "Budget Cut", "Approved", "# Requests"]);
     sheet.getRow(1).font = { bold: true };
     for (const line of report.lines) {
       sheet.addRow([
         line.requestCategory,
         line.sbu ?? "",
         line.npcSbu ?? "",
+        line.ticketNumbers.join(", "),
+        line.budgetCodes.join(", "),
         line.costCenter,
         line.costCenterName ?? "",
         line.glAccount,
         line.glAccountName ?? "",
+        line.requestedAmount,
+        line.budgetCutAmount,
         line.amount,
         line.lineCount,
       ]);
@@ -464,12 +537,28 @@ budgetRequestsRouter.get(
       where: { id: req.params.id },
       include: DETAIL_INCLUDE,
     });
+    // Who a RETURN decision sent the request to - targetStage null means the
+    // requestor (not: "not recorded"; RETURN rows logged before this field
+    // existed also read null, and show as "Requestor" even if they actually
+    // went to an earlier stage).
+    const reviewDecisions = await Promise.all(
+      request.reviewDecisions.map(async (d) => ({
+        ...d,
+        targetPendingReviewers:
+          d.decision !== "RETURN" ? undefined : d.targetStage === null ? [request.createdBy.name] : await resolveBudgetRequestPendingReviewers(request, d.targetStage),
+      }))
+    );
     res.json({
       ...request,
+      reviewDecisions,
       canAct: userCanAct(req.user!, request),
+      canCancel: userCanCancel(req.user!, request),
       pendingReviewers: await resolveBudgetRequestPendingReviewers(request),
       nextStage: nextStageAfter(request, request.currentStage),
       previousStage: previousStageBefore(request, request.currentStage),
+      nextPendingReviewers: nextStageAfter(request, request.currentStage)
+        ? await resolveBudgetRequestPendingReviewers(request, nextStageAfter(request, request.currentStage)!)
+        : [],
     });
   })
 );
@@ -546,6 +635,8 @@ budgetRequestsRouter.post(
           "SF_VALIDATION",
           "SF_HEAD_REVIEW",
           "SBU_HEAD_REVIEW",
+          "BUDGET_OFFICER_ROUTING",
+          "REQUESTOR",
         ]),
         reasonCodeId: z.string(),
       })

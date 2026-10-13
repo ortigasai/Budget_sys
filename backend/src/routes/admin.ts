@@ -4,7 +4,7 @@ import multer from "multer";
 import { BudgetCodePrefixKind, RequestCategory, RoleType, Sbu } from "@prisma/client";
 import { prisma } from "../prisma";
 import { asyncHandler } from "../asyncHandler";
-import { requireAuth, requireRole } from "../middleware/auth";
+import { requireAuth, requireRole, requireRoleOrAccess } from "../middleware/auth";
 import { HttpError } from "../httpError";
 import { overrideExpenseLineItemsFromUpload } from "../services/expenseLineItemService";
 import { parseForecastTemplate, syncHistoricalActualsFromSap } from "../services/historicalActualsService";
@@ -456,7 +456,8 @@ adminRouter.get(
     const requesterDepartment = requesterDepartmentId
       ? await prisma.department.findUnique({ where: { id: requesterDepartmentId } })
       : null;
-    const applyVisibilityFilter = !!requesterDepartmentId && requesterDepartment?.name !== "Budget";
+    // Budget and Budget, Controls & Analysis (BCA) see every expense item.
+    const applyVisibilityFilter = !!requesterDepartmentId && requesterDepartment?.name !== "Budget" && requesterDepartment?.name !== "Budget, Controls & Analysis";
     const items = await prisma.expenseLineItem.findMany({
       where: {
         status: status as any,
@@ -796,7 +797,51 @@ adminRouter.get(
       where: { fiscalYear },
       orderBy: { setAt: "desc" },
     });
-    res.json({ history });
+    // setBy holds the saver's user id; add their name for the History view.
+    const saverIds = [...new Set(history.map((h) => h.setBy))];
+    const savers = saverIds.length ? await prisma.user.findMany({ where: { id: { in: saverIds } }, select: { id: true, name: true } }) : [];
+    const nameById = new Map(savers.map((u) => [u.id, u.name]));
+    res.json({ history: history.map((h) => ({ ...h, setByName: nameById.get(h.setBy) ?? null })) });
+  })
+);
+
+// Saves the Board-Approved grid (see BoardApprovedGrid.tsx): one history row per cell
+// whose amount changed. GAE is a single Corporate figure, stored without an SBU.
+adminRouter.post(
+  "/board-approved-budget/bulk",
+  requireRole(RoleType.BUDGET_OFFICER),
+  asyncHandler(async (req, res) => {
+    const { fiscalYear, cells } = z
+      .object({
+        fiscalYear: z.number().int(),
+        cells: z
+          .array(
+            z.object({
+              requestCategory: z.nativeEnum(RequestCategory),
+              sbu: z.nativeEnum(Sbu).nullable().optional(),
+              amount: z.number().min(0),
+            })
+          )
+          .min(1),
+      })
+      .parse(req.body);
+    const saved = await prisma.$transaction(async (tx) => {
+      let count = 0;
+      for (const cell of cells) {
+        const sbu = cell.requestCategory === RequestCategory.GAE ? null : cell.sbu ?? null;
+        const latest = await tx.boardApprovedBudget.findFirst({
+          where: { fiscalYear, requestCategory: cell.requestCategory, sbu },
+          orderBy: { setAt: "desc" },
+        });
+        if (latest && latest.amount === cell.amount) continue;
+        await tx.boardApprovedBudget.create({
+          data: { fiscalYear, requestCategory: cell.requestCategory, sbu: sbu ?? undefined, amount: cell.amount, setBy: req.user!.id },
+        });
+        count++;
+      }
+      return count;
+    });
+    res.status(201).json({ saved });
   })
 );
 

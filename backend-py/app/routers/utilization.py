@@ -34,7 +34,7 @@ router = APIRouter(prefix="/utilization", tags=["utilization"])
 # CENTRALIZED-typed Department row (most of those are employee-roster
 # bookkeeping noise). Keep in sync with the TS source if it changes.
 CORE_CENTRALIZED_DEPARTMENT_NAMES = [
-    "Admin Services",
+    "Administrative Services",
     "Corporate Finance",
     "External Affairs",
     "Human Resources",
@@ -246,7 +246,7 @@ def _scope_from_id(user: AuthedUser, scope_id: str, session: Session):
 # The User Management workbook's CD scope names -> the core department list's
 # names (same map as backend/src/lib/forecastDepartments.ts).
 CD_SCOPE_TO_CORE_DEPARTMENT = {
-    "Administrative Services": "Admin Services",
+    "Administrative Services": "Administrative Services",
     "Corporate Finance": "Corporate Finance",
     "Tax": "Tax",
     "Legal": "Legal",
@@ -443,7 +443,6 @@ def sync_sap_status_route(fiscalYear: int, user: AuthedUser = Depends(_require_u
 # Department names as the CC-GL workbook spells them -> the core department
 # list's names.
 CC_DEPARTMENT_ALIASES = {
-    "Administrative Services": "Admin Services",
     "Legal Department": "Legal",
     "Information System & Information Technology": "IS & IT",
 }

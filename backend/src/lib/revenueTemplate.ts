@@ -43,6 +43,40 @@ function cellText(cell: ExcelJS.Cell): string {
   return String(v).trim();
 }
 
+function findSapHeaderRow(sheet: ExcelJS.Worksheet): number {
+  for (let r = 1; r <= 12; r++) {
+    const row = sheet.getRow(r);
+    const a = cellText(row.getCell(CC_COL)).toUpperCase();
+    const b = cellText(row.getCell(GL_COL)).toUpperCase();
+    if ((a === "COST CENTER" || a === "PROFIT CENTER") && (b === "COST ELEMENT" || b === "ACCOUNT NUMBER")) return r;
+  }
+  return 0;
+}
+
+function parseSapLayout(sheet: ExcelJS.Worksheet, headerRow: number): ParsedRevenueTemplate {
+  const rows: RevenueTemplateRow[] = [];
+  let grandTotal = 0;
+  const lastRow = Math.min(sheet.actualRowCount || headerRow + 1, headerRow + 1 + MAX_DATA_ROWS);
+  for (let r = headerRow + 1; r <= lastRow; r++) {
+    const row = sheet.getRow(r);
+    const costCenter = cellText(row.getCell(CC_COL));
+    const glAccount = cellText(row.getCell(GL_COL));
+    if (!costCenter && !glAccount) continue;
+    if (!costCenter || !glAccount) throw new HttpError(400, `Row ${r}: both Cost Center and Cost Element are required.`);
+    const monthlyAmounts: number[] = [];
+    let rowTotal = 0;
+    for (let c = FIRST_MONTH_COL; c <= LAST_MONTH_COL; c++) {
+      const amount = cellNumber(row.getCell(c));
+      monthlyAmounts.push(amount);
+      rowTotal += amount;
+    }
+    rows.push({ costCenter, glAccount, monthlyAmounts, total: rowTotal });
+    grandTotal += rowTotal;
+  }
+  if (rows.length === 0) throw new HttpError(400, "No data rows found - fill in at least one Cost Center / Cost Element row before uploading.");
+  return { rows, grandTotal: Math.round(grandTotal * 100) / 100 };
+}
+
 export async function parseRevenueTemplate(buffer: Buffer): Promise<ParsedRevenueTemplate> {
   const workbook = new ExcelJS.Workbook();
   try {
@@ -56,6 +90,12 @@ export async function parseRevenueTemplate(buffer: Buffer): Promise<ParsedRevenu
   // is actually worksheets[1] once that Reference sheet exists.
   const sheet = workbook.worksheets.find((w) => w.state !== "veryHidden");
   if (!sheet) throw new HttpError(400, "No usable worksheet found in the uploaded file.");
+
+  // SAP upload layout (the blank/generated SAP OPEX or Revenue template): a header row
+  // with Cost Center/Profit Center in column A and Cost Element/Account Number in B,
+  // then Jan-Dec in C:N. Read it the same way as the budget-request layout below.
+  const sapHeaderRow = findSapHeaderRow(sheet);
+  if (sapHeaderRow) return parseSapLayout(sheet, sapHeaderRow);
 
   const headerRow = sheet.getRow(HEADER_ROW);
   const ccHeader = cellText(headerRow.getCell(CC_COL)).toUpperCase();

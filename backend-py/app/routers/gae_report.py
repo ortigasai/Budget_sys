@@ -18,11 +18,12 @@ from collections import defaultdict
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
+from sqlalchemy import text
 from sqlmodel import Session, select
 
 from ..auth import AuthedUser, get_current_user
 from ..db import get_session
-from ..models_phase1 import HistoricalActuals
+from ..models_phase1 import FiscalCycleConfig, HistoricalActuals
 from ..models_phase4 import ReportAccessGrant
 from ..models_sap_raw import GaeCcGlMapping, SapFbl3nRaw, SapGaePastActualRaw, SapKssbV2Raw
 
@@ -67,6 +68,9 @@ class SeriesOut(BaseModel):
     actual: list[float]
     forecast: list[float]
     ly: list[float]
+    # Last year's budget/plan (SAP KSSB V2 for fiscalYear - 1) - distinct from
+    # `ly`, which is last year's actual.
+    lyBudget: list[float]
 
 
 class ReportRowOut(BaseModel):
@@ -96,7 +100,7 @@ def _zeros() -> list[float]:
 
 
 def _empty() -> dict[str, list[float]]:
-    return {"budget": _zeros(), "actual": _zeros(), "forecast": _zeros(), "ly": _zeros()}
+    return {"budget": _zeros(), "actual": _zeros(), "forecast": _zeros(), "ly": _zeros(), "lyBudget": _zeros()}
 
 
 def _add(dst: list[float], src: list[float]) -> None:
@@ -113,7 +117,46 @@ def _sum_aggs(*aggs: dict[str, list[float]]) -> dict[str, list[float]]:
 
 
 def _series(agg: dict[str, list[float]]) -> SeriesOut:
-    return SeriesOut(budget=agg["budget"], actual=agg["actual"], forecast=agg["forecast"], ly=agg["ly"])
+    return SeriesOut(budget=agg["budget"], actual=agg["actual"], forecast=agg["forecast"], ly=agg["ly"], lyBudget=agg["lyBudget"])
+
+
+def _finalized_budget(session: Session, fiscal_year: int) -> dict[tuple[str, str], list[float]]:
+    """Approved budget per (cost center, GL) from the Finalize & Upload snapshot.
+
+    Each finalized line's monthly amounts come from its GAE request (the months
+    the requestor entered). The finalized amount is proposed minus the budget cut,
+    so the monthly amounts are scaled by finalized / proposed to apply the cut.
+    """
+    rows = session.execute(
+        text(
+            """
+            select f."costCenter", f."glAccount", f.amount, r."proposedAmount", r."monthlyAmounts"
+            from "FinalizedBudgetLine" f
+            join "BudgetRequest" r on r.id = f."budgetRequestId"
+            where f."fiscalYear" = :fy
+            """
+        ),
+        {"fy": fiscal_year},
+    ).all()
+    out: dict[tuple[str, str], list[float]] = defaultdict(_zeros)
+    for cost_center, gl_account, amount, proposed, monthly in rows:
+        months = monthly if isinstance(monthly, list) else []
+        factor = (amount / proposed) if proposed else 0.0
+        for i in range(12):
+            value = float(months[i]) if i < len(months) and months[i] is not None else 0.0
+            out[(str(cost_center), str(gl_account))][i] += value * factor
+    return out
+
+
+def _current_forecast_year(session: Session) -> int:
+    """forecastYear (targetCalendarYear - 1) - the real current calendar
+    year, same rule the frontend applies (see fiscalCycle.ts). Falls back to
+    the same default Node uses when the FiscalCycleConfig row hasn't been
+    created yet.
+    """
+    config = session.get(FiscalCycleConfig, "singleton")
+    target_year = config.targetCalendarYear if config else 2027
+    return target_year - 1
 
 
 def _load(session: Session, fiscal_year: int):
@@ -123,6 +166,10 @@ def _load(session: Session, fiscal_year: int):
         key = (r.cost_center, r.gl_account)
         if key in pairs and 1 <= r.month <= 12:
             budget[key][r.month - 1] += r.plan
+    # The approved (finalized) budget per CC-GL replaces SAP's plan for that CC-GL;
+    # CC-GLs with no finalized budget keep the SAP plan.
+    for key, series in _finalized_budget(session, fiscal_year).items():
+        budget[key] = series
     actual: dict[tuple[str, str], list[float]] = defaultdict(_zeros)
     for r in session.exec(select(SapFbl3nRaw).where(SapFbl3nRaw.fiscal_year == fiscal_year)).all():
         key = (r.cost_center, r.gl_account)
@@ -142,11 +189,33 @@ def _load(session: Session, fiscal_year: int):
             if 1 <= mi <= 12:
                 remaining[key][mi - 1] += float(v or 0)
     ly: dict[tuple[str, str], list[float]] = defaultdict(_zeros)
-    for r in session.exec(select(SapGaePastActualRaw).where(SapGaePastActualRaw.fiscal_year == fiscal_year - 1)).all():
+    ly_year = fiscal_year - 1
+    # sap_gae_past_actual_raw is a one-time import that only covers years
+    # before the real current year (see its own docstring) - when the
+    # requested fiscalYear is a budget-prep year ahead of the real current
+    # year (e.g. 2027, with the real current year at 2026), "last year" IS
+    # the real current year, whose actuals live in the continuously-synced
+    # sap_fbl3n_raw instead.
+    if ly_year == _current_forecast_year(session):
+        for r in session.exec(select(SapFbl3nRaw).where(SapFbl3nRaw.fiscal_year == ly_year)).all():
+            key = (r.cost_center, r.gl_account)
+            if key in pairs and 1 <= r.month <= 12:
+                ly[key][r.month - 1] += r.amount
+    else:
+        for r in session.exec(select(SapGaePastActualRaw).where(SapGaePastActualRaw.fiscal_year == ly_year)).all():
+            key = (r.cost_center, r.gl_account)
+            if key in pairs and 1 <= r.month <= 12:
+                ly[key][r.month - 1] += r.amount
+    # Last year's budget/plan - same source (sap_kssb_v2_raw) as the current
+    # year's `budget` above, just for fiscal_year - 1. No "finalized budget"
+    # override here (that override only applies to the year currently being
+    # finalized, not a prior, already-closed year).
+    ly_budget: dict[tuple[str, str], list[float]] = defaultdict(_zeros)
+    for r in session.exec(select(SapKssbV2Raw).where(SapKssbV2Raw.fiscal_year == ly_year)).all():
         key = (r.cost_center, r.gl_account)
         if key in pairs and 1 <= r.month <= 12:
-            ly[key][r.month - 1] += r.amount
-    return pairs, budget, actual, remaining, ly
+            ly_budget[key][r.month - 1] += r.plan
+    return pairs, budget, actual, remaining, ly, ly_budget
 
 
 @router.get("/gae-report", response_model=GaeReportOut)
@@ -158,7 +227,7 @@ def gae_report(
     if not _can_view(user, session):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "You don't have access to reports.")
 
-    pairs, budget, actual, remaining, ly = _load(session, fiscalYear)
+    pairs, budget, actual, remaining, ly, ly_budget = _load(session, fiscalYear)
     as_of = max((i + 1 for key in actual for i, v in enumerate(actual[key]) if v), default=0)
 
     def forecast_for(key: tuple[str, str]) -> list[float]:
@@ -170,7 +239,7 @@ def gae_report(
     for key, m in pairs.items():
         t = _norm(m.type)
         sub = _norm(m.sub_type)
-        series = {"budget": budget[key], "actual": actual[key], "forecast": forecast_for(key), "ly": ly[key]}
+        series = {"budget": budget[key], "actual": actual[key], "forecast": forecast_for(key), "ly": ly[key], "lyBudget": ly_budget[key]}
         for name, values in series.items():
             _add(by_type[t][name], values)
             _add(by_sub[(t, sub)][name], values)

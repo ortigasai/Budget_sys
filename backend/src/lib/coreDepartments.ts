@@ -9,7 +9,7 @@
 // employeeImport.ts). Those exist for employee/role bookkeeping; they
 // aren't all budget-cap-tracked business units.
 export const CORE_CENTRALIZED_DEPARTMENT_NAMES = [
-  "Admin Services",
+  "Administrative Services",
   "Budget, Controls & Analysis",
   "Corporate Finance",
   "Corporate Marketing",

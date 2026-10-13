@@ -346,8 +346,10 @@ async function main() {
   const NPC_HEAD_CODES: [string, string][] = [
     ["Malls GH", "JLC"],
     ["Malls NonGH", "RFT"],
-    ["Estates", "BCB"],
+    ["Estates", "RGM"],
+    ["Residential", "JJB"],
     ["Offices", "WPD"],
+    ["Leisure", "LEI"],
     ["Corporate IT", "RBQ"],
     ["Corporate HR", "MGM"],
     ["Corporate Admin", "LPA"],

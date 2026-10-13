@@ -12,7 +12,11 @@ import { api2 } from "../api/client";
 // the disabled "Coming soon" tile pattern, just a different reason.
 export function PhaseMenuPage() {
   const { currentUser, hasRole, gate } = useAuth();
-  const isBudgetOfficer = gate("admin", hasRole("BUDGET_OFFICER"));
+  // Budget-Officer-role-only, not gate("admin", ...) - BCA members get
+  // access.admin = true like every other module (see accessControl.ts), but
+  // the /admin route itself (App.tsx) has no matching access bypass, so
+  // showing this tile to them would just be a dead-end link.
+  const isBudgetOfficer = hasRole("BUDGET_OFFICER");
   const { data: reportAccess } = useQuery({
     queryKey: ["reports", "my-access"],
     queryFn: async () => (await api2.get<{ hasAccess: boolean }>("/reports/my-access")).data,
@@ -30,11 +34,16 @@ export function PhaseMenuPage() {
           const phase = basePhase.number === 2 && currentUser?.access && !currentUser.access["util.overview"] && !currentUser.access["util.reconciliation"] && !currentUser.access["util.npc"] && currentUser.access["util.dashflow"] ? { ...basePhase, to: "/dash-flow" } : basePhase;
           const restricted = phase.number === 4 && !hasReportAccess;
           return phase.to && !restricted ? (
-            <Link key={phase.number} to={phase.to} className="group flex flex-col rounded-xl border border-slate-200 bg-white p-5 shadow-sm transition-colors hover:border-emerald-300 hover:shadow-md">
-              <div className="mb-3 flex h-9 w-9 items-center justify-center rounded-lg bg-emerald-700 text-sm font-bold text-white">{phase.number}</div>
-              <div title={phase.description} className="text-base font-semibold text-slate-900 group-hover:text-emerald-800">
-                {phase.title}
+            <Link
+              key={phase.number}
+              to={phase.to}
+              className="group flex flex-col gap-3 rounded-xl border border-emerald-900/40 bg-gradient-to-br from-[#15603a] to-[#052e1a] p-5 shadow-sm transition-colors hover:border-emerald-300/60"
+            >
+              <div className="flex items-center gap-3">
+                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-white/10 text-sm font-bold text-white">{phase.number}</div>
+                <div className="text-base font-semibold text-white">{phase.title}</div>
               </div>
+              <p className="text-sm text-emerald-100/80">{phase.description}</p>
             </Link>
           ) : (
             <div key={phase.number} className="flex flex-col rounded-xl border border-slate-200 bg-slate-50 p-5 opacity-60">

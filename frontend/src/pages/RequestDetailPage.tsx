@@ -51,9 +51,11 @@ export function RequestDetailPage() {
   const cancelMutation = useMutation({
     mutationFn: async () => (await api.post<BudgetRequest>(`/budget-requests/${id}/cancel`)).data,
     onSuccess: () => {
+      setSubmitError(null);
       queryClient.invalidateQueries({ queryKey: ["budget-request", id] });
       queryClient.invalidateQueries({ queryKey: ["my-requests"] });
     },
+    onError: (err: any) => setSubmitError(err.response?.data?.error ?? "Could not cancel request."),
   });
 
   const submitMutation = useMutation({
@@ -112,7 +114,7 @@ export function RequestDetailPage() {
 
   if (isLoading || !request) return <div className="text-sm text-slate-400">Loading…</div>;
 
-  const canCancel = !TERMINAL_STAGES.has(request.currentStage) && (request.createdById === currentUser?.id || request.canAct);
+  const canCancel = !TERMINAL_STAGES.has(request.currentStage) && !!request.canCancel;
   const canSubmit = request.createdById === currentUser?.id && request.currentStage === "DRAFT";
   // NPC's own creation form (NpcRequestTab.tsx) never collects a 12-month
   // grid or free-text Business Justification - amount is a single flat
@@ -140,7 +142,10 @@ export function RequestDetailPage() {
       </button>
 
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-lg font-bold tracking-tight text-slate-800">{line.name}</h1>
+        <div>
+          <h1 className="text-lg font-bold tracking-tight text-slate-800">{line.name}</h1>
+          {request.ticketNumber && <div className="text-xs font-medium text-slate-500">Ticket #{request.ticketNumber}</div>}
+        </div>
         <div className="flex items-center gap-2">
           <StatusBadge stage={request.currentStage} />
           {canSubmit && (
@@ -158,12 +163,11 @@ export function RequestDetailPage() {
 
       {canSubmit &&
         (request.requestCategory === "GAE" || request.requestCategory === "NPC") &&
-        ((ownDeptInitiated && !request.centralizedHeadId) || (!ownDeptInitiated && !request.departmentHeadId) || (request.requestCategory === "NPC" && !request.sbuHeadId)) && (
+        ((ownDeptInitiated && !request.centralizedHeadId) || (!ownDeptInitiated && !request.departmentHeadId)) && (
           <div className="grid grid-cols-1 gap-4 rounded-lg border border-slate-200 bg-white p-4 shadow-sm sm:grid-cols-2">
             {ownDeptInitiated
               ? !request.centralizedHeadId && <ApproverPicker label="Centralized Department Head" value={pickCentralizedHead} onChange={setPickCentralizedHead} />
               : !request.departmentHeadId && <ApproverPicker label="Department Head / Approver" value={pickDeptHead} onChange={setPickDeptHead} />}
-            {request.requestCategory === "NPC" && !request.sbuHeadId && <ApproverPicker label="SBU or Division Head" value={pickSbuHead} onChange={setPickSbuHead} />}
           </div>
         )}
       {submitError && <div className="rounded bg-red-50 p-3 text-sm text-red-700">{submitError}</div>}
@@ -177,8 +181,8 @@ export function RequestDetailPage() {
         <Field label="Proposed Amount" value={`${request.proposedAmount.toLocaleString()}`} accent />
         {request.requestCategory === "NPC" && request.npcSbu && <Field label="SBU" value={request.npcSbu} />}
         {request.requestCategory === "NPC" && request.npcLocation && <Field label="Location" value={request.npcLocation} />}
-        {request.requestCategory === "NPC" && request.projectStartDate && <Field label="Project Start" value={new Date(request.projectStartDate).toLocaleDateString()} />}
-        {request.requestCategory === "NPC" && request.projectEndDate && <Field label="Project End" value={new Date(request.projectEndDate).toLocaleDateString()} />}
+        {request.requestCategory === "NPC" && request.projectStartDate && <Field label="Project Start" value={new Date(request.projectStartDate).toLocaleDateString(undefined, { month: "long", year: "numeric" })} />}
+        {request.requestCategory === "NPC" && request.projectEndDate && <Field label="Project End" value={new Date(request.projectEndDate).toLocaleDateString(undefined, { month: "long", year: "numeric" })} />}
         {request.budgetCutAmount > 0 && <Field label="Budget Cut" value={`${request.budgetCutAmount.toLocaleString()}`} />}
         {request.isOverBudget && <Field label="Flag" value="Over-budget / Requires Realignment" />}
         {request.sapDocumentNumber && <Field label="SAP Document #" value={request.sapDocumentNumber} />}
@@ -270,6 +274,7 @@ export function RequestDetailPage() {
             <div className="text-xs text-slate-500">
               If you proceed, this moves to:{" "}
               <span className="font-medium text-slate-700">{request.nextStage ? (STAGE_LABELS[request.nextStage] ?? request.nextStage) : "Finalize & Upload"}</span>
+              {(request.nextPendingReviewers ?? []).length > 0 && <span> — {request.nextPendingReviewers!.join(", ")}</span>}
             </div>
             <label className="block text-xs font-medium text-slate-600">Comment (required to return)</label>
             <textarea className="w-full rounded border border-slate-300 px-2 py-1.5 text-sm" rows={2} value={decisionComment} onChange={(e) => setDecisionComment(e.target.value)} />
@@ -327,9 +332,23 @@ export function RequestDetailPage() {
             {request.reviewDecisions.map((d) => (
               <li key={d.id} className="border-l-2 border-emerald-200 pl-3">
                 <div className="font-medium">
-                  {d.decision} at {STAGE_LABELS[d.stage] ?? d.stage} — {d.decidedBy.name}
+                  {d.decision === "APPROVE" ? (
+                    <>
+                      {STAGE_LABELS[d.stage] ?? d.stage} — {d.decidedBy.name}
+                    </>
+                  ) : (
+                    <>
+                      {d.decision} at {STAGE_LABELS[d.stage] ?? d.stage} — {d.decidedBy.name}
+                    </>
+                  )}
                 </div>
                 <div className="text-xs text-slate-500">{new Date(d.timestamp).toLocaleString()}</div>
+                {d.decision === "RETURN" && d.targetPendingReviewers !== undefined && (
+                  <div className="text-slate-600">
+                    Returned to {d.targetStage ? (STAGE_LABELS[d.targetStage] ?? d.targetStage) : "the requestor"}
+                    {d.targetPendingReviewers.length > 0 && <> — {d.targetPendingReviewers.join(", ")}</>}
+                  </div>
+                )}
                 {d.comment && <div className="text-slate-600">{d.comment}</div>}
               </li>
             ))}

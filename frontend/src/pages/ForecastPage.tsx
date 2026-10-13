@@ -771,7 +771,7 @@ export function ForecastPage() {
 
   return (
     <div className="space-y-4">
-      <div className="sticky top-0 z-30 -mb-4 space-y-2 bg-[#f5faf7] pb-1 pt-1">
+      <div className="sticky top-0 z-30 -mb-4 space-y-2 bg-slate-50 pb-1 pt-1">
         {is2026RestrictedToBudgetOfficer && (
           <div className="text-sm text-slate-500">{forecastYear} Remaining Months Forecast is entered by the Budget Officer only, via Upload Completed Template — the normal per-department process resumes for the next cycle.</div>
         )}

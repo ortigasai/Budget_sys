@@ -54,10 +54,12 @@ async function logDecision(
   stage: RequestStage,
   decision: ReviewDecisionType,
   decidedById: string,
-  comment?: string | null
+  comment?: string | null,
+  // Where a RETURN sent the request - null means back to the requestor (DRAFT). Ignored otherwise.
+  targetStage?: RequestStage | null
 ) {
   await prisma.reviewDecision.create({
-    data: { budgetRequestId, stage, decision, decidedById, comment: comment ?? null },
+    data: { budgetRequestId, stage, decision, decidedById, comment: comment ?? null, targetStage: decision === "RETURN" ? (targetStage ?? null) : null },
   });
 }
 
@@ -165,6 +167,21 @@ export async function submitRequest(requestId: string) {
   });
 }
 
+// submitRequest above throws these when the request is missing a reviewer
+// that's only ever picked on the request's own screen (Department Head /
+// Approver, SBU or Division Head, Centralized Department Head) - a bulk
+// upload or batch Submit has no column/step for that, so callers that
+// auto-submit many rows at once (bulkUpload.ts, doeBatches.ts's batch
+// Submit) use this to tell "needs a person picked on-screen, leave as
+// DRAFT" apart from a genuine failure, same treatment the attachment-
+// threshold case already got before this existed.
+export function isPostUploadReviewerError(err: unknown): boolean {
+  return (
+    err instanceof HttpError &&
+    /attachments|Department Head \/ Approver|SBU or Division Head|Centralized Department Head/.test(err.message)
+  );
+}
+
 
 
 
@@ -173,6 +190,7 @@ const DUE_DATE_BY_STAGE: Partial<Record<RequestStage, DueDateStage>> = {
   [RequestStage.CENTRALIZED_L1_REVIEW]: DueDateStage.CENTRALIZED_L1_REVIEW,
   [RequestStage.CENTRALIZED_HEAD_REVIEW]: DueDateStage.CENTRALIZED_HEAD_REVIEW,
   [RequestStage.BUDGET_OFFICER_VALIDATION]: DueDateStage.BCA_AND_FINALIZATION,
+  [RequestStage.BUDGET_OFFICER_ROUTING]: DueDateStage.BCA_AND_FINALIZATION,
   [RequestStage.BCA_HEAD_REVIEW]: DueDateStage.BCA_AND_FINALIZATION,
   [RequestStage.BUDGET_OFFICER_REVIEW]: DueDateStage.BCA_AND_FINALIZATION,
 };
@@ -184,6 +202,12 @@ async function loadForChain(requestId: string) {
 /** Whether `user` may act on the request's current stage - drives the Inbox and the decision buttons. */
 export function userCanAct(user: AuthedUser, request: ChainRequest & { currentStage: RequestStage }) {
   return canActOnStage(user, request, request.currentStage);
+}
+
+/** Whether `user` may cancel an open request: the requestor at any stage, or whoever the current stage is assigned to. */
+export function userCanCancel(user: AuthedUser, request: ChainRequest & { currentStage: RequestStage; createdById: string }) {
+  if (request.currentStage === RequestStage.APPROVED || request.currentStage === RequestStage.CANCELLED || request.currentStage === RequestStage.REJECTED) return false;
+  return request.createdById === user.id || canActOnStage(user, request, request.currentStage);
 }
 
 function assertCanAct(user: AuthedUser, request: ChainRequest & { currentStage: RequestStage }) {
@@ -219,8 +243,8 @@ export async function decideRequest(
 
   if (decision !== "APPROVE") {
     if (!comment?.trim()) throw new HttpError(400, "A reason is required to return this request.");
-    await logDecision(requestId, stage, "RETURN", user.id, comment);
     const target = decision === "RETURN_REQUESTOR" ? null : previousStageBefore(request, stage);
+    await logDecision(requestId, stage, "RETURN", user.id, comment, target);
     return prisma.budgetRequest.update({ where: { id: requestId }, data: moveTo(request, target) });
   }
 
@@ -274,9 +298,7 @@ export async function cancelRequest(requestId: string, user: AuthedUser, comment
   if (request.currentStage === RequestStage.APPROVED || request.currentStage === RequestStage.CANCELLED || request.currentStage === RequestStage.REJECTED) {
     throw new HttpError(409, "This request is already closed.");
   }
-  const isRequestorWhileTheirs =
-    request.createdById === user.id && (request.currentStage === RequestStage.DRAFT || request.currentStage === chainFor(request)[0]);
-  if (!isRequestorWhileTheirs && !canActOnStage(user, request, request.currentStage)) {
+  if (!userCanCancel(user, request)) {
     throw new HttpError(403, "You can only cancel your own request before it has been acted on, or a request assigned to you.");
   }
   if (request.currentStage !== RequestStage.DRAFT) {
@@ -329,25 +351,45 @@ export async function applyBudgetCut(requestId: string, userId: string, cutAmoun
 export async function returnAtStep5(
   requestId: string,
   userId: string,
-  targetStage: Extract<
-    RequestStage,
-    | "DEPT_HEAD_REVIEW"
-    | "CENTRALIZED_L1_REVIEW"
-    | "CENTRALIZED_HEAD_REVIEW"
-    | "BCA_HEAD_REVIEW"
-    | "BUDGET_OFFICER_VALIDATION"
-    | "SF_VALIDATION"
-    | "SF_HEAD_REVIEW"
-    | "SBU_HEAD_REVIEW"
-  >,
+  targetStage:
+    | Extract<
+        RequestStage,
+        | "DEPT_HEAD_REVIEW"
+        | "CENTRALIZED_L1_REVIEW"
+        | "CENTRALIZED_HEAD_REVIEW"
+        | "BCA_HEAD_REVIEW"
+        | "BUDGET_OFFICER_VALIDATION"
+        | "SF_VALIDATION"
+        | "SF_HEAD_REVIEW"
+        | "SBU_HEAD_REVIEW"
+        | "BUDGET_OFFICER_ROUTING"
+      >
+    // Not a chain stage - back to DRAFT, same as the Inbox's own "Return to requestor" (decideRequest's RETURN_REQUESTOR).
+    | "REQUESTOR",
   reasonCodeId: string
 ) {
   const request = await prisma.budgetRequest.findUniqueOrThrow({ where: { id: requestId } });
   requireStage(request.currentStage, RequestStage.BUDGET_OFFICER_REVIEW);
   await assertDueDateNotPassed(DueDateStage.BCA_AND_FINALIZATION);
 
+  if (targetStage !== "REQUESTOR") {
+    // Only a stage this request's own chain actually uses (e.g. an NPC request
+    // can't be returned to Centralized Department Head, which isn't in its chain).
+    const chain = chainFor({ ...request, requiresCfoApproval: request.requiresCfoApproval } as any);
+    if (!chain.includes(targetStage)) {
+      throw new HttpError(400, "That stage isn't part of this request's approval chain.");
+    }
+  }
+
   const reason = await prisma.reasonCode.findUniqueOrThrow({ where: { id: reasonCodeId } });
-  await logDecision(requestId, request.currentStage, "RETURN", userId, reason.label);
+  await logDecision(requestId, request.currentStage, "RETURN", userId, reason.label, targetStage === "REQUESTOR" ? null : targetStage);
+
+  if (targetStage === "REQUESTOR") {
+    return prisma.budgetRequest.update({
+      where: { id: requestId },
+      data: { currentStage: RequestStage.DRAFT, status: "RETURNED", assigneeId: null, reasonCode: reason.label },
+    });
+  }
 
   return prisma.budgetRequest.update({
     where: { id: requestId },
@@ -380,15 +422,19 @@ export async function finalizeAtStep5(requestId: string, userId: string) {
   if (!glAccount || !costCenter) {
     throw new HttpError(500, "Request is missing its GL Account/Cost Center - cannot finalize.");
   }
-  const result = await uploadCostCenterPlanning([
-    {
-      budgetRequestId: request.id,
-      glAccount,
-      costCenter,
-      fiscalYear: request.fiscalYear,
-      monthlyAmounts: request.monthlyAmounts as number[],
-    },
-  ]);
+  // NPC doesn't post to SAP at Finalize & Upload - no SAP Document # for it.
+  const result =
+    request.requestCategory === "NPC"
+      ? null
+      : await uploadCostCenterPlanning([
+          {
+            budgetRequestId: request.id,
+            glAccount,
+            costCenter,
+            fiscalYear: request.fiscalYear,
+            monthlyAmounts: request.monthlyAmounts as number[],
+          },
+        ]);
 
   return prisma.$transaction(async (tx) => {
     await tx.reviewDecision.create({
@@ -396,7 +442,7 @@ export async function finalizeAtStep5(requestId: string, userId: string) {
     });
     const updated = await tx.budgetRequest.update({
       where: { id: requestId },
-      data: { currentStage: RequestStage.APPROVED, status: "APPROVED", sapDocumentNumber: result.documentNumber },
+      data: { currentStage: RequestStage.APPROVED, status: "APPROVED", sapDocumentNumber: result?.documentNumber ?? null },
     });
     await tx.finalizedBudgetLine.create({
       data: {
@@ -408,7 +454,7 @@ export async function finalizeAtStep5(requestId: string, userId: string) {
         glAccount,
         costCenter,
         amount,
-        sapDocumentNumber: result.documentNumber,
+        sapDocumentNumber: result?.documentNumber ?? null,
         finalizedById: userId,
       },
     });

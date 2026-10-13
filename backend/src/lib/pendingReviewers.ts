@@ -16,6 +16,7 @@ const BUDGET_STAGE_ROLE: Partial<Record<RequestStage, RoleType>> = {
   [RequestStage.CENTRALIZED_HEAD_REVIEW]: RoleType.CENTRALIZED_DEPARTMENT_HEAD,
   [RequestStage.BCA_HEAD_REVIEW]: RoleType.BCA_HEAD,
   [RequestStage.BUDGET_OFFICER_VALIDATION]: RoleType.BUDGET_OFFICER,
+  [RequestStage.BUDGET_OFFICER_ROUTING]: RoleType.BUDGET_OFFICER,
   [RequestStage.BUDGET_OFFICER_REVIEW]: RoleType.BUDGET_OFFICER,
 };
 const DEPARTMENT_SCOPED_ROLES = new Set<RoleType>([RoleType.DEPARTMENT_HEAD]);
@@ -45,25 +46,33 @@ async function reviewerNamesForRole(roleType: RoleType, departmentId: string | n
 // terminal stages). An explicit assignment (the Department Head / SBU Head
 // dropdown pick, or a reassignment) names one person; otherwise it's whoever
 // holds the stage's role for that department / SBU.
-export async function resolveBudgetRequestPendingReviewers(request: {
-  currentStage: RequestStage;
-  departmentId: string;
-  assigneeId?: string | null;
-  sbu?: Sbu | null;
-  npcSbu?: string | null;
-  // Null for the SBU-batch categories (raw Cost Center/GL Account, no
-  // catalog line item) - never actually read below, since those categories
-  // never reach a CENTRALIZED_* stage.
-  expenseLineItem: { ownerDepartmentId: string } | null;
-}): Promise<string[]> {
-  if (request.assigneeId) {
+export async function resolveBudgetRequestPendingReviewers(
+  request: {
+    currentStage: RequestStage;
+    departmentId: string;
+    assigneeId?: string | null;
+    sbu?: Sbu | null;
+    npcSbu?: string | null;
+    // Null for the SBU-batch categories (raw Cost Center/GL Account, no
+    // catalog line item) - never actually read below, since those categories
+    // never reach a CENTRALIZED_* stage.
+    expenseLineItem: { ownerDepartmentId: string } | null;
+  },
+  // Defaults to the request's current stage. Pass the chain's next stage
+  // (see approvalChain.ts's nextStageAfter) to preview who picks this up
+  // once the current stage is approved - the "If you proceed, this moves
+  // to:" line's assignee is only ever set for the CURRENT stage (a dropdown
+  // pick or a reassignment), so it's never used for a stage being previewed.
+  stage: RequestStage = request.currentStage
+): Promise<string[]> {
+  if (request.assigneeId && stage === request.currentStage) {
     const u = await prisma.user.findUnique({ where: { id: request.assigneeId }, select: { name: true } });
     return u ? [u.name] : [];
   }
-  const stage = request.currentStage;
   if (stage === RequestStage.SF_VALIDATION || stage === RequestStage.SF_HEAD_REVIEW) {
     const sbu = requestSbu({ sbu: request.sbu ?? null, npcSbu: request.npcSbu ?? null });
-    const roles = stage === RequestStage.SF_HEAD_REVIEW ? [RoleType.BU_FINANCE_HEAD] : [RoleType.BU_FINANCE_OFFICER, RoleType.BU_FINANCE_HEAD];
+    // SBU Finance Validation is for the SBU Finance Reviewers; SBU Finance Head Review is for the SBU Finance Heads.
+    const roles = stage === RequestStage.SF_HEAD_REVIEW ? [RoleType.BU_FINANCE_HEAD] : [RoleType.BU_FINANCE_OFFICER];
     const rows = await prisma.sbuRoleAssignment.findMany({ where: { roleType: { in: roles }, ...(sbu ? { sbu } : {}) }, include: { user: true } });
     return [...new Set(rows.map((r) => r.user.name))];
   }

@@ -222,7 +222,7 @@ export function NpcForecastView() {
 
   return (
     <div className="space-y-4">
-      <div className="sticky top-0 z-30 space-y-2 bg-[#f5faf7] pb-1 pt-1">
+      <div className="sticky top-0 z-30 space-y-2 bg-slate-50 pb-1 pt-1">
       <PageHeader
         subtitle={`Months through ${MONTH_NAMES[asOfMonth - 1]} are already in Actuals - only remaining months are editable.`}
         actions={

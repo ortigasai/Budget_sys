@@ -57,6 +57,7 @@ enum RequestCategory {
   COST_OF_SALES
   DEPRECIATION_AMORTIZATION
   INTEREST_EXPENSE
+  OTHER_INCOME
 }
 
 // Notes_8: the Strategic Business Units DOE/NPC/Revenue requests are tagged
@@ -103,6 +104,7 @@ enum RequestStage {
   BUDGET_OFFICER_VALIDATION
   SF_VALIDATION
   SF_HEAD_REVIEW
+  BUDGET_OFFICER_ROUTING
   SBU_HEAD_REVIEW
 }
 
@@ -681,6 +683,11 @@ model BoardApprovedBudget {
 
 model BudgetRequest {
   id                    String        @id @default(cuid())
+  // A human-readable reference, every category - "TCK-YY-Num", same counter
+  // mechanism as the Budget Code (see lib/budgetCode.ts's nextTicketNumber).
+  // Nullable only because requests created before this field existed have
+  // none; every request created from here on gets one.
+  ticketNumber          String?       @unique
   departmentId          String
   department            Department    @relation(fields: [departmentId], references: [id])
   fiscalYear            Int
@@ -819,6 +826,9 @@ model ReviewDecision {
   decidedBy       User                @relation(fields: [decidedById], references: [id])
   comment         String?
   timestamp       DateTime            @default(now())
+  // Where a RETURN decision sent the request - null means back to the
+  // requestor (DRAFT). Not meaningful for APPROVE/REASSIGN/CANCEL.
+  targetStage     RequestStage?
 }
 
 model BulkUploadBatch {
@@ -1144,4 +1154,19 @@ model AccessMatrixCell {
   allowed Boolean
 
   @@id([key, group])
+}
+
+// Corporate items (G&A, D&A, Interest expense, Other income) allocated to SBUs as a
+// percentage per fiscal year. One row per (fiscalYear, item, SBU); the percentages for an
+// item add up to 100.
+model CorporateAllocation {
+  id              String          @id @default(cuid())
+  fiscalYear      Int
+  requestCategory RequestCategory
+  sbu             Sbu
+  percent         Float
+  setBy           String
+  setAt           DateTime        @default(now())
+
+  @@unique([fiscalYear, requestCategory, sbu])
 }

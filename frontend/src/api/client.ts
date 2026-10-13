@@ -209,6 +209,12 @@ export interface ReviewDecision {
   comment: string | null;
   timestamp: string;
   decidedBy: { name: string };
+  // Where a RETURN sent the request - null means the requestor. Only set on
+  // RETURN rows (see GET /budget-requests/:id).
+  targetStage?: string | null;
+  // Names of whoever is pending at targetStage (or just the requestor's name,
+  // when targetStage is null). Only present on RETURN rows.
+  targetPendingReviewers?: string[];
 }
 
 // Notes_8: high-level New Request menu classification, layered on top of
@@ -254,14 +260,15 @@ export const NPC_SBU_OPTIONS: { value: NpcSbu; label: string }[] = [
   { value: "CORPORATE_ADMIN", label: "Corporate Admin" },
 ];
 
-// Spec item 12's fixed 4-value Location list for NPC requests — mirrors
+// Spec item 12's fixed Location list for NPC requests — mirrors
 // backend/src/lib/npcSbu.ts's NPC_LOCATION_OPTIONS.
-export type NpcLocation = "OE" | "CC" | "GH" | "CV";
+export type NpcLocation = "OE" | "CC" | "GH" | "CV" | "ES";
 export const NPC_LOCATION_OPTIONS: { value: NpcLocation; label: string }[] = [
   { value: "OE", label: "OE" },
   { value: "CC", label: "CC" },
   { value: "GH", label: "GH" },
   { value: "CV", label: "CV" },
+  { value: "ES", label: "ES" },
 ];
 
 // Phase 3 — Budget Transfer & Reallocation (workflow revision). Served by
@@ -445,6 +452,10 @@ export interface TransferRequest {
 
 export interface BudgetRequest {
   id: string;
+  // A human-readable reference, every category - "TCK-YY-Num" (see
+  // backend/src/lib/budgetCode.ts's nextTicketNumber). Null only for requests
+  // created before this field existed.
+  ticketNumber: string | null;
   departmentId: string;
   fiscalYear: number;
   // Null for the SBU-batch categories (DOE/Commission/Cost of Sales/
@@ -482,6 +493,8 @@ export interface BudgetRequest {
   assigneeId: string | null;
   // Set by GET /budget-requests/:id and /inbox: may the signed-in user act on the current stage.
   canAct?: boolean;
+  // Whether the current user may cancel this request (set by GET /budget-requests/:id).
+  canCancel?: boolean;
   // Set by GET /budget-requests/:id and /inbox: where "Proceed"/"Return" would send this
   // request next - null at a terminal/DRAFT stage, or when there's nowhere earlier to return to.
   nextStage?: string | null;
@@ -503,6 +516,14 @@ export interface BudgetRequest {
   // server-side from its stage + department (see lib/pendingReviewers.ts).
   // Present on /my-requests and GET /:id responses; empty for terminal stages.
   pendingReviewers?: string[];
+  // Names of whoever would pick this request up at its next stage, resolved the
+  // same way. Present on /inbox and GET /:id responses, for the "If you proceed,
+  // this moves to:" line; empty when there's no next stage (the final stage).
+  nextPendingReviewers?: string[];
+  // This category's own chain, minus Budget Officer Review - the "Return…"
+  // dropdown's own stages on the Budget Finalization & Upload page. Present
+  // only on GET /budget-requests/step5-dashboard.
+  returnTargets?: string[];
   // Set when this request came from a bulk spreadsheet upload - lets the UI
   // offer "Download source file" (GET /budget-requests/bulk-upload/:id/source-file).
   bulkUploadBatchId: string | null;
@@ -555,8 +576,36 @@ export interface FinalizedBudgetLineOut {
   requestCategory: RequestCategory;
   sbu: Sbu | null;
   npcSbu: NpcSbu | null;
+  requestedAmount: number;
+  budgetCutAmount: number;
   amount: number;
   lineCount: number;
+  budgetCodes: string[];
+  ticketNumbers: string[];
+}
+
+// One row from GET /budget-requests/finalized-budget-report/group-details -
+// the individual requests behind one Finalized Budget Report line.
+export interface FinalizedBudgetLineDetail {
+  id: string;
+  budgetRequestId: string;
+  ticketNumber: string | null;
+  budgetCode: string | null;
+  itemName: string;
+  departmentName: string;
+  businessJustification: string;
+  monthlyAmounts: number[];
+  proposedAmount: number;
+  budgetCutAmount: number;
+  amount: number;
+  currentStage: string;
+  finalizedAt: string;
+  finalizedBy: string;
+  requestedBy: string;
+  sapDocumentNumber: string | null;
+  npcLocation: string | null;
+  projectStartDate: string | null;
+  projectEndDate: string | null;
 }
 
 export interface BoardBudgetCheckOut {

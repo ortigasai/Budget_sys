@@ -130,6 +130,30 @@ export function requireRole(...roleTypes: RoleType[]) {
 }
 
 /**
+ * Same as requireRole, but also passes for anyone whose access group grants
+ * one of accessKeys - BCA members, per "Budgeting System_User Management"'s
+ * Rules tab ("BCA will have access to everything like the Budget Officer"),
+ * get this even without literally holding one of roleTypes (e.g. a BCA
+ * member with no BCA_HEAD role assignment at all - see accessControl.ts's
+ * computeAccess, isBca overrides every key).
+ */
+export function requireRoleOrAccess(roleTypes: RoleType[], ...accessKeys: string[]) {
+  return (req: Request, res: Response, next: NextFunction) => {
+    if (!req.user) {
+      res.status(401).json({ error: "Authentication required." });
+      return;
+    }
+    const hasRole = req.user.roles.some((r) => roleTypes.includes(r.roleType));
+    const hasAccess = !!req.user.access && accessKeys.some((k) => req.user!.access![k]);
+    if (!hasRole && !hasAccess) {
+      res.status(403).json({ error: "You do not hold a role permitted to perform this action." });
+      return;
+    }
+    next();
+  };
+}
+
+/**
  * Group-based module gate ("Budgeting System_User Management" Access Control
  * tab). Passes if the user has ANY of the given access keys; users with no
  * group membership (access === null) pass unchanged so accounts outside the

@@ -1,8 +1,37 @@
 import type ExcelJS from "exceljs";
 import { prisma } from "../prisma";
+import type { ExtraField } from "./expenseLineItemCatalog";
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-export const EXPENSE_REQUEST_TEMPLATE_HEADER = ["Expense Category", "Expense Line Item", ...MONTHS, "Business Justification", "Other Required Fields (JSON)"];
+// Total (column O) sits right after Dec - bulkUpload.ts writes a =SUM(C:N)
+// formula into it per row, so it's read-only/auto-computed, never parsed
+// back out below (proposedAmount is still the sum of monthlyAmounts
+// computed in code). Business Justification always follows at column P,
+// regardless of how many Additional Field columns the catalog ends up
+// needing - see buildTemplateHeader below.
+const FIXED_HEADER = ["Expense Category", "Expense Line Item", ...MONTHS, "Total", "Business Justification"];
+
+// Every distinct Additional Field label the given items' extraFieldsConfig
+// declares (e.g. "Headcount", "Meal Allowance Rate", "Specify") - each gets
+// its own real column in the template instead of one catch-all "Other
+// Required Fields (JSON)" column, so a requestor fills in plain values, not
+// JSON. A row only needs the columns its own line item's Catalog Reference
+// entry lists as required; the rest stay blank. Derived from whichever items
+// the caller passes (bulkUpload.ts passes the same department-visible list
+// the rest of the template is already built from), so the columns always
+// match what's actually selectable on that sheet.
+export function extraFieldLabelsFor(items: { extraFieldsConfig: unknown }[]): string[] {
+  const labels = new Set<string>();
+  for (const item of items) {
+    const fields = item.extraFieldsConfig as { label: string }[] | null;
+    for (const f of fields ?? []) if (f.label) labels.add(f.label);
+  }
+  return Array.from(labels).sort((a, b) => a.localeCompare(b));
+}
+
+export function buildTemplateHeader(extraFieldLabels: string[]): string[] {
+  return [...FIXED_HEADER, ...extraFieldLabels];
+}
 
 // Shared by bulkUpload.ts's GAE/DOE one-shot import and doeBatches.ts's
 // draft-first batch upload - same template shape, same catalog-name
@@ -12,11 +41,14 @@ export const EXPENSE_REQUEST_TEMPLATE_HEADER = ["Expense Category", "Expense Lin
 // Submit) - that decision stays with each caller, this just parses.
 export async function visibleLineItemsForRequest(departmentId: string) {
   const department = await prisma.department.findUnique({ where: { id: departmentId } });
-  const applyVisibilityFilter = department?.name !== "Budget";
+  // Budget and Budget, Controls & Analysis (BCA) see every standard expense item (including manpower salary) and
+  // aren't limited to the ones visible to them. Other departments don't get the manpower salary items.
+  const isBudgetDepartment = department?.name === "Budget" || department?.name === "Budget, Controls & Analysis";
+  const applyVisibilityFilter = !isBudgetDepartment;
   return prisma.expenseLineItem.findMany({
     where: {
       status: "STANDARD",
-      category: { not: "Manpower - Salary" },
+      ...(isBudgetDepartment ? {} : { category: { not: "Manpower - Salary" } }),
       ...(applyVisibilityFilter ? { OR: [{ visibleToDepartmentId: null }, { visibleToDepartmentId: departmentId }] } : {}),
     },
     orderBy: { name: "asc" },
@@ -38,11 +70,22 @@ export interface ExpenseRequestRowError {
 
 // The row-by-row extraction/validation bulkUpload.ts's `/bulk-upload` POST
 // used to inline directly in its loop - unchanged behavior, just usable from
-// more than one caller now.
+// more than one caller now. Additional Field values are read by matching the
+// UPLOADED file's own header row to each field's label (not a fixed column
+// index), so an older/newer catalog shape between download and upload still
+// resolves correctly instead of silently reading the wrong cell.
 export function parseExpenseRequestSheet(
   sheet: ExcelJS.Worksheet,
   itemsByName: Map<string, Awaited<ReturnType<typeof visibleLineItemsForRequest>>[number]>
 ): { rows: ParsedExpenseRequestRow[]; errors: ExpenseRequestRowError[]; rowCount: number } {
+  const headerRow = sheet.getRow(1);
+  const columnByLabel = new Map<string, number>();
+  for (let c = 1; c <= headerRow.cellCount; c++) {
+    const label = String(headerRow.getCell(c).value ?? "").trim();
+    if (label) columnByLabel.set(label, c);
+  }
+  const businessJustificationCol = columnByLabel.get("Business Justification") ?? 16;
+
   const rows: ParsedExpenseRequestRow[] = [];
   const errors: ExpenseRequestRowError[] = [];
   let rowCount = 0;
@@ -85,24 +128,36 @@ export function parseExpenseRequestSheet(
         throw new Error("Proposed Amount must be greater than 0.");
       }
 
-      const businessJustification = String(row.getCell(15).value ?? "").trim();
+      const businessJustification = String(row.getCell(businessJustificationCol).value ?? "").trim();
       if (!businessJustification) {
         throw new Error("Business Justification is mandatory.");
       }
 
-      let otherRequiredFields: Record<string, string> = {};
-      const rawOther = row.getCell(16).value;
-      if (rawOther) {
-        try {
-          otherRequiredFields = JSON.parse(String(rawOther));
-        } catch {
-          throw new Error("Other Required Fields (JSON) column is not valid JSON.");
-        }
-      }
-      const extraFieldsConfig = (lineItem.extraFieldsConfig as { label: string; required: boolean }[]) ?? [];
+      const extraFieldsConfig = (lineItem.extraFieldsConfig as unknown as ExtraField[]) ?? [];
+      // Mirrors workflowService.ts's own usesHeadcountTable rule exactly - a
+      // Headcount + rate NUMBER pair with no DROPDOWN field renders as the
+      // repeatable Headcount & Rate table on the web form, which stores its
+      // values under "Row N <label>" keys instead of the plain label. Submit
+      // validation checks for that exact key shape, so a bulk-uploaded row
+      // for one of these items needs the same "Row 1 " prefix - the
+      // spreadsheet only ever fills one row's worth per line item.
+      const hasDropdownField = extraFieldsConfig.some((f) => f.type === "DROPDOWN");
+      const headcountField = extraFieldsConfig.find((f) => f.label === "Headcount");
+      const rateField = extraFieldsConfig.find((f) => f.label !== "Headcount" && f.type === "NUMBER");
+      const usesHeadcountTable = !!(headcountField && rateField && lineItem.spendGridComputation && !hasDropdownField);
+
+      const otherRequiredFields: Record<string, string> = {};
       for (const field of extraFieldsConfig) {
-        if (field.required && !otherRequiredFields[field.label]?.trim()) {
-          throw new Error(`Field "${field.label}" is required for "${lineItem.name}" - see the Catalog Reference sheet for every required field, then fill it into the Other Required Fields (JSON) column (e.g. {"${field.label}": "..."}).`);
+        const col = columnByLabel.get(field.label);
+        const value = col ? String(row.getCell(col).value ?? "").trim() : "";
+        const key = usesHeadcountTable ? `Row 1 ${field.label}` : field.label;
+        if (value) otherRequiredFields[key] = value;
+        if (field.required && !value) {
+          throw new Error(
+            col
+              ? `Field "${field.label}" is required for "${lineItem.name}" - fill it into the "${field.label}" column.`
+              : `Field "${field.label}" is required for "${lineItem.name}" but this sheet has no "${field.label}" column - download a fresh template.`
+          );
         }
       }
 

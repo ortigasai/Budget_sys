@@ -12,6 +12,7 @@ interface SeriesOut {
   actual: number[];
   forecast: number[];
   ly: number[];
+  lyBudget: number[];
 }
 interface ReportRowOut {
   key: string;
@@ -29,15 +30,30 @@ interface GaeReportOut {
 }
 
 type Measure = keyof SeriesOut;
-type PairId = "budget-actual" | "budget-forecast" | "forecast-actual" | "yoy-actual" | "yoy-forecast" | "yoy-budget";
+type PairId =
+  | "budget-actual"
+  | "budget-forecast"
+  | "forecast-actual"
+  | "cy-actual-ly-actual"
+  | "cy-budget-ly-budget"
+  | "cy-budget-ly-actual"
+  | "cy-forecast-ly-actual"
+  | "cy-forecast-ly-budget";
+
+// "Last Year Comparisons" sidebar entries - always "Current Year X vs Last
+// Year Y" (left = CY measure, right = LY measure), matching Layout.tsx's
+// sidebar id convention below.
+export const LAST_YEAR_COMPARISON_IDS = ["cy-actual-ly-actual", "cy-budget-ly-budget", "cy-budget-ly-actual", "cy-forecast-ly-actual", "cy-forecast-ly-budget"] as const;
 
 const PAIRS: Record<PairId, { left: Measure; right: Measure; leftLabel: string; rightLabel: string }> = {
   "budget-actual": { left: "budget", right: "actual", leftLabel: "Budget", rightLabel: "Actual" },
   "budget-forecast": { left: "budget", right: "forecast", leftLabel: "Budget", rightLabel: "Forecast" },
   "forecast-actual": { left: "forecast", right: "actual", leftLabel: "Forecast", rightLabel: "Actual" },
-  "yoy-actual": { left: "ly", right: "actual", leftLabel: "LY Actual", rightLabel: "CY Actual" },
-  "yoy-forecast": { left: "ly", right: "forecast", leftLabel: "LY Actual", rightLabel: "CY Forecast" },
-  "yoy-budget": { left: "ly", right: "budget", leftLabel: "LY Actual", rightLabel: "CY Budget" },
+  "cy-actual-ly-actual": { left: "actual", right: "ly", leftLabel: "CY Actual", rightLabel: "LY Actual" },
+  "cy-budget-ly-budget": { left: "budget", right: "lyBudget", leftLabel: "CY Budget", rightLabel: "LY Budget" },
+  "cy-budget-ly-actual": { left: "budget", right: "ly", leftLabel: "CY Budget", rightLabel: "LY Actual" },
+  "cy-forecast-ly-actual": { left: "forecast", right: "ly", leftLabel: "CY Forecast", rightLabel: "LY Actual" },
+  "cy-forecast-ly-budget": { left: "forecast", right: "lyBudget", leftLabel: "CY Forecast", rightLabel: "LY Budget" },
 };
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -45,6 +61,15 @@ const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "
 const fmt = (n: number) => (Math.abs(n) < 0.5 ? "—" : Math.round(n).toLocaleString(undefined, { maximumFractionDigits: 0 }));
 const pct = (variance: number, base: number) => (Math.abs(base) < 0.5 ? "—" : `${((variance / Math.abs(base)) * 100).toFixed(1)}%`);
 const sumRange = (values: number[], months: number[]) => months.reduce((acc, m) => acc + (values[m - 1] ?? 0), 0);
+
+// Truncating the text itself (not CSS white-space: nowrap + text-overflow:
+// ellipsis) - a long label like "Donations, Contributions and Miscellaneous
+// Expenses" under that CSS approach still forces its table-layout: fixed
+// column wider than its colgroup width in every browser tested, throwing
+// the Main Report and Detailed Report tables (which share one colgroup) out
+// of alignment with each other. Pre-shortening the string sidesteps that
+// entirely.
+const truncateLabel = (label: string, maxChars = 34) => (label.length > maxChars ? `${label.slice(0, maxChars - 1)}…` : label);
 
 export function GaeReportSection({ fiscalYear, granularity, comparison, ytdThrough, measure }: { fiscalYear: number; granularity: "YTD" | "ANNUAL"; comparison: string; ytdThrough?: number; measure?: SingleMeasure }) {
   const { data, isLoading, error } = useQuery({
@@ -66,14 +91,42 @@ export function GaeReportSection({ fiscalYear, granularity, comparison, ytdThrou
   // Monthly / Quarterly with a single measure: one column per month or quarter.
   const measureLabel = measure ? measure[0].toUpperCase() + measure.slice(1) : "";
 
+  // Main Report and Detailed Report render the same headerCells()/cells()
+  // shape but hold different rows - under table-layout: auto, each table's
+  // column widths are computed independently from its own widest content
+  // (long Detailed Report labels like "Donations, Contributions and
+  // Miscellaneous Expenses" can force its label column wider than Main
+  // Report's), so the two tables can drift out of alignment with each other
+  // even with the same min-width classes. An explicit colgroup + table-fixed
+  // (below) makes both tables' column widths identical and content-independent.
+  const dataColumnCount = pair ? 4 : measure ? (isMonthly ? months.length : quarters.length) + 1 : isMonthly ? months.length * 2 : quarters.length * 3;
+  const LABEL_COL_WIDTH = 320;
+  const DATA_COL_WIDTH = 160;
+  // Explicit total, used below instead of a shrink-to-fit (w-fit) wrapper -
+  // with table-layout: fixed, a w-fit wrapper creates a circular sizing pass
+  // where the browser falls back to measuring actual cell content (ignoring
+  // the colgroup) to decide how wide the wrapper should shrink to, which is
+  // exactly what let one table's longest label (e.g. "Donations,
+  // Contributions and Miscellaneous Expenses" in the Detailed Report) widen
+  // its column beyond the other table's, breaking alignment between them.
+  const tableWidthPx = LABEL_COL_WIDTH + dataColumnCount * DATA_COL_WIDTH;
+  const colgroup = (
+    <colgroup>
+      <col style={{ width: LABEL_COL_WIDTH }} />
+      {Array.from({ length: dataColumnCount }, (_, i) => (
+        <col key={i} style={{ width: DATA_COL_WIDTH }} />
+      ))}
+    </colgroup>
+  );
+
   const headerCells = () => {
     if (pair) {
       return (
         <>
-          <th className="px-2 py-2 text-right">{pair.leftLabel}</th>
-          <th className="px-2 py-2 text-right">{pair.rightLabel}</th>
-          <th className="px-2 py-2 text-right">Variance</th>
-          <th className="px-2 py-2 text-right">Variance %</th>
+          <th className="min-w-[160px] px-5 py-2 text-right">{pair.leftLabel}</th>
+          <th className="min-w-[160px] px-5 py-2 text-right">{pair.rightLabel}</th>
+          <th className="min-w-[160px] px-5 py-2 text-right">Variance</th>
+          <th className="min-w-[160px] px-5 py-2 text-right">Variance %</th>
         </>
       );
     }
@@ -82,16 +135,16 @@ export function GaeReportSection({ fiscalYear, granularity, comparison, ytdThrou
         <>
           {isMonthly
             ? months.map((m) => (
-                <th key={`hm${m}`} className="px-2 py-2 text-right">
+                <th key={`hm${m}`} className="min-w-[160px] px-5 py-2 text-right">
                   {MONTHS[m - 1]}
                 </th>
               ))
             : quarters.map((q) => (
-                <th key={`hq${q}`} className="px-2 py-2 text-right">
+                <th key={`hq${q}`} className="min-w-[160px] px-5 py-2 text-right">
                   Q{q} {measureLabel}
                 </th>
               ))}
-          <th className="px-2 py-2 text-right">Total</th>
+          <th className="min-w-[160px] px-5 py-2 text-right">Total</th>
         </>
       );
     }
@@ -100,8 +153,8 @@ export function GaeReportSection({ fiscalYear, granularity, comparison, ytdThrou
         <>
           {months.map((m) => (
             <Fragment key={`hm${m}`}>
-              <th className="px-2 py-2 text-right">{MONTHS[m - 1]} Budget</th>
-              <th className="px-2 py-2 text-right">{MONTHS[m - 1]} Actual</th>
+              <th className="min-w-[160px] px-5 py-2 text-right">{MONTHS[m - 1]} Budget</th>
+              <th className="min-w-[160px] px-5 py-2 text-right">{MONTHS[m - 1]} Actual</th>
             </Fragment>
           ))}
         </>
@@ -111,9 +164,9 @@ export function GaeReportSection({ fiscalYear, granularity, comparison, ytdThrou
       <>
         {quarters.map((q) => (
           <Fragment key={`hq${q}`}>
-            <th className="px-2 py-2 text-right">Q{q} Budget</th>
-            <th className="px-2 py-2 text-right">Q{q} Actual</th>
-            <th className="px-2 py-2 text-right">Q{q} Variance</th>
+            <th className="min-w-[160px] px-5 py-2 text-right">Q{q} Budget</th>
+            <th className="min-w-[160px] px-5 py-2 text-right">Q{q} Actual</th>
+            <th className="min-w-[160px] px-5 py-2 text-right">Q{q} Variance</th>
           </Fragment>
         ))}
       </>
@@ -127,10 +180,10 @@ export function GaeReportSection({ fiscalYear, granularity, comparison, ytdThrou
       const variance = right - left;
       return (
         <>
-          <td className="px-2 py-1 text-right tabular-nums">{fmt(left)}</td>
-          <td className="px-2 py-1 text-right tabular-nums">{fmt(right)}</td>
-          <td className="px-2 py-1 text-right tabular-nums">{fmt(variance)}</td>
-          <td className="px-2 py-1 text-right tabular-nums">{pct(variance, left)}</td>
+          <td className="min-w-[160px] px-5 py-1 text-right tabular-nums">{fmt(left)}</td>
+          <td className="min-w-[160px] px-5 py-1 text-right tabular-nums">{fmt(right)}</td>
+          <td className="min-w-[160px] px-5 py-1 text-right tabular-nums">{fmt(variance)}</td>
+          <td className="min-w-[160px] px-5 py-1 text-right tabular-nums">{pct(variance, left)}</td>
         </>
       );
     }
@@ -139,16 +192,16 @@ export function GaeReportSection({ fiscalYear, granularity, comparison, ytdThrou
         <>
           {isMonthly
             ? months.map((m) => (
-                <td key={`cm${m}`} className="px-2 py-1 text-right tabular-nums">
+                <td key={`cm${m}`} className="min-w-[160px] px-5 py-1 text-right tabular-nums">
                   {fmt(row.series[measure][m - 1])}
                 </td>
               ))
             : quarters.map((q) => (
-                <td key={`cq${q}`} className="px-2 py-1 text-right tabular-nums">
+                <td key={`cq${q}`} className="min-w-[160px] px-5 py-1 text-right tabular-nums">
                   {fmt(sumRange(row.series[measure], months.filter((m) => Math.ceil(m / 3) === q)))}
                 </td>
               ))}
-          <td className="px-2 py-1 text-right font-semibold tabular-nums">{fmt(sumRange(row.series[measure], months))}</td>
+          <td className="min-w-[160px] px-5 py-1 text-right font-semibold tabular-nums">{fmt(sumRange(row.series[measure], months))}</td>
         </>
       );
     }
@@ -157,8 +210,8 @@ export function GaeReportSection({ fiscalYear, granularity, comparison, ytdThrou
         <>
           {months.map((m) => (
             <Fragment key={`cm${m}`}>
-              <td className="px-2 py-1 text-right tabular-nums">{fmt(row.series.budget[m - 1])}</td>
-              <td className="px-2 py-1 text-right tabular-nums">{fmt(row.series.actual[m - 1])}</td>
+              <td className="min-w-[160px] px-5 py-1 text-right tabular-nums">{fmt(row.series.budget[m - 1])}</td>
+              <td className="min-w-[160px] px-5 py-1 text-right tabular-nums">{fmt(row.series.actual[m - 1])}</td>
             </Fragment>
           ))}
         </>
@@ -172,9 +225,9 @@ export function GaeReportSection({ fiscalYear, granularity, comparison, ytdThrou
           const a = sumRange(row.series.actual, qm);
           return (
             <Fragment key={`cq${q}`}>
-              <td className="px-2 py-1 text-right tabular-nums">{fmt(b)}</td>
-              <td className="px-2 py-1 text-right tabular-nums">{fmt(a)}</td>
-              <td className="px-2 py-1 text-right tabular-nums">{fmt(a - b)}</td>
+              <td className="min-w-[160px] px-5 py-1 text-right tabular-nums">{fmt(b)}</td>
+              <td className="min-w-[160px] px-5 py-1 text-right tabular-nums">{fmt(a)}</td>
+              <td className="min-w-[160px] px-5 py-1 text-right tabular-nums">{fmt(a - b)}</td>
             </Fragment>
           );
         })}
@@ -185,10 +238,8 @@ export function GaeReportSection({ fiscalYear, granularity, comparison, ytdThrou
   const renderRows = (rows: ReportRowOut[]) =>
     rows.map((row) => (
       <tr key={row.key} className={`border-t border-slate-100 ${row.isTotal ? "bg-[#edf6f1] font-semibold text-[#164b33]" : ""}`}>
-        <td className={`sticky left-0 z-10 px-2 py-1 ${row.isTotal ? "bg-[#edf6f1]" : "bg-white"} ${row.level === 1 ? "pl-6" : ""}`}>
-          <div className="max-w-[220px] truncate whitespace-nowrap" title={row.label}>
-            {row.label}
-          </div>
+        <td className={`sticky left-0 z-10 min-w-[320px] overflow-hidden px-5 py-1 ${row.isTotal ? "bg-[#edf6f1]" : "bg-white"} ${row.level === 1 ? "pl-8" : ""}`} title={row.label.length > 34 ? row.label : undefined}>
+          {truncateLabel(row.label)}
         </td>
         {cells(row)}
       </tr>
@@ -201,11 +252,23 @@ export function GaeReportSection({ fiscalYear, granularity, comparison, ytdThrou
         <span className="text-xs text-slate-500">{periodLabel} · Amounts in PHP</span>
       </div>
 
-      <div className="overflow-auto rounded-lg border border-emerald-200" style={{ maxHeight: "70vh" }}>
-        <table className="w-full min-w-max text-sm">
+      {/* No w-full on the table - a wide viewport would otherwise stretch
+          it to fill the page, spreading its mostly-numeric columns across
+          large gaps of empty space even though each column's header and
+          data cells stay pixel-aligned to each other. The bordered wrapper
+          gets an explicit pixel width (tableWidthPx), not w-fit - a
+          shrink-to-fit wrapper around a table-layout: fixed table measures
+          actual cell content to decide its own width, which can make this
+          table wider than the Detailed Report table below despite both
+          using the same colgroup (see tableWidthPx's comment). max-w-full
+          keeps it horizontally scrollable if that width ever exceeds the
+          container. */}
+      <div className="max-w-full overflow-auto rounded-lg border border-emerald-200" style={{ maxHeight: "70vh", width: tableWidthPx }}>
+        <table className="table-fixed text-sm">
+          {colgroup}
           <thead className="sticky top-0 z-20 bg-[#edf6f1] text-left text-xs text-[#164b33]">
             <tr>
-              <th className="sticky left-0 z-30 bg-[#edf6f1] px-2 py-2">Main Report</th>
+              <th className="sticky left-0 z-30 bg-[#edf6f1] px-5 py-2">Main Report</th>
               {headerCells()}
             </tr>
           </thead>
@@ -214,11 +277,12 @@ export function GaeReportSection({ fiscalYear, granularity, comparison, ytdThrou
       </div>
 
       <h3 className="pt-2 text-sm font-semibold text-slate-800">Detailed Report</h3>
-      <div className="overflow-auto rounded-lg border border-emerald-200" style={{ maxHeight: "70vh" }}>
-        <table className="w-full min-w-max text-sm">
+      <div className="max-w-full overflow-auto rounded-lg border border-emerald-200" style={{ maxHeight: "70vh", width: tableWidthPx }}>
+        <table className="table-fixed text-sm">
+          {colgroup}
           <thead className="sticky top-0 z-20 bg-[#edf6f1] text-left text-xs text-[#164b33]">
             <tr>
-              <th className="sticky left-0 z-30 bg-[#edf6f1] px-2 py-2">Detailed Report</th>
+              <th className="sticky left-0 z-30 bg-[#edf6f1] px-5 py-2">Detailed Report</th>
               {headerCells()}
             </tr>
           </thead>

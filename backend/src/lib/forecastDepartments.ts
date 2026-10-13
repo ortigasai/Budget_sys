@@ -8,7 +8,7 @@ import { CORE_CENTRALIZED_DEPARTMENT_NAMES } from "./coreDepartments";
 // department list's name. Maps the workbook's CD scope to that list's name;
 // scopes with no entry have no Forecast department at all.
 const CD_SCOPE_TO_FORECAST_DEPARTMENT: Record<string, string> = {
-  "Administrative Services": "Admin Services",
+  "Administrative Services": "Administrative Services",
   "Corporate Finance": "Corporate Finance",
   "Corporate Marketing": "Corporate Marketing",
   Tax: "Tax",

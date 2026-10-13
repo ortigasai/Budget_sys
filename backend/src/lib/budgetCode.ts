@@ -59,3 +59,12 @@ export async function nextBudgetCode(prefixCode: string, year: number): Promise<
   });
   return formatBudgetCode(prefixCode, year, seq.lastNumber);
 }
+
+// Every BudgetRequest's own reference number - "BS-YY-Num", every category
+// (GAE/DOE/Commission/Cost of Sales/Depreciation & Amortization/Interest
+// Expense/NPC/Revenue), unlike Budget Code which only some categories get.
+// Shares nextBudgetCode's (prefixCode, year) counter mechanism under its own
+// "BS" prefix, so it never collides with a real Budget Code sequence.
+export async function nextTicketNumber(year: number): Promise<string> {
+  return nextBudgetCode("BS", year);
+}

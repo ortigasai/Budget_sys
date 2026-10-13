@@ -20,10 +20,14 @@ export function UploadStatusStack() {
 
 function UploadTaskCard({ task }: { task: UploadTask }) {
   useEffect(() => {
-    if (task.status !== "success") return;
+    // A success with rejected rows still needs the requestor's attention -
+    // only an unqualified success (nothing to review) auto-dismisses. It
+    // stays up until superseded by a new upload for the same slot (see
+    // uploadManager.ts's startUpload) or dismissed by hand.
+    if (task.status !== "success" || (task.errors && task.errors.length > 0)) return;
     const timer = setTimeout(() => dismissUploadTask(task.id), 8000);
     return () => clearTimeout(timer);
-  }, [task.status, task.id]);
+  }, [task.status, task.id, task.errors]);
 
   const tone = task.status === "error" ? "border-red-300 bg-red-50 text-red-800" : task.status === "success" ? "border-emerald-300 bg-emerald-50 text-emerald-800" : "border-slate-300 bg-white text-slate-700";
 

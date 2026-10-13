@@ -10,9 +10,9 @@ import { asyncHandler } from "../asyncHandler";
 import { requireAuth } from "../middleware/auth";
 import { HttpError } from "../httpError";
 import { assertSfSbu } from "../lib/groupScope";
-import { assertCycleOpen, submitRequest } from "../services/workflowService";
+import { assertCycleOpen, isPostUploadReviewerError, submitRequest } from "../services/workflowService";
 import { getFiscalCycle } from "../lib/fiscalCycle";
-import { nextBudgetCode, sbuBudgetCodePrefix } from "../lib/budgetCode";
+import { nextBudgetCode, nextTicketNumber, sbuBudgetCodePrefix } from "../lib/budgetCode";
 import { sbuBatchCategoryLabel } from "../lib/sbuBatchCategories";
 import { parseRevenueTemplate, type RevenueTemplateRow } from "../lib/revenueTemplate";
 
@@ -55,7 +55,8 @@ export function createSbuBatchRouter(category: RequestCategory): Router {
 
   const uploadFieldsSchema = z.object({
     sbu: z.nativeEnum(Sbu),
-    companyId: z.string().min(1),
+    // Company only applies to Revenue (its own router, not this one) - optional here.
+    companyId: z.string().min(1).optional(),
     fiscalYear: z.coerce.number().int(),
   });
 
@@ -73,6 +74,7 @@ export function createSbuBatchRouter(category: RequestCategory): Router {
       // upload used (lib/budgetCode.ts) - this upload is many independent
       // requests riding through review together, not one combined total.
       const budgetCode = await nextBudgetCode(sbuBudgetCodePrefix(sbu), targetCalendarYear);
+      const ticketNumber = await nextTicketNumber(targetCalendarYear);
       await prisma.budgetRequest.create({
         data: {
           departmentId,
@@ -85,6 +87,7 @@ export function createSbuBatchRouter(category: RequestCategory): Router {
           requestCategory: category,
           sbu,
           budgetCode,
+          ticketNumber,
           bulkUploadBatchId: batchId,
           createdById,
         },
@@ -103,9 +106,11 @@ router.post(
 
     const { sbu, companyId, fiscalYear } = uploadFieldsSchema.parse(req.body);
     await assertSfSbu(req.user!, sbu);
-    await prisma.company.findUniqueOrThrow({ where: { id: companyId } }).catch(() => {
-      throw new HttpError(400, "Unrecognized Company selection.");
-    });
+    if (companyId) {
+      await prisma.company.findUniqueOrThrow({ where: { id: companyId } }).catch(() => {
+        throw new HttpError(400, "Unrecognized Company selection.");
+      });
+    }
 
     const { targetCalendarYear } = await getFiscalCycle();
     const parsed = await parseRevenueTemplate(req.file.buffer);
@@ -185,15 +190,16 @@ router.post(
     // Each row travels DOE's normal review chain independently from here on
     // (same submitRequest the old one-shot DOE bulk upload already used, in
     // the same per-row try/catch shape) - a row that can't auto-submit (the
-    // attachment-threshold case) is left in DRAFT for the requestor to
-    // finish manually rather than failing the whole batch.
+    // attachment-threshold case, or one needing a reviewer picked on its own
+    // screen) is left in DRAFT for the requestor to finish manually rather
+    // than failing the whole batch.
     const submitErrors: { row: string; error: string }[] = [];
     for (const row of rows) {
       try {
         await submitRequest(row.id);
       } catch (err) {
-        if (err instanceof HttpError && err.message.includes("attachments")) {
-          submitErrors.push({ row: row.budgetCode ?? row.id, error: err.message });
+        if (isPostUploadReviewerError(err)) {
+          submitErrors.push({ row: row.budgetCode ?? row.id, error: err instanceof Error ? err.message : "Unknown error" });
           continue;
         }
         throw err;

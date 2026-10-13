@@ -41,12 +41,15 @@ const ICONS = {
 
 // Budget Report & Analysis's own menu: each item is a view of the same Reports page
 // (or the separate 5-Year Trend page). Active state comes from the URL, not NavLink's path match.
+// Turn back on to show the Manpower Budget sidebar entry again. The module and its routes are kept.
+const SHOW_MANPOWER_BUDGET_NAV = false;
+
 const REPORT_GROUPS: { title: string; items: { id: string; label: string; to: string }[] }[] = [
   {
     title: "GAE",
     items: [
       { id: "budget-actual", label: "Budget, Actual, Forecast YTD/Annual Comparisons", to: "/reports?comparison=budget-actual" },
-      { id: "yoy-actual", label: "Last Year Comparisons", to: "/reports?comparison=yoy-actual" },
+      { id: "cy-actual-ly-actual", label: "Last Year Comparisons", to: "/reports?comparison=cy-actual-ly-actual" },
       { id: "monthly-comparison", label: "Monthly Comparisons", to: "/reports?comparison=monthly-comparison" },
       { id: "quarterly-comparison", label: "Quarterly Comparisons", to: "/reports?comparison=quarterly-comparison" },
       { id: "trend", label: "5-Year Trend", to: "/reports/trend" },
@@ -246,39 +249,25 @@ function Step5SubMenu() {
     queryFn: async () => (await api.get<BudgetRequest[]>("/budget-requests/step5-dashboard")).data,
   });
   const countFor = (category: string) => step5Requests.filter((r) => r.requestCategory === category).length;
+  // Every category that goes through Finalize & Upload - NPC's pending list
+  // moved onto this same "Pending Requests" page instead of its own.
+  const pendingMenuCount = ["GAE", "DOE", "COMMISSION", "COST_OF_SALES", "DEPRECIATION_AMORTIZATION", "INTEREST_EXPENSE", "REVENUE", "NPC"].reduce((sum, c) => sum + countFor(c), 0);
 
   return (
     <div className="ml-7 mt-1 flex flex-col gap-0.5 border-l border-emerald-100 pl-3">
-      <NavLink to="/step5?category=GAE" className={subLinkClass(currentCategory === "GAE")}>
-        General &amp; Administrative Expenses (GAE)
-        <SubLinkBadge count={countFor("GAE")} />
+      {/* One entry for GAE and every SBU-scoped category (DOE, Commission, Cost of Sales,
+          D&A, Interest Expense, Revenue) - they share the Consolidated Board-Approved P&L. */}
+      <NavLink to="/step5?category=SBU" className={subLinkClass(currentCategory === "SBU")}>
+        Consolidated Board-Approved P&amp;L
       </NavLink>
-      <NavLink to="/step5?category=DOE" className={subLinkClass(currentCategory === "DOE")}>
-        Direct Operating Expenses (DOE)
-        <SubLinkBadge count={countFor("DOE")} />
-      </NavLink>
-      <NavLink to="/step5?category=COMMISSION" className={subLinkClass(currentCategory === "COMMISSION")}>
-        Commission
-        <SubLinkBadge count={countFor("COMMISSION")} />
-      </NavLink>
-      <NavLink to="/step5?category=COST_OF_SALES" className={subLinkClass(currentCategory === "COST_OF_SALES")}>
-        Cost of Sales
-        <SubLinkBadge count={countFor("COST_OF_SALES")} />
-      </NavLink>
-      <NavLink to="/step5?category=DEPRECIATION_AMORTIZATION" className={subLinkClass(currentCategory === "DEPRECIATION_AMORTIZATION")}>
-        Depreciation &amp; Amortization
-        <SubLinkBadge count={countFor("DEPRECIATION_AMORTIZATION")} />
-      </NavLink>
-      <NavLink to="/step5?category=INTEREST_EXPENSE" className={subLinkClass(currentCategory === "INTEREST_EXPENSE")}>
-        Interest Expense
-        <SubLinkBadge count={countFor("INTEREST_EXPENSE")} />
-      </NavLink>
-      <NavLink to="/step5?category=NPC" className={subLinkClass(currentCategory === "NPC")}>
-        Non-Project Capex (NPC)
-        <SubLinkBadge count={countFor("NPC")} />
-      </NavLink>
-      <NavLink to="/step5?category=REVENUE" className={subLinkClass(currentCategory === "REVENUE")}>
-        Revenue
+      {/* Every category's own Finalize & Upload / Return pending list,
+          filterable by SBU/NPC SBU (see Step5PendingRequestsPage.tsx) -
+          split out from the Consolidated Board-Approved P&L page so that
+          page is just the board-approved figures, and NPC's own pending
+          list folded in here too instead of a separate NPC page. */}
+      <NavLink to="/step5/pending" className={({ isActive }) => subLinkClass(isActive)}>
+        Pending Requests
+        <SubLinkBadge count={pendingMenuCount} />
       </NavLink>
       <NavLink to="/step5/finalized-budget" className={({ isActive }) => subLinkClass(isActive)}>
         Finalized Budget Report
@@ -299,14 +288,6 @@ function ForecastSubMenu() {
       {gate("forecast.gae", true) && (
         <NavLink to="/forecast?category=GAE" className={subLinkClass(currentCategory === "GAE")}>
           General &amp; Administrative Expenses (GAE)
-        </NavLink>
-      )}
-      {SBU_TYPES.some((t) => gate(`forecast.${t.access}`, false)) && (
-        <NavLink
-          to={`/forecast?category=${SBU_TYPES.find((t) => gate(`forecast.${t.access}`, false))!.key}`}
-          className={subLinkClass(SBU_TYPES.some((t) => t.key === currentCategory))}
-        >
-          SBU Budget (Upload Template)
         </NavLink>
       )}
       {gate("forecast.npc", true) && (
@@ -601,26 +582,57 @@ export function Layout() {
   if (!currentUser) {
     return (
       <div className="flex min-h-screen flex-col md:flex-row">
-        <div className="flex flex-col justify-center gap-10 bg-gradient-to-br from-[#15603a] to-[#052e1a] p-10 text-white md:w-[38%] md:min-w-[320px] md:max-w-[560px]">
+        {/* Sign-in on the left, brand panel on the right. */}
+        <div className="flex flex-1 flex-col justify-center bg-white p-10 md:w-[38%] md:min-w-[340px] md:max-w-[480px]">
+          <div className="mb-8 flex items-center gap-3">
+            <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-emerald-800 text-2xl font-bold text-white">₱</div>
+            <div>
+              <div className="text-xl font-bold tracking-tight text-emerald-900">Budgeting System</div>
+              <div className="text-xs font-medium tracking-wider text-emerald-700">Ortigas Group</div>
+            </div>
+          </div>
+          <div className="text-lg font-semibold text-slate-800">Sign in</div>
+          <div className="mt-4">
+            <RoleSwitcher />
+          </div>
+        </div>
+        <div className="relative flex flex-1 flex-col items-center justify-center gap-10 overflow-hidden bg-gradient-to-br from-[#15603a] to-[#052e1a] p-10 text-center text-white">
           <div>
-            <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-white text-2xl font-bold text-emerald-800">₱</div>
-            <div className="mt-5 text-2xl font-bold tracking-tight">Budgeting System</div>
-            <div className="mt-1 text-sm font-medium tracking-wider text-emerald-200">Ortigas Group</div>
-            <p className="mt-6 text-sm leading-relaxed text-emerald-100">Set, track, and report the annual budget in one place.</p>
+            <div className="mt-2 text-4xl font-bold leading-tight">Welcome to the Budgeting System</div>
+            <p className="mt-4 text-base leading-relaxed text-emerald-100">Set, track, and report the annual budget in one place.</p>
           </div>
           <div>
             <div className="mb-4 text-xs font-medium text-emerald-300">Modules</div>
-            <ol className="space-y-3 text-sm text-emerald-50">
-              <li className="flex items-center gap-3"><span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-white/15 text-xs font-semibold">1</span>Annual Budget Setting</li>
-              <li className="flex items-center gap-3"><span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-white/15 text-xs font-semibold">2</span>Budget Utilization Tracking</li>
-              <li className="flex items-center gap-3"><span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-white/15 text-xs font-semibold">3</span>Budget Transfer &amp; Reallocation</li>
-              <li className="flex items-center gap-3"><span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-white/15 text-xs font-semibold">4</span>Budget Report &amp; Analysis</li>
-            </ol>
-          </div>
-        </div>
-        <div className="relative flex flex-1 items-center justify-center overflow-hidden bg-emerald-50 p-8">
-          <div className="relative w-full max-w-md rounded-xl border border-emerald-200 bg-white p-8 shadow-sm">
-            <RoleSwitcher />
+            <div className="grid w-full max-w-2xl grid-cols-1 gap-3 text-left sm:grid-cols-2">
+            <div className="rounded-xl border border-white/15 bg-white/5 p-4">
+              <div className="flex items-center gap-3">
+                <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-white/15 text-xs font-semibold">1</span>
+                <div className="text-sm font-semibold text-white">Annual Budget Setting</div>
+              </div>
+              <p className="mt-2 text-xs leading-relaxed text-emerald-100/80">Set and approve each year’s budget by department and SBU.</p>
+            </div>
+            <div className="rounded-xl border border-white/15 bg-white/5 p-4">
+              <div className="flex items-center gap-3">
+                <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-white/15 text-xs font-semibold">2</span>
+                <div className="text-sm font-semibold text-white">Budget Utilization Tracking</div>
+              </div>
+              <p className="mt-2 text-xs leading-relaxed text-emerald-100/80">Follow actual spending, commitments and balances against budget.</p>
+            </div>
+            <div className="rounded-xl border border-white/15 bg-white/5 p-4">
+              <div className="flex items-center gap-3">
+                <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-white/15 text-xs font-semibold">3</span>
+                <div className="text-sm font-semibold text-white">Budget Transfer & Reallocation</div>
+              </div>
+              <p className="mt-2 text-xs leading-relaxed text-emerald-100/80">Move budget between cost centers with a documented approval trail.</p>
+            </div>
+            <div className="rounded-xl border border-white/15 bg-white/5 p-4">
+              <div className="flex items-center gap-3">
+                <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-white/15 text-xs font-semibold">4</span>
+                <div className="text-sm font-semibold text-white">Budget Report & Analysis</div>
+              </div>
+              <p className="mt-2 text-xs leading-relaxed text-emerald-100/80">Compare budget, actual and forecast across periods and categories.</p>
+            </div>
+            </div>
           </div>
         </div>
       </div>
@@ -631,7 +643,7 @@ export function Layout() {
   // every phase) - the sidebar below it is nav-only, not a second place
   // carrying the same branding.
   return (
-    <div className="flex h-screen flex-col bg-[#f5faf7]">
+    <div className="flex h-screen flex-col bg-slate-50">
       <div className="flex shrink-0 items-center justify-between bg-gradient-to-r from-[#15603a] to-[#052e1a] px-6 py-4">
         <div className="flex items-center gap-3">
           <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-white/15 text-lg font-bold text-white ring-1 ring-white/30">₱</div>
@@ -663,7 +675,7 @@ export function Layout() {
             sub-menu), so it gets no sidebar at all now, same as any other
             single-page phase would. */}
         {!isAtPhaseMenu && (isAdminConsole || currentPhase.number === 1 || currentPhase.number === 2 || currentPhase.number === 3 || currentPhase.number === 4) && (
-          <aside className="sidebar-dark flex w-64 shrink-0 flex-col overflow-y-auto border-r border-emerald-900/10 bg-gradient-to-b from-[#15603a] to-[#052e1a]">
+          <aside className="flex w-64 shrink-0 flex-col overflow-y-auto border-r border-slate-200 bg-white">
             <nav className="flex flex-1 flex-col gap-1 px-3 py-4">
               {isAdminConsole && <AdminConsoleSidebarNav />}
               {!isAdminConsole && currentPhase.number === 4 && (
@@ -736,7 +748,8 @@ export function Layout() {
                       </span>
                     </NavItem>
                   )}
-                  {(isHrAnalyst || isBudgetOfficer || isHrHead) &&
+                  {/* Manpower Budget is hidden for now (the module is kept, for later). */}
+                  {SHOW_MANPOWER_BUDGET_NAV && (isHrAnalyst || isBudgetOfficer || isHrHead) &&
                     (isHrAnalyst ? (
                       <CollapsibleNavGroup to="/manpower" icon="manpower" label="Manpower Budget" defaultOpen>
                         <ManpowerSubMenu />

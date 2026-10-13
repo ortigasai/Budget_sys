@@ -318,7 +318,7 @@ const MOBILE_PHONE_BUDGET_INCLUDE = {
 additionalHeadcountRouter.get(
   "/mobile-phone-budget-inbox",
   asyncHandler(async (req, res) => {
-    const adminServicesDept = await prisma.department.findUnique({ where: { name: "Admin Services" } });
+    const adminServicesDept = await prisma.department.findUnique({ where: { name: "Administrative Services" } });
     if (!adminServicesDept) {
       res.json([]);
       return;
@@ -504,7 +504,7 @@ additionalHeadcountRouter.post(
   "/mobile-phone-budget/:id/decision",
   requireRole(RoleType.CENTRALIZED_FIRST_LEVEL_REVIEWER, RoleType.CENTRALIZED_DEPARTMENT_HEAD),
   asyncHandler(async (req, res) => {
-    const adminServicesDept = await prisma.department.findUniqueOrThrow({ where: { name: "Admin Services" } });
+    const adminServicesDept = await prisma.department.findUniqueOrThrow({ where: { name: "Administrative Services" } });
     const { decision, comment } = z
       .object({ decision: z.enum(["APPROVE", "REJECT"]), comment: z.string().optional() })
       .parse(req.body);

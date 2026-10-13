@@ -301,7 +301,7 @@ export function AdditionalHeadcountTab({ subtitle }: { subtitle: string }) {
 
   return (
     <div className="mx-auto max-w-6xl space-y-4">
-      <div ref={setFrozenHeaderEl} className="sticky top-0 z-30 space-y-4 bg-[#f5faf7] pb-3 pt-1">
+      <div ref={setFrozenHeaderEl} className="sticky top-0 z-30 space-y-4 bg-slate-50 pb-3 pt-1">
         <PageHeader
           subtitle={subtitle}
           actions={
