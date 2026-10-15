@@ -803,9 +803,7 @@ export function Layout() {
 
         <main className="min-w-0 flex-1 overflow-y-auto">
           <div className="px-8 py-6">
-            <div className="mx-auto max-w-6xl">
-              <Outlet />
-            </div>
+            <Outlet />
           </div>
         </main>
       </div>

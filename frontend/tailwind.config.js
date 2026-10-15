@@ -6,7 +6,15 @@ export default {
   theme: {
     extend: {
       fontFamily: {
-        sans: ["'Plus Jakarta Sans'", ...defaultTheme.fontFamily.sans],
+        sans: [
+          "-apple-system",
+          "BlinkMacSystemFont",
+          "'Segoe UI'",
+          "Roboto",
+          "Helvetica",
+          "Arial",
+          "sans-serif",
+        ],
       },
       // Ortigas Land brand green (sampled from the official logo). Overrides
       // Tailwind's built-in `emerald` scale in place, so every existing
