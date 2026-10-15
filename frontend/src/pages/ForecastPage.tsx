@@ -771,7 +771,7 @@ export function ForecastPage() {
 
   return (
     <div className="space-y-4">
-      <div className="sticky top-0 z-30 -mb-4 space-y-2 bg-slate-50 pb-1 pt-1">
+      <div className="sticky top-0 z-30 space-y-2 bg-white pb-1 pt-1">
         {is2026RestrictedToBudgetOfficer && (
           <div className="text-sm text-slate-500">{forecastYear} Remaining Months Forecast is entered by the Budget Officer only, via Upload Completed Template — the normal per-department process resumes for the next cycle.</div>
         )}
@@ -791,6 +791,16 @@ export function ForecastPage() {
                 </select>
               </div>
             )}
+            {viewableDepts.length > 1 && (
+              <select className="rounded border border-slate-300 px-2 py-1.5 text-sm" value={effectiveDeptId} onChange={(e) => setDepartmentId(e.target.value)}>
+                {isBudgetOfficer && <option value="ALL">All Departments</option>}
+                {viewableDepts.map((d) => (
+                  <option key={d.id} value={d.id}>
+                    {d.name}
+                  </option>
+                ))}
+              </select>
+            )}
             {forecastYear !== 2026 && <StatusBadge stage={stage} />}
             {canEditValues && forecastYear !== 2026 && (
               <button onClick={() => submitMutation.mutate()} disabled={rows.length === 0 || anyIncomplete || submitMutation.isPending} className="rounded-md bg-emerald-700 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-600 disabled:opacity-50">
@@ -800,12 +810,12 @@ export function ForecastPage() {
           </div>
         }
       />
-      <div className="grid grid-cols-1 gap-4 rounded-lg border border-emerald-200 bg-emerald-50 p-4 text-sm shadow-sm sm:grid-cols-2">
-        <div>
+      <div className="grid grid-cols-1 gap-4 text-sm sm:grid-cols-2">
+        <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-4 shadow-sm">
           <label className="block font-medium text-emerald-800">Department</label>
           <div className="mt-1 rounded border border-emerald-200 bg-white px-2 py-1.5 text-emerald-950">{isAllMode ? "All Departments" : (eligibleDepts.find((d) => d.id === effectiveDeptId)?.name ?? "—")}</div>
         </div>
-        <div>
+        <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-4 shadow-sm">
           <label className="block font-medium text-emerald-800">Forecast Year</label>
           <div className="mt-1 rounded border border-emerald-200 bg-white px-2 py-1.5 text-emerald-950">{forecastYear}</div>
         </div>
@@ -816,7 +826,7 @@ export function ForecastPage() {
       )}
 
       {isBudgetOfficer && (
-        <div className="flex flex-wrap items-center gap-4 rounded-lg border border-slate-200 bg-white p-3 shadow-sm">
+        <div className="flex flex-wrap items-center gap-4">
           {/* Note 11 §9 - live-generated, pre-populated version of the same
               template the plain upload below expects (NPC has its own
               distinct shape/page - see NpcForecastView.tsx). Gated to fiscal
@@ -877,24 +887,7 @@ export function ForecastPage() {
               )}
             </div>
           )}
-        </div>
-      )}
-
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        {viewableDepts.length > 1 ? (
-          <select className="rounded border border-slate-300 px-2 py-1.5 text-sm" value={effectiveDeptId} onChange={(e) => setDepartmentId(e.target.value)}>
-            {isBudgetOfficer && <option value="ALL">All Departments</option>}
-            {viewableDepts.map((d) => (
-              <option key={d.id} value={d.id}>
-                {d.name}
-              </option>
-            ))}
-          </select>
-        ) : (
-          <span />
-        )}
-        {isBudgetOfficer && (
-          <div className="flex items-center gap-3">
+          <div className="ml-auto flex flex-wrap items-center gap-3">
             {lastSyncedLabel && (
               <span className="text-xs text-slate-500" title="SAP data refreshes automatically every 10 minutes.">
                 {lastSyncedLabel}
@@ -913,8 +906,8 @@ export function ForecastPage() {
             </button>
             {syncStatus && <span className={`text-xs ${syncStatus.ok ? "text-emerald-700" : "text-red-600"}`}>{syncStatus.message}</span>}
           </div>
-        )}
-      </div>
+        </div>
+      )}
       {isError && <div className="text-sm text-red-700">You can only view your own department's forecast.</div>}
 
       {/* Notes_9: column layout matches "Budgeting System_Forecast

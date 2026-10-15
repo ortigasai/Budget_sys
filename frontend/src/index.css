@@ -32,6 +32,17 @@
   background: #64748b;
 }
 
+/* The sidebar's nav list normally fits without scrolling; keep it
+   scrollable as a fallback for short screens with multiple groups
+   expanded, but don't show a track for the common case. */
+.no-scrollbar {
+  scrollbar-width: none;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
 table {
   border-collapse: separate;
   border-spacing: 0;
@@ -69,7 +80,7 @@ table tbody td {
 }
 
 body {
-  @apply bg-slate-50 text-slate-900;
+  @apply bg-white text-slate-900;
 }
 
 /* Frozen table headers: every table's <thead> stays at the top while its rows

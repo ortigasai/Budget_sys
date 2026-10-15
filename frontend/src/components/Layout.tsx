@@ -643,7 +643,7 @@ export function Layout() {
   // every phase) - the sidebar below it is nav-only, not a second place
   // carrying the same branding.
   return (
-    <div className="flex h-screen flex-col bg-slate-50">
+    <div className="flex h-screen flex-col bg-white">
       <div className="flex shrink-0 items-center justify-between bg-gradient-to-r from-[#15603a] to-[#052e1a] px-6 py-4">
         <div className="flex items-center gap-3">
           <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-white/15 text-lg font-bold text-white ring-1 ring-white/30">₱</div>
@@ -675,7 +675,7 @@ export function Layout() {
             sub-menu), so it gets no sidebar at all now, same as any other
             single-page phase would. */}
         {!isAtPhaseMenu && (isAdminConsole || currentPhase.number === 1 || currentPhase.number === 2 || currentPhase.number === 3 || currentPhase.number === 4) && (
-          <aside className="flex w-64 shrink-0 flex-col overflow-y-auto border-r border-slate-200 bg-white">
+          <aside className="no-scrollbar flex w-64 shrink-0 flex-col overflow-y-auto border-r border-slate-200 bg-white">
             <nav className="flex flex-1 flex-col gap-1 px-3 py-4">
               {isAdminConsole && <AdminConsoleSidebarNav />}
               {!isAdminConsole && currentPhase.number === 4 && (

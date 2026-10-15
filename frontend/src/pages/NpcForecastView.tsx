@@ -222,7 +222,7 @@ export function NpcForecastView() {
 
   return (
     <div className="space-y-4">
-      <div className="sticky top-0 z-30 space-y-2 bg-slate-50 pb-1 pt-1">
+      <div className="sticky top-0 z-30 space-y-2 bg-white pb-1 pt-1">
       <PageHeader
         subtitle={`Months through ${MONTH_NAMES[asOfMonth - 1]} are already in Actuals - only remaining months are editable.`}
         actions={
@@ -251,12 +251,12 @@ export function NpcForecastView() {
           </div>
         }
       />
-      <div className="grid grid-cols-1 gap-4 rounded-lg border border-emerald-200 bg-emerald-50 p-4 text-sm shadow-sm sm:grid-cols-2">
-        <div>
+      <div className="grid grid-cols-1 gap-4 text-sm sm:grid-cols-2">
+        <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-4 shadow-sm">
           <label className="block font-medium text-emerald-800">SBU</label>
           <div className="mt-1 rounded border border-emerald-200 bg-white px-2 py-1.5 text-emerald-950">{NPC_SBU_OPTIONS.find((o) => o.value === effectiveSbu)?.label ?? "—"}</div>
         </div>
-        <div>
+        <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-4 shadow-sm">
           <label className="block font-medium text-emerald-800">Forecast Year</label>
           <div className="mt-1 rounded border border-emerald-200 bg-white px-2 py-1.5 text-emerald-950">{forecastYear}</div>
         </div>

@@ -301,7 +301,7 @@ export function AdditionalHeadcountTab({ subtitle }: { subtitle: string }) {
 
   return (
     <div className="mx-auto max-w-6xl space-y-4">
-      <div ref={setFrozenHeaderEl} className="sticky top-0 z-30 space-y-4 bg-slate-50 pb-3 pt-1">
+      <div ref={setFrozenHeaderEl} className="sticky top-0 z-30 space-y-4 bg-white pb-3 pt-1">
         <PageHeader
           subtitle={subtitle}
           actions={
@@ -314,12 +314,12 @@ export function AdditionalHeadcountTab({ subtitle }: { subtitle: string }) {
             </button>
           }
         />
-        <div className="grid grid-cols-2 gap-4 rounded-lg border border-emerald-200 bg-emerald-50 p-4 text-sm shadow-sm">
-          <div>
+        <div className="grid grid-cols-2 gap-4 text-sm">
+          <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-4 shadow-sm">
             <label className="block font-medium text-emerald-800">Originating Department</label>
             <div className="mt-1 rounded border border-emerald-200 bg-white px-2 py-1.5 text-emerald-950">{currentUser?.department?.name}</div>
           </div>
-          <div>
+          <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-4 shadow-sm">
             <label className="block font-medium text-emerald-800">Target Calendar Year</label>
             <div className="mt-1 rounded border border-emerald-200 bg-white px-2 py-1.5 text-emerald-950">{FISCAL_YEAR}</div>
           </div>
