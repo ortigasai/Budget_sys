@@ -79,9 +79,12 @@
     IIS object names. Defaults to "BudgetingSystem" / "BudgetingSystemPool".
 
 .PARAMETER NodeApiPort / PyApiPort
-    Internal loopback-only ports for the two backend services. Must match
-    PORT in backend/.env and the --port passed to uvicorn (defaults 4000 /
-    8010, matching the rest of this project).
+    Internal loopback-only ports for the two backend services. NodeApiPort
+    defaults to PORT in backend/.env (the port the Node service actually
+    listens on), falling back to 4000 if PORT isn't set; passing a value that
+    differs from backend/.env's PORT is an error, since IIS would then proxy
+    /api to the wrong port. PyApiPort is passed to uvicorn as --port
+    (default 8010).
 
 .PARAMETER PostgresPort
     Used only to scope the outbound firewall rule. Defaults to 5432.
@@ -345,6 +348,19 @@ if (-not $pyEnv.ContainsKey("DATABASE_URL") -or [string]::IsNullOrWhiteSpace($py
     throw "backend-py\.env: DATABASE_URL is not set."
 }
 Write-Host "  JWT_SECRET matches on both services, DATABASE_URL present on both. OK."
+
+# The Node service listens on backend\.env's PORT, while the IIS rewrite rule
+# below proxies /api to $NodeApiPort - these must agree, or /api requests go
+# to whatever else is on that port (confirmed live: another pm2-managed app
+# held 4000 while this service ran on 4010).
+if ($nodeEnv.ContainsKey("PORT") -and -not [string]::IsNullOrWhiteSpace($nodeEnv.PORT)) {
+    $envPort = [int]$nodeEnv.PORT
+    if ($PSBoundParameters.ContainsKey("NodeApiPort") -and $NodeApiPort -ne $envPort) {
+        throw "-NodeApiPort $NodeApiPort differs from PORT=$envPort in backend\.env - the Node service listens on $envPort, so IIS must proxy there. Drop -NodeApiPort or make them match."
+    }
+    $NodeApiPort = $envPort
+}
+Write-Host "  Node API port: $NodeApiPort (IIS will proxy /api and /uploads here)."
 
 # ---------------------------------------------------------------------------
 # 5. Install dependencies once (workspaces root), then build each app
@@ -630,6 +646,15 @@ try {
     Write-Host "  IIS site / -> $($site.StatusCode)"
 } catch {
     Write-Warning "  IIS site check failed: $_"
+}
+# End to end through the IIS reverse proxy, not just each piece on its own -
+# catches IIS proxying /api to the wrong port. /api/auth/users is the
+# unauthenticated route the login page calls.
+try {
+    $api = Invoke-WebRequest -Uri "http://localhost:$Port/api/auth/users" -UseBasicParsing -TimeoutSec 10
+    Write-Host "  IIS -> Node API /api/auth/users -> $($api.StatusCode)"
+} catch {
+    Write-Warning "  IIS -> Node API check failed (login page will not load users): $_"
 }
 
 # Confirms the automatic SAP sync scheduler actually started (not just that

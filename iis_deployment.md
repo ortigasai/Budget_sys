@@ -142,7 +142,7 @@ run if they're missing or left at placeholder values.
 | Variable       | What to set it to |
 |----------------|--------------------|
 | `DATABASE_URL` | Your production Postgres connection string, e.g. `postgresql://postgres:yourpassword@192.168.0.215:5432/budgeting_system?schema=public` — same host/port/db/user as the [database section](#database-first-migrating-from-your-laptop-against-the-servers-postgresql) above. If Postgres runs on this same IIS server instead of a separate DB box, `localhost` is fine here. |
-| `PORT`         | Leave at `4000` unless you also change `-NodeApiPort` when running the script. |
+| `PORT`         | The port the Node service listens on (default `4000`). Change it if something else on the server already uses 4000. The script reads it from here and points IIS's `/api` proxy at it, so you don't need to pass `-NodeApiPort`. |
 | `HOST`         | **Add this line: `HOST=127.0.0.1`.** Not in the example file — it's what keeps this service off every network interface except loopback, so it's only reachable through the IIS reverse proxy. Without it the service listens on all interfaces (fine in dev, not what you want here since there's no inbound firewall rule opening port 4000). |
 | `UPLOAD_DIR`   | Leave as `./uploads`, or point it at a dedicated data folder if you want uploads to survive outside the deploy folder (see [Redeploying](#redeploying--updating) below). |
 | `JWT_SECRET`   | **Must be changed from the example placeholder.** Generate a real random value, e.g. in PowerShell: `[Convert]::ToBase64String((1..48 | ForEach-Object { Get-Random -Maximum 256 }))`. The script hard-fails if this is still `replace-with-a-random-secret`. |
