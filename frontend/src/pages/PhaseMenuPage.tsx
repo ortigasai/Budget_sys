@@ -37,13 +37,13 @@ export function PhaseMenuPage() {
             <Link
               key={phase.number}
               to={phase.to}
-              className="group flex flex-col gap-3 rounded-xl border border-emerald-900/40 bg-gradient-to-br from-[#15603a] to-[#052e1a] p-5 shadow-sm transition-colors hover:border-emerald-300/60"
+              className="group flex flex-col gap-3 rounded-xl border border-emerald-200 bg-emerald-50 p-5 shadow-sm transition hover:border-emerald-400 hover:shadow-md"
             >
               <div className="flex items-center gap-3">
-                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-white/10 text-sm font-bold text-white">{phase.number}</div>
-                <div className="text-base font-semibold text-white">{phase.title}</div>
+                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-emerald-700 text-sm font-bold text-white">{phase.number}</div>
+                <div className="text-base font-semibold text-emerald-900">{phase.title}</div>
               </div>
-              <p className="text-sm text-emerald-100/80">{phase.description}</p>
+              <p className="text-sm text-slate-600">{phase.description}</p>
             </Link>
           ) : (
             <div key={phase.number} className="flex flex-col rounded-xl border border-slate-200 bg-slate-50 p-5 opacity-60">
