@@ -1,23 +1,13 @@
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
-import { BoardApprovedGrid } from "../components/BoardApprovedGrid";
+import { BoardApprovedGrid, type BoardBudgetRow } from "../components/BoardApprovedGrid";
 import { ConsolidatedTotalsTables, approvedProposedLookup } from "../components/ConsolidatedTotalsTables";
 import { api, SBU_OPTIONS, type BudgetRequest, type FinalizedBudgetReport, type RequestCategory, type Sbu } from "../api/client";
 import { SBU_BATCH_TYPES } from "../components/SbuTypeSwitch";
 import { PageHeader } from "../components/PageHeader";
 import { useAuth } from "../context/AuthContext";
 import { useFiscalYear } from "../lib/fiscalCycle";
-
-interface BoardBudgetRow {
-  id: string;
-  fiscalYear: number;
-  amount: number;
-  requestCategory: RequestCategory;
-  sbu: Sbu | null;
-  setAt: string;
-}
-
 
 export function Step5DashboardPage() {
   const { hasRole } = useAuth();

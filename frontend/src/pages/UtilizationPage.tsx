@@ -299,7 +299,7 @@ export function UtilizationPage() {
                 {lastSyncedLabel}
               </span>
             )}
-            {!isBca && tab !== "npc" && departments.length > 1 && (
+            {!isBca && departments.length > 1 && (
               <select value={effectiveDeptId} onChange={(e) => setDepartmentId(e.target.value)} className="rounded border border-slate-300 px-2 py-1.5 text-sm">
                 <option value="ALL">All Departments</option>
                 {departments.map((d) => (
