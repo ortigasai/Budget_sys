@@ -12,7 +12,10 @@
       1. Verifies it is running elevated, on Windows, with Node/Python present.
       2. Installs (if missing) the IIS role, the URL Rewrite module, the
          Application Request Routing (ARR) module, and NSSM.
-      3. Copies the source tree from -SourcePath to -DeployPath.
+      3. Stops the two NSSM services if already running (so a redeploy's
+         `npm ci` doesn't hit a file lock on node_modules - see the comment
+         above that step), then copies the source tree from -SourcePath to
+         -DeployPath.
       4. Validates backend/.env and backend-py/.env (fails fast on an
          unedited placeholder JWT_SECRET or a JWT_SECRET mismatch).
       5. Builds the frontend (vite build) and the Node backend (tsc).
@@ -254,8 +257,27 @@ if (-not $SkipPrereqs) {
 }
 
 # ---------------------------------------------------------------------------
-# 3. Copy source -> deploy path
+# 3. Stop existing services, then copy source -> deploy path
 # ---------------------------------------------------------------------------
+# node_modules is excluded from the robocopy mirror below (see /XD further
+# down) so it persists across redeploys and `npm ci` updates it in place
+# rather than a from-scratch install every time. If the previous
+# BudgetingSystemApi process from an earlier deploy is still running, it
+# holds an open handle on files inside it (e.g.
+# node_modules\.prisma\client\query_engine-windows.dll.node), and npm ci's
+# attempt to replace that file fails with EPERM - confirmed live on a
+# redeploy. Stopping both services first releases those handles; `nssm stop`
+# on a service that isn't registered yet (a first-ever deploy) is a no-op,
+# not an error, under the same non-terminating-stderr guard
+# Install-NssmService uses below.
+Write-Step "Stopping existing services (if running)"
+$previousEap = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+foreach ($svc in @("BudgetingSystemApi", "BudgetingSystemPyApi")) {
+    & $script:nssmExe stop $svc *> $null
+}
+$ErrorActionPreference = $previousEap
+
 Write-Step "Copying $SourcePath -> $DeployPath"
 New-Item -ItemType Directory -Force -Path $DeployPath | Out-Null
 robocopy $SourcePath $DeployPath /MIR /XD node_modules venv .git dist "__pycache__" /XF "*.log" /NFL /NDL /NJH /NJS | Out-Null
