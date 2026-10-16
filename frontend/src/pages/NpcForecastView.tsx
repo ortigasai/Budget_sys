@@ -224,7 +224,7 @@ export function NpcForecastView() {
     <div className="space-y-4">
       <div className="sticky top-0 z-30 space-y-2 bg-white pb-1 pt-1">
       <PageHeader
-        subtitle={`Months through ${MONTH_NAMES[asOfMonth - 1]} are already in Actuals - only remaining months are editable.`}
+        subtitle={`Months through ${MONTH_NAMES[asOfMonth - 1]} are already in Actuals — only remaining months are editable.`}
         actions={
           <div className="flex items-center gap-3">
             {isBudgetOfficer && (
