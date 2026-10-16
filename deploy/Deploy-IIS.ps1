@@ -18,7 +18,9 @@
          -DeployPath.
       4. Validates backend/.env and backend-py/.env (fails fast on an
          unedited placeholder JWT_SECRET or a JWT_SECRET mismatch).
-      5. Builds the frontend (vite build) and the Node backend (tsc).
+      5. Runs `npm ci` (skipped when package-lock.json is unchanged since the
+         last successful install - see -ForceNpmInstall), then builds the
+         frontend (vite build) and the Node backend (tsc).
       6. Creates/refreshes the backend-py Python virtualenv and installs
          requirements.txt.
       7. Runs database migrations: `prisma migrate deploy` then
@@ -92,6 +94,12 @@
     Skip the `prisma migrate deploy` / `alembic upgrade head` steps (use
     when you've already migrated, or want to run them manually first).
 
+.PARAMETER ForceNpmInstall
+    Run `npm ci` even when package-lock.json is unchanged since the last
+    successful install. By default a redeploy reuses the existing
+    node_modules in that case, since `npm ci` always deletes and reinstalls
+    all of it - very slow on Windows Server with antivirus scanning on.
+
 .EXAMPLE
     .\Deploy-IIS.ps1
     Run from an elevated PowerShell prompt, from inside a checkout of this
@@ -112,7 +120,8 @@ param(
     [int]$PyApiPort = 8010,
     [int]$PostgresPort = 5432,
     [switch]$SkipPrereqs,
-    [switch]$SkipMigrations
+    [switch]$SkipMigrations,
+    [switch]$ForceNpmInstall
 )
 
 $ErrorActionPreference = "Stop"
@@ -278,10 +287,16 @@ foreach ($svc in @("BudgetingSystemApi", "BudgetingSystemPyApi")) {
 }
 $ErrorActionPreference = $previousEap
 
-Write-Step "Copying $SourcePath -> $DeployPath"
-New-Item -ItemType Directory -Force -Path $DeployPath | Out-Null
-robocopy $SourcePath $DeployPath /MIR /XD node_modules venv .git dist "__pycache__" /XF "*.log" /NFL /NDL /NJH /NJS | Out-Null
-if ($LASTEXITCODE -ge 8) { throw "robocopy failed (exit code $LASTEXITCODE) copying source to deploy path." }
+$sourceFull = [IO.Path]::GetFullPath($SourcePath).TrimEnd('\')
+$deployFull = [IO.Path]::GetFullPath($DeployPath).TrimEnd('\')
+if ($sourceFull -ieq $deployFull) {
+    Write-Step "Source and deploy path are the same folder ($deployFull) - skipping copy"
+} else {
+    Write-Step "Copying $SourcePath -> $DeployPath"
+    New-Item -ItemType Directory -Force -Path $DeployPath | Out-Null
+    robocopy $SourcePath $DeployPath /MIR /XD node_modules venv .git dist "__pycache__" /XF "*.log" /NFL /NDL /NJH /NJS | Out-Null
+    if ($LASTEXITCODE -ge 8) { throw "robocopy failed (exit code $LASTEXITCODE) copying source to deploy path." }
+}
 
 $backendPath = Join-Path $DeployPath "backend"
 $backendPyPath = Join-Path $DeployPath "backend-py"
@@ -334,10 +349,22 @@ Write-Host "  JWT_SECRET matches on both services, DATABASE_URL present on both.
 # ---------------------------------------------------------------------------
 # 5. Install dependencies once (workspaces root), then build each app
 # ---------------------------------------------------------------------------
-Write-Step "Installing dependencies (npm workspaces root)"
-Push-Location $DeployPath
-npm ci; Assert-Success "npm ci"
-Pop-Location
+# The hash marker is written only after a successful `npm ci`, so an
+# interrupted install never gets marked as good and is redone next run.
+$lockHash = (Get-FileHash (Join-Path $DeployPath "package-lock.json") -Algorithm SHA256).Hash
+$lockHashMarker = Join-Path $DeployPath "node_modules\.deploy-lockfile-hash"
+$installedHash = if (Test-Path $lockHashMarker) { (Get-Content $lockHashMarker -Raw).Trim() } else { "" }
+if (-not $ForceNpmInstall -and $installedHash -eq $lockHash -and (Test-Path $prismaCli)) {
+    Write-Step "Dependencies unchanged since last install - skipping npm ci (use -ForceNpmInstall to reinstall)"
+} else {
+    Write-Step "Installing dependencies (npm workspaces root) - can take several minutes"
+    Push-Location $DeployPath
+    # --foreground-scripts prints each postinstall's output (e.g. Prisma
+    # downloading its engine) instead of hiding it behind npm's spinner.
+    npm ci --no-audit --no-fund --prefer-offline --foreground-scripts; Assert-Success "npm ci"
+    Pop-Location
+    Set-Content -Path $lockHashMarker -Value $lockHash -NoNewline
+}
 
 Write-Step "Building frontend"
 Push-Location $frontendPath
