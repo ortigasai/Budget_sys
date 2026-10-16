@@ -25,6 +25,8 @@ export interface ExtraField {
 }
 
 export interface ParsedExpenseLineItemRow {
+  // The row's number in the uploaded sheet, for error messages.
+  sheetRow: number;
   category: string;
   name: string;
   companyCode: string | null;
@@ -268,6 +270,7 @@ function parseWorkbook(workbook: ExcelJS.Workbook): ParsedExpenseLineItemRow[] {
     const extraFieldsConfig = parseAdditionalField(additionalFieldRaw, spendGridComputationRaw, spendGridFrequencyRaw);
 
     rows.push({
+      sheetRow: r,
       category,
       name,
       companyCode: companyRaw || null,

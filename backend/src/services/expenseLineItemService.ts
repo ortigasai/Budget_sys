@@ -81,11 +81,25 @@ export async function overrideExpenseLineItemsFromUpload(
     return undefined;
   };
   const errors: string[] = [];
-  rows.forEach((row, i) => {
+  rows.forEach((row) => {
     if (row.companyCode && !companyByCode.has(row.companyCode)) {
-      errors.push(`Row ${i + 1} ("${row.name}"): unknown company code "${row.companyCode}".`);
+      errors.push(`Row ${row.sheetRow} ("${row.name}"): unknown company code "${row.companyCode}".`);
     }
   });
+  // A line item is keyed by category + name + company, so two rows sharing
+  // all three would silently overwrite each other on upsert - reject instead.
+  const rowsById = new Map<string, number[]>();
+  for (const row of rows) {
+    const id = buildExpenseLineItemId(row.category, row.name, row.companyCode);
+    rowsById.set(id, [...(rowsById.get(id) ?? []), row.sheetRow]);
+  }
+  for (const sheetRows of rowsById.values()) {
+    if (sheetRows.length < 2) continue;
+    const row = rows.find((r) => r.sheetRow === sheetRows[0])!;
+    errors.push(
+      `Rows ${sheetRows.join(", ")} are the same line item ("${row.category}" / "${row.name}" / company ${row.companyCode ?? "blank"}) - fill in a different Company for each, or remove the extra rows.`
+    );
+  }
   if (errors.length > 0) {
     return { ok: false, created: 0, updated: 0, removed: 0, migratedRequests: [], skippedRemovals: [], errors };
   }
