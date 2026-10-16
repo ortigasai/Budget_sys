@@ -763,7 +763,7 @@ export function StandardRequestTab({ requestCategory, subtitle }: { requestCateg
               <li>If the amount is over the threshold shown under Proposed Amount, attach the supporting document before submitting.</li>
             </ol>
             <div className="border-t border-emerald-200 pt-2 text-xs text-slate-600">
-              <span className="font-medium text-emerald-800">Bulk upload:</span> download the template, add one row per line item, then upload it. Any rejected rows are listed here with the reason.
+              <span className="font-medium text-emerald-800">Bulk upload:</span> download the template - it already lists your department's line items. Fill in amounts for the ones you need, then upload it. Rows left blank are skipped; any rejected rows are listed here with the reason.
             </div>
           </div>
           {selectedItem && usesHeadcountTable && rateField && (

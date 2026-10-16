@@ -224,8 +224,8 @@ bulkUploadRouter.get(
       [`What to update: the sheet named "${dataSheetName}"`],
       [""],
       ["1. Fill in only the sheet named above. Leave the other tabs as they are."],
-      ["2. One row per expense line item: pick the Expense Category, then the Expense Line Item."],
-      ["3. Enter the amount for each month (Jan to Dec) under the month columns."],
+      ["2. Every Expense Line Item available to your department already has its own row. Fill in only the ones you're budgeting for - rows you leave blank are skipped."],
+      ["3. Enter the amount for each month (Jan to Dec) under the month columns, plus a Business Justification. To budget the same line item twice, pick it again in one of the empty rows at the bottom."],
       ["4. Fill in any Additional Field marked as required, in that field's own column on the data sheet (see the Catalog Reference tab for which fields your chosen item needs)."],
       ["5. Save the file and upload it on the New Request page."],
     ].forEach((row) => instructions.addRow(row));
@@ -238,8 +238,20 @@ bulkUploadRouter.get(
     sheet.getRow(1).font = { bold: true };
     // Open on the sheet the user has to update, not the Instructions tab.
     workbook.views = [{ x: 0, y: 0, width: 10000, height: 20000, firstSheet: 0, activeTab: workbook.worksheets.indexOf(sheet), visibility: "visible" }];
+    // Keep the header row and the category/line item columns in view while scrolling.
+    sheet.views = [{ state: "frozen", xSplit: 2, ySplit: 1 }];
 
-    for (let row = 2; row <= 201; row++) {
+    // One pre-filled row per line item this department can see, grouped by
+    // category; the user only enters amounts on the ones they need.
+    const prefilled = [...items].sort((a, b) => a.category.localeCompare(b.category) || a.name.localeCompare(b.name));
+    prefilled.forEach((item, i) => {
+      sheet.getCell(`A${i + 2}`).value = item.category;
+      sheet.getCell(`B${i + 2}`).value = item.name;
+    });
+    // Plus empty dropdown rows underneath for a line item budgeted more than once.
+    const lastRow = Math.max(201, prefilled.length + 51);
+
+    for (let row = 2; row <= lastRow; row++) {
       sheet.getCell(`A${row}`).dataValidation = {
         type: "list",
         allowBlank: true,
@@ -362,11 +374,16 @@ bulkUploadRouter.post(
     });
 
     const parsed = parseExpenseRequestSheet(sheet, itemsByName);
+    if (parsed.rowCount === 0) {
+      await prisma.bulkUploadBatch.update({ where: { id: batch.id }, data: { status: "FAILED" } });
+      throw new HttpError(400, "No filled-in rows found - enter monthly amounts and a Business Justification for at least one line item, then upload again.");
+    }
     const errors: RowError[] = [...parsed.errors];
     let created = 0;
     const rowCount = parsed.rowCount;
 
     for (const parsedRow of parsed.rows) {
+      let createdRequestId: string | undefined;
       try {
         // DOE gets a fresh Budget Code per row, same as one manual DOE
         // submission via the Save Draft form (lib/budgetCode.ts) - this
@@ -391,6 +408,7 @@ bulkUploadRouter.post(
             bulkUploadBatchId: batch.id,
           },
         });
+        createdRequestId = requestRecord.id;
 
         try {
           await submitRequest(requestRecord.id);
@@ -406,6 +424,10 @@ bulkUploadRouter.post(
 
         created++;
       } catch (err) {
+        // A rejected row must not leave its draft behind in My Requests.
+        // submitRequest writes nothing before it throws, so the draft has no
+        // child rows yet.
+        if (createdRequestId) await prisma.budgetRequest.delete({ where: { id: createdRequestId } });
         errors.push({ row: parsedRow.row, error: err instanceof Error ? err.message : "Unknown error" });
       }
     }
@@ -516,6 +538,8 @@ bulkUploadRouter.post(
 
       rowCount++;
 
+      let createdRequestId: string | undefined;
+      let createdLineItemId: string | undefined;
       try {
         const location = String(row.getCell(1).value ?? "").trim();
         if (!(NPC_LOCATION_VALUES as readonly string[]).includes(location)) {
@@ -546,6 +570,7 @@ bulkUploadRouter.post(
             status: "PENDING_REFINEMENT",
           },
         });
+        createdLineItemId = expenseLineItem.id;
         const monthlyAmounts = Array(12).fill(0);
         monthlyAmounts[0] = amount;
 
@@ -570,6 +595,7 @@ bulkUploadRouter.post(
             bulkUploadBatchId: batch.id,
           },
         });
+        createdRequestId = requestRecord.id;
 
         try {
           await submitRequest(requestRecord.id);
@@ -581,6 +607,10 @@ bulkUploadRouter.post(
 
         created++;
       } catch (err) {
+        // Same as the GAE upload above: a rejected row leaves nothing behind,
+        // including the custom line item created just for it.
+        if (createdRequestId) await prisma.budgetRequest.delete({ where: { id: createdRequestId } });
+        if (createdLineItemId) await prisma.expenseLineItem.delete({ where: { id: createdLineItemId } });
         errors.push({ row: rowNumber, error: err instanceof Error ? err.message : "Unknown error" });
       }
     }

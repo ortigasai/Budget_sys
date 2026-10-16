@@ -85,6 +85,8 @@ export function parseExpenseRequestSheet(
     if (label) columnByLabel.set(label, c);
   }
   const businessJustificationCol = columnByLabel.get("Business Justification") ?? 16;
+  const extraFieldCols = [...columnByLabel.entries()].filter(([label]) => !FIXED_HEADER.includes(label)).map(([, col]) => col);
+  const hasText = (v: ExcelJS.CellValue) => v !== null && v !== undefined && String(v).trim() !== "";
 
   const rows: ParsedExpenseRequestRow[] = [];
   const errors: ExpenseRequestRowError[] = [];
@@ -100,6 +102,12 @@ export function parseExpenseRequestSheet(
     const categoryCell = String(row.getCell(1).value ?? "").trim();
     const lineItemName = String(row.getCell(2).value ?? "").trim();
     if (!lineItemName) continue; // blank row, not counted
+    // The template comes pre-filled with every line item the department can
+    // see, so a row with only its category/line item and nothing entered is
+    // one the user isn't budgeting for - skipped, not rejected.
+    const hasAmount = Array.from({ length: 12 }, (_, m) => row.getCell(3 + m).value).some((v) => hasText(v) && Number(v) !== 0);
+    const hasOtherInput = hasText(row.getCell(businessJustificationCol).value) || extraFieldCols.some((c) => hasText(row.getCell(c).value));
+    if (!hasAmount && !hasOtherInput) continue;
 
     rowCount++;
 
