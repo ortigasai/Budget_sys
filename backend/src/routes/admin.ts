@@ -548,7 +548,24 @@ adminRouter.post(
   asyncHandler(async (req, res) => {
     if (!req.file) throw new HttpError(400, "No file uploaded.");
     const result = await overrideExpenseLineItemsFromUpload(req.file.buffer, req.user!.id);
+    if (result.ok) {
+      await prisma.expenseLineItemCatalogUpload.create({
+        data: { uploadedById: req.user!.id, fileName: req.file.originalname, created: result.created, updated: result.updated, removed: result.removed },
+      });
+    }
     res.status(result.ok ? 200 : 400).json(result);
+  })
+);
+
+adminRouter.get(
+  "/expense-line-items/last-upload",
+  requireRole(RoleType.BUDGET_OFFICER),
+  asyncHandler(async (_req, res) => {
+    const last = await prisma.expenseLineItemCatalogUpload.findFirst({
+      orderBy: { createdAt: "desc" },
+      include: { uploadedBy: { select: { name: true } } },
+    });
+    res.json(last ? { uploadedAt: last.createdAt, uploadedBy: last.uploadedBy.name, fileName: last.fileName, created: last.created, updated: last.updated, removed: last.removed } : null);
   })
 );
 

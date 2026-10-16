@@ -12,6 +12,10 @@ export function ExpenseLineItemsTab() {
     queryKey: ["expense-line-items", "pending-refinement"],
     queryFn: async () => (await api.get<ExpenseLineItem[]>("/admin/expense-line-items/pending-refinement")).data,
   });
+  const { data: lastUpload, isSuccess: lastUploadLoaded } = useQuery({
+    queryKey: ["expense-line-items", "last-upload"],
+    queryFn: async () => (await api.get<{ uploadedAt: string; uploadedBy: string; fileName: string } | null>("/admin/expense-line-items/last-upload")).data,
+  });
 
   const [refineForm, setRefineForm] = useState<Record<string, { name: string; glAccount: string; costCenter: string }>>({});
 
@@ -44,9 +48,10 @@ export function ExpenseLineItemsTab() {
       }
     },
     onSuccess: (data) => {
+      // Prefix match also refreshes the "last-upload" query.
       queryClient.invalidateQueries({ queryKey: ["expense-line-items"] });
       if (data.ok === false) {
-        setUploadStatus({ ok: false, message: data.errors.join("") });
+        setUploadStatus({ ok: false, message: data.errors.join(" ") });
         return;
       }
       const migrated = data.migratedRequests.length > 0 ? ` ${data.migratedRequests.length} row(s) re-mapped (category changed): ${data.migratedRequests.map((s: any) => s.name).join(",")}.` : "";
@@ -86,6 +91,13 @@ export function ExpenseLineItemsTab() {
         <div className="text-sm">
           <div className="font-semibold text-slate-700">Upload Template</div>
           <div className="text-xs text-slate-500">Overrides the standard catalog with the uploaded file — added/changed rows are applied, and existing rows missing from the file are removed (unless a request already references them).</div>
+          {lastUploadLoaded && (
+            <div className="mt-1 text-xs text-slate-500">
+              {lastUpload
+                ? <>Last uploaded <span className="font-medium text-slate-700">{new Date(lastUpload.uploadedAt).toLocaleString("en-PH", { dateStyle: "medium", timeStyle: "short" })}</span> by {lastUpload.uploadedBy} ({lastUpload.fileName})</>
+                : "No upload recorded yet."}
+            </div>
+          )}
         </div>
         <label className="cursor-pointer rounded bg-emerald-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-600">
           {uploadMutation.isPending ? "Uploading…" : "Upload Template (.xlsx)"}

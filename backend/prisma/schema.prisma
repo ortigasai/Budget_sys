@@ -278,6 +278,7 @@ model User {
   headcountDeptHeadRequests AdditionalHeadcountRequest[] @relation("HeadcountDeptHead")
   headcountReviewDecisions HeadcountReviewDecision[]
   manpowerTemplateUploadBatches ManpowerTemplateUploadBatch[]
+  expenseLineItemCatalogUploads ExpenseLineItemCatalogUpload[]
   manpowerRosterSummaries  ManpowerRosterSummary[]
   forecastReviewDecisions  ForecastReviewDecision[]
   // Notes_14: "After the approval of Reggie (Reviewer), the request will
@@ -1072,6 +1073,19 @@ model ManpowerHeadcountAdjustment {
   updatedAt   DateTime @updatedAt
 
   @@unique([companyId, fiscalYear])
+}
+
+// One row per successful Admin Console > Expense Line Items catalog upload,
+// so the tab can show when the catalog was last replaced and by whom.
+model ExpenseLineItemCatalogUpload {
+  id           String   @id @default(cuid())
+  uploadedById String
+  uploadedBy   User     @relation(fields: [uploadedById], references: [id])
+  fileName     String
+  created      Int
+  updated      Int
+  removed      Int
+  createdAt    DateTime @default(now())
 }
 
 model ManpowerTemplateUploadBatch {
