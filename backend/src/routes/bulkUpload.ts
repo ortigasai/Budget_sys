@@ -16,7 +16,7 @@ import { SBU_BATCH_CATEGORIES } from "../services/approvalChain";
 import { sbuBatchCategoryLabel } from "../lib/sbuBatchCategories";
 import { fetchCcGlOptions } from "../lib/pyBackendClient";
 import { NPC_LOCATION_VALUES, NPC_SBU_VALUES, npcSbuBudgetCodePrefix, type NpcLocation, type NpcSbu } from "../lib/npcSbu";
-import { buildTemplateHeader, extraFieldLabelsFor, parseExpenseRequestSheet, visibleLineItemsForRequest } from "../lib/expenseRequestTemplate";
+import { buildTemplateHeader, companyLabel, extraFieldLabelsFor, parseExpenseRequestSheet, visibleLineItemsForRequest } from "../lib/expenseRequestTemplate";
 import { assertCanAccessBulkUploadBatch } from "../lib/bulkUploadAccess";
 import { buildSapUploadTemplate, SapTemplateError } from "../services/sapUploadTemplate";
 
@@ -152,12 +152,16 @@ bulkUploadRouter.get(
 
     const items = await visibleLineItemsForRequest(departmentId);
     const categories = [...new Set(items.map((i) => i.category))].sort((a, b) => a.localeCompare(b));
-    const itemsByCategory = new Map<string, typeof items>();
+    // Dropdown sources list each name once - a name set up per company
+    // appears once per company in the catalog, and Company tells them apart.
+    const itemNames = [...new Set(items.map((i) => i.name))];
+    const namesByCategory = new Map<string, string[]>();
     for (const item of items) {
-      const list = itemsByCategory.get(item.category) ?? [];
-      list.push(item);
-      itemsByCategory.set(item.category, list);
+      const list = namesByCategory.get(item.category) ?? [];
+      if (!list.includes(item.name)) list.push(item.name);
+      namesByCategory.set(item.category, list);
     }
+    const companyCodes = [...new Set(items.map(companyLabel).filter(Boolean))].sort();
 
     const workbook = new ExcelJS.Workbook();
 
@@ -175,20 +179,20 @@ bulkUploadRouter.get(
     categories.forEach((c, i) => {
       refSheet.getCell(i + 1, 1).value = c;
     });
-    items.forEach((item, i) => {
-      refSheet.getCell(i + 1, 2).value = item.name;
+    itemNames.forEach((name, i) => {
+      refSheet.getCell(i + 1, 2).value = name;
     });
     categories.forEach((c, i) => {
       const rangeName = `cat_${i}`;
       refSheet.getCell(i + 1, 3).value = rangeName;
-      const categoryItems = itemsByCategory.get(c) ?? [];
+      const categoryNames = namesByCategory.get(c) ?? [];
       const col = 4 + i;
-      categoryItems.forEach((item, r) => {
-        refSheet.getCell(r + 1, col).value = item.name;
+      categoryNames.forEach((name, r) => {
+        refSheet.getCell(r + 1, col).value = name;
       });
-      if (categoryItems.length > 0) {
+      if (categoryNames.length > 0) {
         const colLetter = columnLetter(col);
-        workbook.definedNames.add(`Reference!$${colLetter}$1:$${colLetter}$${categoryItems.length}`, rangeName);
+        workbook.definedNames.add(`Reference!$${colLetter}$1:$${colLetter}$${categoryNames.length}`, rangeName);
       }
     });
     // One extra lookup-table row, keyed on a blank Expense Category, so the
@@ -200,21 +204,25 @@ bulkUploadRouter.get(
     // entirely) - a genuine lookup row sidesteps that rather than working
     // around it.
     const blankKeyRow = categories.length + 1;
-    refSheet.getCell(blankKeyRow, 3).value = `Reference!$B$1:$B$${items.length}`;
+    refSheet.getCell(blankKeyRow, 3).value = `Reference!$B$1:$B$${itemNames.length}`;
 
     // Visible, read-only lookup so whoever fills the sheet can see which
     // Expense Line Items belong to which Expense Category, and which of the
     // data sheet's own Additional Field columns their chosen item needs.
     const catalogSheet = workbook.addWorksheet("Catalog Reference");
-    catalogSheet.addRow(["Expense Category", "Expense Line Item", "Required Fields (fill into their own columns on the data sheet)"]);
+    // Same order as the pre-filled data sheet rows below.
+    const sortedItems = [...items].sort(
+      (a, b) => a.category.localeCompare(b.category) || a.name.localeCompare(b.name) || companyLabel(a).localeCompare(companyLabel(b))
+    );
+    catalogSheet.addRow(["Expense Category", "Expense Line Item", "Company", "Required Fields (fill into their own columns on the data sheet)"]);
     catalogSheet.getRow(1).font = { bold: true };
-    for (const item of items) {
+    for (const item of sortedItems) {
       const extraFieldsConfig = (item.extraFieldsConfig as { label: string; required: boolean }[] | null) ?? [];
       const requiredLabels = extraFieldsConfig.filter((f) => f.required).map((f) => f.label);
-      catalogSheet.addRow([item.category, item.name, requiredLabels.length > 0 ? requiredLabels.join(", ") : "—"]);
+      catalogSheet.addRow([item.category, item.name, companyLabel(item) || "All", requiredLabels.length > 0 ? requiredLabels.join(", ") : "—"]);
     }
-    catalogSheet.columns = [{ width: 28 }, { width: 36 }, { width: 50 }];
-    catalogSheet.autoFilter = { from: "A1", to: `C${items.length + 1}` };
+    catalogSheet.columns = [{ width: 28 }, { width: 36 }, { width: 12 }, { width: 50 }];
+    catalogSheet.autoFilter = { from: "A1", to: `D${items.length + 1}` };
 
     // Instructions tab, placed first so it's read before the data sheet. Excluded by name
     // from the upload parsers below, the same way Catalog Reference is.
@@ -225,7 +233,8 @@ bulkUploadRouter.get(
       [""],
       ["1. Fill in only the sheet named above. Leave the other tabs as they are."],
       ["2. Every Expense Line Item available to your department already has its own row. Fill in only the ones you're budgeting for - rows you leave blank are skipped."],
-      ["3. Enter the amount for each month (Jan to Dec) under the month columns, plus a Business Justification. To budget the same line item twice, pick it again in one of the empty rows at the bottom."],
+      ["   Some line items are set up separately per company (e.g. Laptop for OCC, OCLP and OLC) - each has its own row, with the Company column filled in. Company is blank for items that apply to every company."],
+      ["3. Enter the amount for each month (Jan to Dec) under the month columns, plus a Business Justification. To budget the same line item twice, pick it (and its Company, if it has one) again in one of the empty rows at the bottom."],
       ["4. Fill in any Additional Field marked as required, in that field's own column on the data sheet (see the Catalog Reference tab for which fields your chosen item needs)."],
       ["5. Save the file and upload it on the New Request page."],
     ].forEach((row) => instructions.addRow(row));
@@ -238,18 +247,22 @@ bulkUploadRouter.get(
     sheet.getRow(1).font = { bold: true };
     // Open on the sheet the user has to update, not the Instructions tab.
     workbook.views = [{ x: 0, y: 0, width: 10000, height: 20000, firstSheet: 0, activeTab: workbook.worksheets.indexOf(sheet), visibility: "visible" }];
-    // Keep the header row and the category/line item columns in view while scrolling.
-    sheet.views = [{ state: "frozen", xSplit: 2, ySplit: 1 }];
+    // Keep the header row and the category/line item/company columns in view while scrolling.
+    sheet.views = [{ state: "frozen", xSplit: 3, ySplit: 1 }];
+    const companyColLetter = columnLetter(header.indexOf("Company") + 1);
+    const janColLetter = columnLetter(header.indexOf("Jan") + 1);
+    const decColLetter = columnLetter(header.indexOf("Dec") + 1);
+    const totalColLetter = columnLetter(header.indexOf("Total") + 1);
 
     // One pre-filled row per line item this department can see, grouped by
     // category; the user only enters amounts on the ones they need.
-    const prefilled = [...items].sort((a, b) => a.category.localeCompare(b.category) || a.name.localeCompare(b.name));
-    prefilled.forEach((item, i) => {
+    sortedItems.forEach((item, i) => {
       sheet.getCell(`A${i + 2}`).value = item.category;
       sheet.getCell(`B${i + 2}`).value = item.name;
+      sheet.getCell(`${companyColLetter}${i + 2}`).value = companyLabel(item) || null;
     });
     // Plus empty dropdown rows underneath for a line item budgeted more than once.
-    const lastRow = Math.max(201, prefilled.length + 51);
+    const lastRow = Math.max(201, sortedItems.length + 51);
 
     for (let row = 2; row <= lastRow; row++) {
       sheet.getCell(`A${row}`).dataValidation = {
@@ -276,8 +289,18 @@ bulkUploadRouter.get(
         errorTitle: "Invalid Expense Line Item",
         error: "Pick a line item from the dropdown list for the chosen Expense Category - see the Catalog Reference sheet for the full list.",
       };
-      // Total (column O) - auto-sums the Jan-Dec months (C:N) for this row.
-      sheet.getCell(`O${row}`).value = { formula: `SUM(C${row}:N${row})` } as any;
+      if (companyCodes.length > 0) {
+        sheet.getCell(`${companyColLetter}${row}`).dataValidation = {
+          type: "list",
+          allowBlank: true,
+          formulae: [`"${companyCodes.join(",")}"`],
+          showErrorMessage: true,
+          errorStyle: "stop",
+          errorTitle: "Invalid Company",
+          error: `Pick ${companyCodes.join(", ")}, or leave blank for a line item that applies to every company - see the Catalog Reference sheet.`,
+        };
+      }
+      sheet.getCell(`${totalColLetter}${row}`).value = { formula: `SUM(${janColLetter}${row}:${decColLetter}${row})` } as any;
     }
 
     sheet.columns.forEach((col) => {
@@ -354,7 +377,6 @@ bulkUploadRouter.post(
     if (!sheet) throw new HttpError(400, "No usable worksheet found in the uploaded file.");
 
     const standardItems = await visibleLineItemsForRequest(departmentId);
-    const itemsByName = new Map(standardItems.map((i) => [i.name.trim().toLowerCase(), i]));
 
     // Persist the original upload (parsing above already reads it from the
     // in-memory buffer) so a reviewer can download exactly what was
@@ -373,7 +395,7 @@ bulkUploadRouter.post(
       },
     });
 
-    const parsed = parseExpenseRequestSheet(sheet, itemsByName);
+    const parsed = parseExpenseRequestSheet(sheet, standardItems);
     if (parsed.rowCount === 0) {
       await prisma.bulkUploadBatch.update({ where: { id: batch.id }, data: { status: "FAILED" } });
       throw new HttpError(400, "No filled-in rows found - enter monthly amounts and a Business Justification for at least one line item, then upload again.");
