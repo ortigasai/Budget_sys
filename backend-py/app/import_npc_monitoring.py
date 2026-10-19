@@ -110,6 +110,19 @@ def _looks_like_a_real_budget_code(value: object) -> bool:
     return bool(text) and bool(_HAS_LETTER.search(text))
 
 
+def _primary_budget_code(value: object) -> str | None:
+    """The Budget Source Code an IO belongs to. A cell can list several,
+    separated by "/" - the IO's own project first, then the codes that
+    transferred budget into it (e.g. "JLC-2026B-NPC015/ JLC-2026B-NPC024/
+    JLC-2026B-NPC014/ 10001452" for GH Waterproofing) - so the first one is
+    the IO's project."""
+    text = str(value).strip() if value is not None else ""
+    if not text:
+        return None
+    first = text.split("/")[0].strip()
+    return first or None
+
+
 def _find_header_row_and_columns(ws, max_scan_rows: int = 10) -> tuple[int, dict[str, int]] | None:
     """Scans the first `max_scan_rows` rows for one containing a cell whose
     text includes "code" (case-insensitive) - that's the header row. Returns
@@ -226,8 +239,8 @@ def import_sbu_tab(
             revised = amount
         carry_over_revised[aufnr] = revised
 
-    # Pass 2: every row carrying a Budget Transfer value adds/deducts from
-    # its owning project's NPC Budget - one project can have several such
+    # Pass 2: every row carrying a Budget Transfer value counts toward its
+    # owning project's net Budget Transfer - one project can have several such
     # rows (its own anchor row, plus a "continuation" row per IO the
     # transfer moved budget to/from), and a transfer's destination row
     # sometimes leaves this tab's own Code cell blank even though it does
@@ -253,7 +266,10 @@ def import_sbu_tab(
             if io_code_raw is not None:
                 aufnr = str(int(io_code_raw)).zfill(12)
                 attributed_code = aufnr_to_budget_code.get(aufnr)
-            if attributed_code is None:
+            # The Monitoring tab's code for this IO isn't always one of this
+            # tab's projects (e.g. "SBAR - Additional") - use the row's own
+            # Code then, rather than dropping the transfer.
+            if attributed_code not in code_to_project:
                 own_code_raw = ws.cell(row=r, column=code_col).value
                 if _looks_like_a_real_budget_code(own_code_raw):
                     attributed_code = str(own_code_raw).strip()
@@ -262,8 +278,10 @@ def import_sbu_tab(
             else:
                 unattributed_transfer_total += bt
 
+    # Stored apart from revised_amount: the workbook's own Revised (and its
+    # total) excludes Budget Transfer, which only enters its Balance column.
     for budget_code, transfer in transfer_by_code.items():
-        code_to_project[budget_code].revised_amount += transfer
+        code_to_project[budget_code].budget_transfer += transfer
 
     projects = list(code_to_project.values())
     # Transfers reallocate the same approved pool between projects, so the
@@ -273,7 +291,7 @@ def import_sbu_tab(
     # of those net changes' absolute values instead, which stays
     # informative even when the SBU-wide net is zero.
     net_nonzero = {code: v for code, v in transfer_by_code.items() if v != 0}
-    transfer_note = f", Budget Transfer changed {len(net_nonzero)} project(s)' NPC Budget by PHP {sum(abs(v) for v in net_nonzero.values()):,.0f} total" if net_nonzero else ""
+    transfer_note = f", Budget Transfer recorded on {len(net_nonzero)} project(s), PHP {sum(abs(v) for v in net_nonzero.values()):,.0f} total" if net_nonzero else ""
     if unattributed_transfer_total:
         transfer_note += f" (PHP {unattributed_transfer_total:,.0f} in Budget Transfer couldn't be attributed to any project - left out)"
     print(f"  [{tab_name}] {len(projects)} project(s) imported{transfer_note}.")
@@ -330,7 +348,7 @@ def import_monitoring_ios(ws, fiscal_year: int, source_file: str) -> list[NpcMon
         # the end of the table, per the user's request), just with no
         # project to group it under.
         budget_code_raw = ws.cell(row=r, column=COL_BUDGET_SOURCE_CODE).value
-        budget_code = str(budget_code_raw).strip() if budget_code_raw and str(budget_code_raw).strip() else None
+        budget_code = _primary_budget_code(budget_code_raw)
         if budget_code is None:
             carry_over_count += 1
         aufnr = str(int(aufnr_raw)).zfill(12)

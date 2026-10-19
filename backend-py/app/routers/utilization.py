@@ -148,7 +148,10 @@ class NpcUtilizationRow(BaseModel):
     # own description/budget/actual instead of only the summed totals below.
     ios: list[NpcIoDetail] = []
     ioAmount: float
-    balance: float  # amount - ioAmount
+    # Net Budget Transfer into (+) or out of (-) this project - imported
+    # projects only; 0 otherwise.
+    budgetTransfer: float = 0
+    balance: float  # amount + budgetTransfer - ioAmount
     # Live SAP Actual, summed across this budget code's IOs - only populated
     # when sourced from the NPC Monitoring import (models_npc_monitoring.py);
     # None for the live-workflow path below, which still gets its own Actual
@@ -1050,7 +1053,8 @@ def _npc_utilization_from_monitoring_import(
                     for io in sorted(matched, key=lambda io: io.aufnr)
                 ],
                 ioAmount=round(io_amount, 2),
-                balance=round(project.revised_amount - io_amount, 2),
+                budgetTransfer=round(project.budget_transfer, 2),
+                balance=round(project.revised_amount + project.budget_transfer - io_amount, 2),
                 actual=round(io_actual, 2) if io_actual is not None else None,
             )
         )
@@ -1126,11 +1130,11 @@ def npc_utilization_export(
     wb = Workbook()
     ws = wb.active
     ws.title = "NPC Utilization"
-    ws.append(["Budget Code", "Project Title", "Amount (VAT excl.)", "Group", "SBU", "IO Code", "IO Amount", "Balance"])
+    ws.append(["Budget Code", "Project Title", "Amount (VAT excl.)", "Group", "SBU", "IO Code", "Budget Transfer", "IO Amount", "Balance"])
     for r in rows:
-        ws.append([r.budgetCode, r.projectTitle, r.amount, r.group or "", r.sbu, ", ".join(_short_aufnr(c) for c in r.ioCodes), r.ioAmount, r.balance])
+        ws.append([r.budgetCode, r.projectTitle, r.amount, r.group or "", r.sbu, ", ".join(_short_aufnr(c) for c in r.ioCodes), r.budgetTransfer, r.ioAmount, r.balance])
     ws.append([])
-    ws.append(["Total", None, sum(r.amount for r in rows), None, None, None, sum(r.ioAmount for r in rows), sum(r.balance for r in rows)])
+    ws.append(["Total", None, sum(r.amount for r in rows), None, None, None, sum(r.budgetTransfer for r in rows), sum(r.ioAmount for r in rows), sum(r.balance for r in rows)])
 
     ios = wb.create_sheet("IO Details")
     ios.append(["Budget Code", "Project Title", "IO Code", "IO Description", "IO Budget", "IO Actual", "Commitment", "Allotted", "Available"])
@@ -1143,7 +1147,7 @@ def npc_utilization_export(
                 salr.committed if salr else None, salr.allotted if salr else None, salr.available if salr else None,
             ])
 
-    for sheet, money_cols, widths in ((ws, "CGH", [18, 40, 20, 14, 18, 40, 16, 16]), (ios, "EFGHI", [18, 40, 16, 40, 16, 16, 16, 16, 16])):
+    for sheet, money_cols, widths in ((ws, "CGHI", [18, 40, 20, 14, 18, 40, 16, 16, 16]), (ios, "EFGHI", [18, 40, 16, 40, 16, 16, 16, 16, 16])):
         for cell in sheet[1]:
             cell.font = Font(bold=True)
         for i, w in enumerate(widths):

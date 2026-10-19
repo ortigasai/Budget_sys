@@ -50,6 +50,10 @@ class NpcMonitoringProject(Phase3Model, table=True):
     budget_code: str = Field(index=True)
     project_title: str
     revised_amount: float
+    # Net of the SBU tab's Budget Transfer column for this project. Kept
+    # separate from revised_amount, as the workbook does: its Revised total
+    # excludes transfers, and Balance = Revised + Budget Transfer - IO Amount.
+    budget_transfer: float = Field(default=0)
     source_file: str
     imported_at: datetime = Field(default_factory=datetime.utcnow)
 

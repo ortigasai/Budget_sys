@@ -54,6 +54,8 @@ export interface NpcUtilizationRow {
   // Per-IO breakdown backing ioCodes above.
   ios: NpcIoDetail[];
   ioAmount: number;
+  // Net Budget Transfer into (+) or out of (-) the project - 0 when none.
+  budgetTransfer: number;
   balance: number;
   // Only set when Python sourced this row from the NPC Monitoring import
   // (models_npc_monitoring.py) - null for the live-workflow path, which

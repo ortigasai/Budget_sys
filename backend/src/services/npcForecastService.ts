@@ -31,6 +31,9 @@ export interface NpcForecastRow {
   budgetCode: string;
   projectTitle: string;
   npcBudget: number;
+  // Net Budget Transfer into (+) or out of (-) the project, kept apart from
+  // npcBudget the way the source workbook keeps it apart from Revised.
+  budgetTransfer: number;
   ioCodes: string[];
   // Per-IO breakdown backing ioCodes above - one entry per IO, not lumped
   // into the summed ioBudget/ioActual totals below (see NpcForecastView.tsx,
@@ -38,11 +41,11 @@ export interface NpcForecastRow {
   ios: { code: string; description: string; budget: number; actual: number | null }[];
   ioBudget: number;
   ioActual: number | null; // live SALR Actual, summed across this budget code's uploaded IOs - null if none have a matching live SALR row yet
-  npcAvailableBudget: number; // npcBudget - ioBudget
+  npcAvailableBudget: number; // npcBudget + budgetTransfer - ioBudget
   monthlyRemainingForecast: Record<string, number>;
   remainingMonthsForecast: number;
   totalActualForecast: number; // (ioActual ?? ioBudget) + remainingMonthsForecast
-  npcSurplus: number; // npcBudget - totalActualForecast
+  npcSurplus: number; // npcBudget + budgetTransfer - totalActualForecast
   // True only for a standalone "Carry-over" IO row (no Budget Code, no
   // NPC-approved project behind it - see Python's npc_utilization).
   // npcBudget is set equal to ioBudget for these (confirmed with the user),
@@ -121,6 +124,7 @@ export async function getNpcForecastRows(npcSbu: string, authorizationHeader: st
       const monthlyRemainingForecast = (forecastEntry?.monthlyRemainingForecast as Record<string, number>) ?? {};
       const ioBudget = io?.ioAmount ?? 0;
       const npcBudget = line?.amount ?? io?.amount ?? 0;
+      const budgetTransfer = io?.budgetTransfer ?? 0;
 
       // Python already supplies a summed Actual when this row came from the
       // NPC Monitoring import; only fall back to matching the broker's own
@@ -156,15 +160,16 @@ export async function getNpcForecastRows(npcSbu: string, authorizationHeader: st
         budgetCode,
         projectTitle: line?.budgetRequest.projectTitle ?? io?.projectTitle ?? "",
         npcBudget,
+        budgetTransfer,
         ioCodes: io?.ioCodes ?? [],
         ios,
         ioBudget,
         ioActual,
-        npcAvailableBudget: npcBudget - ioBudget,
+        npcAvailableBudget: npcBudget + budgetTransfer - ioBudget,
         monthlyRemainingForecast,
         remainingMonthsForecast,
         totalActualForecast,
-        npcSurplus: npcBudget - totalActualForecast,
+        npcSurplus: npcBudget + budgetTransfer - totalActualForecast,
         isCarryOver: io?.isCarryOver ?? false,
       };
     })

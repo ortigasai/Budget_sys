@@ -85,6 +85,8 @@ interface NpcUtilizationRow {
   sbu: string;
   ioCodes: string[];
   ioAmount: number;
+  // Net Budget Transfer into (+) or out of (-) the project; Balance includes it.
+  budgetTransfer: number;
   balance: number;
 }
 
@@ -112,6 +114,7 @@ const NPC_UTIL_FILTER_COLUMNS: { key: string; label: string; numeric?: boolean }
   { key: "group", label: "Group" },
   { key: "sbu", label: "SBU" },
   { key: "ioCodes", label: "IO Code" },
+  { key: "budgetTransfer", label: "Budget Transfer", numeric: true },
   { key: "ioAmount", label: "IO Amount", numeric: true },
   { key: "balance", label: "Balance", numeric: true },
 ];
@@ -514,7 +517,11 @@ export function UtilizationPage() {
                         {r.glAccountName ?? "—"}
                       </div>
                     </td>
-                    <td className="px-2 py-1">{r.costCenterName ?? "—"}</td>
+                    <td className="px-2 py-1">
+                      <div className="max-w-[160px] truncate whitespace-nowrap" title={r.costCenterName ?? undefined}>
+                        {r.costCenterName ?? "—"}
+                      </div>
+                    </td>
                     <td className="px-2 py-1 text-right">{peso(r.approvedBudget)}</td>
                     <td className="px-2 py-1 text-right">{peso(r.actualExpenditures)}</td>
                     <td className="px-2 py-1 text-right">{peso(r.commitments)}</td>
@@ -748,6 +755,12 @@ export function UtilizationPage() {
                   </button>
                 </th>
                 <th className="px-2 py-1 text-right">
+                  <button type="button" onClick={() => toggleNpcSort("budgetTransfer")} className="inline-flex items-center gap-1 hover:text-slate-800">
+                    Budget Transfer
+                    <span className="text-[10px]">{npcSort?.key === "budgetTransfer" ? (npcSort.dir === "asc" ? "▲" : "▼") : "↕"}</span>
+                  </button>
+                </th>
+                <th className="px-2 py-1 text-right">
                   <button type="button" onClick={() => toggleNpcSort("ioAmount")} className="inline-flex items-center gap-1 hover:text-slate-800">
                     IO Amount
                     <span className="text-[10px]">{npcSort?.key === "ioAmount" ? (npcSort.dir === "asc" ? "▲" : "▼") : "↕"}</span>
@@ -770,6 +783,7 @@ export function UtilizationPage() {
                   <td className="px-2 py-1" colSpan={2}>Total</td>
                   <td className="px-2 py-1 text-right">{peso(sortedNpcRows.reduce((sum, r) => sum + r.amount, 0))}</td>
                   <td className="px-2 py-1" colSpan={3}></td>
+                  <td className="px-2 py-1 text-right">{peso(sortedNpcRows.reduce((sum, r) => sum + r.budgetTransfer, 0))}</td>
                   <td className="px-2 py-1 text-right">{peso(sortedNpcRows.reduce((sum, r) => sum + r.ioAmount, 0))}</td>
                   <td className="px-2 py-1 text-right">{peso(sortedNpcRows.reduce((sum, r) => sum + r.balance, 0))}</td>
                 </tr>
@@ -778,13 +792,13 @@ export function UtilizationPage() {
             <tbody className="divide-y divide-slate-100">
               {npcLoading ? (
                 <tr>
-                  <td colSpan={8} className="px-2 py-4 text-center text-slate-400">
+                  <td colSpan={9} className="px-2 py-4 text-center text-slate-400">
                     Loading…
                   </td>
                 </tr>
               ) : sortedNpcRows.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="px-2 py-4 text-center text-slate-400">
+                  <td colSpan={9} className="px-2 py-4 text-center text-slate-400">
                     {npcRows.length > 0 ? "No rows match the filters." : "No approved NPC budget codes for this SBU yet."}
                   </td>
                 </tr>
@@ -808,6 +822,7 @@ export function UtilizationPage() {
                           ))
                         : "—"}
                     </td>
+                    <td className={`px-2 py-1 text-right ${r.budgetTransfer < 0 ? "text-red-600" : ""}`}>{r.budgetTransfer ? peso(r.budgetTransfer) : "—"}</td>
                     <td className="px-2 py-1 text-right">{peso(r.ioAmount)}</td>
                     <td className={`px-2 py-1 text-right font-medium ${r.balance < 0 ? "text-red-600" : ""}`}>{peso(r.balance)}</td>
                   </tr>

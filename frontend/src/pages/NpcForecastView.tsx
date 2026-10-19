@@ -25,14 +25,14 @@ const BUDGET_CODE_COL_WIDTH_PX = 160;
 const PROJECT_TITLE_COL_WIDTH_PX = 280;
 const IO_CODES_COL_WIDTH_PX = 110;
 const IO_DESCRIPTION_COL_WIDTH_PX = 240;
-// Column indices: 0 Budget Code, 1 Project Title, 2 NPC Budget, 3 IO
-// Code(s), 4 IO Description, 5 IO Budget, 6 IO Actual, 7 NPC Available
-// Budget, then one column per remaining month, then the 3 trailing totals.
+// Column indices: 0 Budget Code, 1 Project Title, 2 NPC Budget, 3 Budget
+// Transfer, 4 IO Code(s), 5 IO Description, 6 IO Budget, 7 IO Actual, 8 NPC
+// Available Budget, then one column per remaining month, then the 3 trailing totals.
 function colWidthPx(i: number): number {
   if (i === 0) return BUDGET_CODE_COL_WIDTH_PX;
   if (i === 1) return PROJECT_TITLE_COL_WIDTH_PX;
-  if (i === 3) return IO_CODES_COL_WIDTH_PX;
-  if (i === 4) return IO_DESCRIPTION_COL_WIDTH_PX;
+  if (i === 4) return IO_CODES_COL_WIDTH_PX;
+  if (i === 5) return IO_DESCRIPTION_COL_WIDTH_PX;
   return DEFAULT_COL_WIDTH_PX;
 }
 const FROZEN_LEFT_PX = [0, BUDGET_CODE_COL_WIDTH_PX];
@@ -46,6 +46,9 @@ interface NpcForecastRow {
   budgetCode: string;
   projectTitle: string;
   npcBudget: number;
+  // Net Budget Transfer into (+) or out of (-) the project; NPC Available
+  // Budget and NPC Surplus include it.
+  budgetTransfer: number;
   ioCodes: string[];
   // Per-IO breakdown backing ioCodes above - each shown on its own line,
   // not lumped into the summed ioBudget/ioActual below (see the table).
@@ -67,7 +70,7 @@ interface NpcForecastRow {
 
 // Sortable columns - string or (number | null) fields only, matched against
 // each other in toggleSort/the sort comparator above.
-type SortColumn = "budgetCode" | "projectTitle" | "npcBudget" | "ioBudget" | "ioActual" | "npcAvailableBudget" | "totalActualForecast" | "npcSurplus" | "remainingMonthsForecast";
+type SortColumn = "budgetCode" | "projectTitle" | "npcBudget" | "budgetTransfer" | "ioBudget" | "ioActual" | "npcAvailableBudget" | "totalActualForecast" | "npcSurplus" | "remainingMonthsForecast";
 
 function peso(n: number) {
   return `${n.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
@@ -123,7 +126,7 @@ export function NpcForecastView() {
   // Budget Code, Project Title, NPC Budget, IO Code(s), IO Description, IO
   // Budget, IO Actual, NPC Available Budget (8) + one column per remaining
   // month + Total Remaining Forecast, Total Actual + Forecast, NPC Surplus (3).
-  const columnCount = 8 + remainingMonths.length + 3;
+  const columnCount = 9 + remainingMonths.length + 3;
 
   // Carry-over IOs (appended at the end of the table - see the render
   // below) still count toward the SBU's approved NPC total - the source
@@ -140,6 +143,7 @@ export function NpcForecastView() {
   const rowsWithActual = rows.filter((r) => r.ioActual !== null);
   const totals = {
     npcBudget: rows.reduce((sum, r) => sum + r.npcBudget, 0),
+    budgetTransfer: rows.reduce((sum, r) => sum + r.budgetTransfer, 0),
     ioBudget: rows.reduce((sum, r) => sum + r.ioBudget, 0),
     ioActual: rowsWithActual.length > 0 ? rowsWithActual.reduce((sum, r) => sum + (r.ioActual ?? 0), 0) : null,
     npcAvailableBudget: rows.reduce((sum, r) => sum + r.npcAvailableBudget, 0),
@@ -168,6 +172,7 @@ export function NpcForecastView() {
       case "budgetCode": return r.isCarryOver ? "Carry-over" : r.budgetCode;
       case "projectTitle": return r.projectTitle;
       case "npcBudget": return r.npcBudget;
+      case "budgetTransfer": return r.budgetTransfer;
       case "ioCodes": return hasIos ? r.ios.map((io) => formatAufnr(io.code)) : null;
       case "ioDescription": return hasIos ? r.ios.map((io) => io.description) : null;
       case "ioBudget": return hasIos ? r.ios.map((io) => io.budget) : 0;
@@ -319,6 +324,9 @@ export function NpcForecastView() {
                 <th rowSpan={2} className="px-2 py-2 text-right align-bottom">
                   {sortHeader("npcBudget", "NPC Budget")}
                 </th>
+                <th rowSpan={2} className="px-2 py-2 text-right align-bottom">
+                  {sortHeader("budgetTransfer", "Budget Transfer")}
+                </th>
                 <th rowSpan={2} className="px-2 py-2 align-bottom">
                   IO Code(s)
                 </th>
@@ -358,6 +366,7 @@ export function NpcForecastView() {
                 <ColumnFilterCell columnKey="budgetCode" label="Budget Code" filters={filters} onChange={setFilter} className="sticky z-30 bg-[#edf6f1]" style={{ left: FROZEN_LEFT_PX[0] }} />
                 <ColumnFilterCell columnKey="projectTitle" label="Project Title" filters={filters} onChange={setFilter} className="sticky z-30 bg-[#edf6f1]" style={{ left: FROZEN_LEFT_PX[1] }} />
                 <ColumnFilterCell columnKey="npcBudget" label="NPC Budget" filters={filters} onChange={setFilter} numeric />
+                <ColumnFilterCell columnKey="budgetTransfer" label="Budget Transfer" filters={filters} onChange={setFilter} numeric />
                 <ColumnFilterCell columnKey="ioCodes" label="IO Code(s)" filters={filters} onChange={setFilter} />
                 <ColumnFilterCell columnKey="ioDescription" label="IO Description" filters={filters} onChange={setFilter} />
                 {[
@@ -378,6 +387,7 @@ export function NpcForecastView() {
                     TOTAL
                   </td>
                   <td className="whitespace-nowrap px-2 py-1 text-right">{peso(totals.npcBudget)}</td>
+                  <td className="whitespace-nowrap px-2 py-1 text-right">{peso(totals.budgetTransfer)}</td>
                   <td className="px-2 py-1" />
                   <td className="px-2 py-1" />
                   <td className="whitespace-nowrap px-2 py-1 text-right">{peso(totals.ioBudget)}</td>
@@ -435,6 +445,7 @@ export function NpcForecastView() {
                         {r.projectTitle}
                       </td>
                       <td className="whitespace-nowrap px-2 py-1 text-right">{peso(r.npcBudget)}</td>
+                      <td className={`whitespace-nowrap px-2 py-1 text-right ${r.budgetTransfer < 0 ? "text-red-600" : ""}`}>{r.budgetTransfer ? peso(r.budgetTransfer) : "—"}</td>
                       {r.ios.length > 0 ? (
                         <>
                           <td className="px-2 py-1">
