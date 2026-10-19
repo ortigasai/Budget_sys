@@ -10,6 +10,7 @@ import { phaseForPath } from "../lib/phases";
 import { sfSbus } from "../lib/groupScope";
 import { useFiscalYear } from "../lib/fiscalCycle";
 import { ADMIN_GROUPS, ADMIN_TABS } from "../pages/admin/AdminConsolePage";
+import { AdminConsoleSearch } from "./AdminConsoleSearch";
 
 const linkClass = ({ isActive }: { isActive: boolean }) => `flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${isActive ? "bg-emerald-700 text-white shadow-sm shadow-emerald-700/30" : "text-slate-600 hover:bg-emerald-50 hover:text-emerald-900"}`;
 
@@ -658,6 +659,7 @@ export function Layout() {
             </>
           )}
         </div>
+        {isAdminConsole && <AdminConsoleSearch />}
         <UserMenu dark />
       </div>
 

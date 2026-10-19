@@ -33,32 +33,32 @@ export const ADMIN_GROUPS = ["General", "GAE", "DOE", "NPC", "Transfers", "Manpo
 export type AdminGroup = (typeof ADMIN_GROUPS)[number];
 
 export const ADMIN_TABS = [
-  { id: "budget-cycle", label: "Budget Cycle", group: "General" },
-  { id: "due-dates", label: "Stage Due Dates", group: "General" },
+  { id: "budget-cycle", label: "Budget Cycle", group: "General", keywords: "target calendar year fiscal year cycle" },
+  { id: "due-dates", label: "Stage Due Dates", group: "General", keywords: "deadline due date stage request creation authorization finalize forecast" },
   // Feeds Forecast GAE/DOE, Manpower, Utilization/Transfer/Dash Flow/Reports
   // all at once - not one module's.
-  { id: "sap-sync-status", label: "SAP Sync Status", group: "General" },
+  { id: "sap-sync-status", label: "SAP Sync Status", group: "General", keywords: "sap sync last synced job error refresh" },
   // Spans GAE's CENTRALIZED_DEPARTMENT prefix and NPC's NPC_HEAD prefix.
-  { id: "budget-codes", label: "Budget Codes", group: "General" },
+  { id: "budget-codes", label: "Budget Codes", group: "General", keywords: "budget code prefix centralized department npc head cd-yy-num" },
   // Classifies Forecast rows across GAE/DOE/NPC/Revenue - not one module's.
-  { id: "forecast-categories", label: "Forecast Categories", group: "General" },
-  { id: "reason-codes", label: "Reason Codes", group: "General" },
-  { id: "roles", label: "Role Assignments", group: "General" },
-  { id: "access-control", label: "Access Control", group: "General" },
+  { id: "forecast-categories", label: "Forecast Categories", group: "General", keywords: "forecast category mapping doe npc revenue gl account cost center" },
+  { id: "reason-codes", label: "Reason Codes", group: "General", keywords: "budget cut return reason" },
+  { id: "roles", label: "Role Assignments", group: "General", keywords: "role assignment employee list upload approver budget officer preparer department head cfo ceo bca" },
+  { id: "access-control", label: "Access Control", group: "General", keywords: "access group permission member cd ncd mc sf npc page access" },
   // Assigns each Department to an NPC SBU, which also scopes Utilization's
   // NPC view - spans two modules, not owned by either alone.
-  { id: "department-sbu", label: "Department SBU", group: "General" },
-  { id: "expense-items", label: "Expense Line Items", group: "GAE" },
-  { id: "gae-past-data", label: "GAE Past Years Data", group: "GAE" },
-  { id: "growth-rate", label: "Growth Rate", group: "GAE" },
-  { id: "thresholds", label: "Thresholds", group: "GAE" },
-  { id: "sbu-roles", label: "SBU Roles", group: "DOE" },
-  { id: "npc-monitoring", label: "NPC Monitoring Import", group: "NPC" },
-  { id: "io-locations", label: "IO Locations", group: "Transfers" },
-  { id: "cc-gl-codes", label: "CC-GL Codes", group: "Transfers" },
-  { id: "manpower-gl-cc", label: "Manpower GL/CC Mapping", group: "Manpower" },
-  { id: "report-access", label: "Report Access", group: "Reports" },
-  { id: "period-sign-off", label: "Period Sign-off", group: "Reports" },
+  { id: "department-sbu", label: "Department SBU", group: "General", keywords: "department sbu npc utilization" },
+  { id: "expense-items", label: "Expense Line Items", group: "GAE", keywords: "expense line item catalog gl account cost center upload template refinement custom visibility company" },
+  { id: "gae-past-data", label: "GAE Past Years Data", group: "GAE", keywords: "past years actuals budget 5-year trend workbook upload" },
+  { id: "growth-rate", label: "Growth Rate", group: "GAE", keywords: "growth rate override percent audit log department" },
+  { id: "thresholds", label: "Thresholds", group: "GAE", keywords: "documentation threshold attachment supporting document amount" },
+  { id: "sbu-roles", label: "SBU Roles", group: "DOE", keywords: "sbu finance head division head doe approver" },
+  { id: "npc-monitoring", label: "NPC Monitoring Import", group: "NPC", keywords: "npc monitoring workbook import upload io internal order" },
+  { id: "io-locations", label: "IO Locations", group: "Transfers", keywords: "internal order io location" },
+  { id: "cc-gl-codes", label: "CC-GL Codes", group: "Transfers", keywords: "cost center gl account code list upload dash flow transfer" },
+  { id: "manpower-gl-cc", label: "Manpower GL/CC Mapping", group: "Manpower", keywords: "manpower salary pay component company cost center gl account mapping" },
+  { id: "report-access", label: "Report Access", group: "Reports", keywords: "report access grant user" },
+  { id: "period-sign-off", label: "Period Sign-off", group: "Reports", keywords: "period sign-off lock close fiscal year reports" },
 ] as const;
 
 export type AdminTabId = (typeof ADMIN_TABS)[number]["id"];
