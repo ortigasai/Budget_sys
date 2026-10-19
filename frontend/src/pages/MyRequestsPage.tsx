@@ -1,10 +1,12 @@
-import { Fragment, useCallback, useMemo, useState } from "react";
-import { SortableHeader, TableFilter } from "../components/SortableHeader";
+import { Fragment, useCallback, useMemo } from "react";
+import { SortableHeader } from "../components/SortableHeader";
+import { ColumnFilterCell, FilterStatus } from "../components/ColumnFilters";
+import { useColumnFilters } from "../lib/useColumnFilters";
 import { useTableSort } from "../lib/useTableSort";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { api, downloadFile, requestLineDisplay, type AdditionalHeadcountRequest, type BudgetRequest, type DoeBatchDetail, type MobilePhoneBudgetRequest, type Office365AccountRequest, type RevenueBatchSummary } from "../api/client";
-import { StatusBadge } from "../components/StatusBadge";
+import { STAGE_LABELS, StatusBadge } from "../components/StatusBadge";
 import { PageHeader } from "../components/PageHeader";
 import { SBU_BATCH_TYPES } from "../components/SbuTypeSwitch";
 import { STAGE_LABELS as REVENUE_STAGE_LABELS } from "./newRequest/RevenueRequestTab";
@@ -19,6 +21,18 @@ const REQUEST_CATEGORY_LABELS: Record<string, string> = {
   DEPRECIATION_AMORTIZATION: "Depreciation & Amortization",
   INTEREST_EXPENSE: "Interest Expense",
 };
+
+const MY_REQUEST_COLUMNS = [
+  { key: "type", label: "Type" },
+  { key: "item", label: "Item" },
+  { key: "ticket", label: "Ticket #" },
+  { key: "budgetCode", label: "Budget Code" },
+  { key: "proposed", label: "Proposed Amount", numeric: true },
+  { key: "cut", label: "Budget Cut", numeric: true },
+  { key: "approved", label: "Approved Amount", numeric: true },
+  { key: "stage", label: "Stage" },
+  { key: "sap", label: "SAP Doc #" },
+];
 
 // This page only queried /budget-requests/my-requests, so Additional
 // Headcount Requests — a separate model with its own workflow — never
@@ -121,23 +135,26 @@ export function MyRequestsPage() {
 
   const totalCount = displayedBudgetRequests.length + headcountRequests.length + office365Requests.length + mobilePhoneRequests.length + revenueBatches.length + sbuBatchRows.length;
 
-  const [filterText, setFilterText] = useState("");
-  const rowText = (row: TopLevelRow) => {
-    if (row.kind !== "budget") return row.kind;
-    return [REQUEST_CATEGORY_LABELS[row.data.requestCategory] ?? row.data.requestCategory, requestLineDisplay(row.data).name, row.data.ticketNumber ?? "", requestLineDisplay(row.data).budgetCode ?? "", row.data.currentStage].join(" ");
-  };
-  const visibleRows = useMemo(() => {
-    const q = filterText.trim().toLowerCase();
-    return q ? rows.filter((r) => rowText(r).toLowerCase().includes(q)) : rows;
-  }, [rows, filterText]);
+  // What each column shows, per row kind - shared by sorting and the per-column filters.
   const getValue = useCallback((row: TopLevelRow, key: string): string | number | null => {
-    if (row.kind !== "budget") return key === "type" ? row.kind : null;
+    if (row.kind === "headcount") {
+      const d = row.data;
+      return { type: "Additional Manpower", item: `${d.code} — ${d.position} (Rank ${d.rank})`, stage: STAGE_LABELS[d.currentStage] ?? d.currentStage }[key] ?? null;
+    }
+    if (row.kind === "revenue" || row.kind === "sbu-batch") {
+      const d = row.data;
+      const item = `${d.sbu} — ${d.company?.name ?? "—"}${row.kind === "sbu-batch" ? ` (${d.rowCount} line${d.rowCount === 1 ? "" : "s"})` : ""}`;
+      const stage = row.kind === "revenue" ? (REVENUE_STAGE_LABELS[d.currentStage] ?? d.currentStage) : (STAGE_LABELS[d.currentStage] ?? d.currentStage);
+      return { type: row.kind === "revenue" ? "Revenue" : `${row.label} (Draft)`, item, proposed: d.totalAmount, stage }[key] ?? null;
+    }
     const d = row.data;
     switch (key) {
       case "type":
         return REQUEST_CATEGORY_LABELS[d.requestCategory] ?? d.requestCategory;
       case "item":
         return requestLineDisplay(d).name;
+      case "ticket":
+        return d.ticketNumber ?? null;
       case "budgetCode":
         return requestLineDisplay(d).budgetCode ?? null;
       case "proposed":
@@ -147,11 +164,14 @@ export function MyRequestsPage() {
       case "approved":
         return d.proposedAmount - d.budgetCutAmount;
       case "stage":
-        return d.currentStage;
+        return STAGE_LABELS[d.currentStage] ?? d.currentStage;
+      case "sap":
+        return d.sapDocumentNumber ?? null;
       default:
         return null;
     }
   }, []);
+  const { filtered: visibleRows, filters, setFilter, clearFilters, activeCount } = useColumnFilters(rows, getValue);
   const { sorted, sortKey, sortDir, toggle } = useTableSort(visibleRows, getValue);
 
   return (
@@ -163,20 +183,25 @@ export function MyRequestsPage() {
         <div className="rounded-lg border border-dashed border-slate-300 bg-white/60 p-6 text-center text-sm text-slate-400">No requests yet.</div>
       ) : (
         <>
-        <TableFilter value={filterText} onChange={setFilterText} placeholder="Filter by type, item, ticket #, budget code, or stage…" count={visibleRows.length} total={rows.length} />
+        <FilterStatus count={visibleRows.length} total={rows.length} activeCount={activeCount} onClear={clearFilters} />
         <div className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
           <table className="w-full text-sm">
             <thead className="bg-emerald-50 text-left text-xs tracking-wide text-emerald-800">
               <tr>
                 <SortableHeader label="Type" sortKey="type" activeKey={sortKey} dir={sortDir} onToggle={toggle} className="px-4 py-2" />
                 <SortableHeader label="Item" sortKey="item" activeKey={sortKey} dir={sortDir} onToggle={toggle} className="px-4 py-2" />
-                <th className="px-4 py-2">Ticket #</th>
+                <SortableHeader label="Ticket #" sortKey="ticket" activeKey={sortKey} dir={sortDir} onToggle={toggle} className="px-4 py-2" />
                 <SortableHeader label="Budget Code" sortKey="budgetCode" activeKey={sortKey} dir={sortDir} onToggle={toggle} className="px-4 py-2" />
                 <SortableHeader label="Proposed Amount" sortKey="proposed" activeKey={sortKey} dir={sortDir} onToggle={toggle} align="right" className="px-4 py-2" />
                 <SortableHeader label="Budget Cut" sortKey="cut" activeKey={sortKey} dir={sortDir} onToggle={toggle} align="right" className="px-4 py-2" />
                 <SortableHeader label="Approved Amount" sortKey="approved" activeKey={sortKey} dir={sortDir} onToggle={toggle} align="right" className="px-4 py-2" />
                 <SortableHeader label="Stage" sortKey="stage" activeKey={sortKey} dir={sortDir} onToggle={toggle} className="px-4 py-2" />
-                <th className="px-4 py-2">SAP Doc #</th>
+                <SortableHeader label="SAP Doc #" sortKey="sap" activeKey={sortKey} dir={sortDir} onToggle={toggle} className="px-4 py-2" />
+              </tr>
+              <tr className="border-t border-emerald-100 bg-white">
+                {MY_REQUEST_COLUMNS.map((c) => (
+                  <ColumnFilterCell key={c.key} columnKey={c.key} label={c.label} numeric={c.numeric} filters={filters} onChange={setFilter} />
+                ))}
               </tr>
             </thead>
             <tbody>

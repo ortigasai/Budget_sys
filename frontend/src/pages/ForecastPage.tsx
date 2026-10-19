@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SortableHeader } from "../components/SortableHeader";
+import { ColumnFilterCell } from "../components/ColumnFilters";
+import { useColumnFilters } from "../lib/useColumnFilters";
 import { useTableSort } from "../lib/useTableSort";
 import { useSearchParams } from "react-router-dom";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -99,6 +101,12 @@ const LINE_ITEM_COL_WIDTH_PX = 190;
 // cells line up with the colgroup's own widths below rather than drifting
 // out of alignment.
 const FROZEN_COL_WIDTHS_PX = [COL_WIDTH_PX, CATEGORY_COL_WIDTH_PX, LINE_ITEM_COL_WIDTH_PX];
+// Filter boxes for the frozen columns above, in the same order.
+const GAE_FROZEN_FILTER_COLUMNS = [
+  { key: "budgetCode", label: "Budget Code" },
+  { key: "category", label: "Expense Category" },
+  { key: "lineItem", label: "Expense Line Item" },
+];
 const FROZEN_LEFT_PX = [0, FROZEN_COL_WIDTHS_PX[0], FROZEN_COL_WIDTHS_PX[0] + FROZEN_COL_WIDTHS_PX[1]];
 // The Budget Officer's consolidated "All Departments" table (see
 // ForecastPage below) prepends a Department column ahead of Budget Code -
@@ -198,20 +206,14 @@ function GaeForecastTable({
   consolidated?: boolean;
 }) {
   const [detailRow, setDetailRow] = useState<(HistoricalActualsRow & { departmentName?: string }) | null>(null);
-  const [searchText, setSearchText] = useState("");
-  const visibleRows = useMemo(() => {
-    const q = searchText.trim().toLowerCase();
-    return rows.filter(
-      (r) =>
-        (!q ||
-          r.glDescription.toLowerCase().includes(q) ||
-          (r.budgetCode ?? "").toLowerCase().includes(q) ||
-          (r.expenseCategory ?? "").toLowerCase().includes(q))
-    );
-  }, [rows, searchText]);
-  const filtersActive = !!searchText.trim();
+  // Shared by sorting and the per-column filters.
   const getSortValue = useCallback((r: HistoricalActualsRow & { departmentName?: string }, key: string): string | number | null => {
+    if (key.startsWith("month-")) return r.monthlyRemainingForecast2026[key.slice(6)] ?? null;
     switch (key) {
+      case "department":
+        return r.departmentName ?? null;
+      case "monthsTotal":
+        return r.remainingMonthsForecast;
       case "budgetCode":
         return r.budgetCode ?? null;
       case "category":
@@ -232,6 +234,7 @@ function GaeForecastTable({
         return null;
     }
   }, []);
+  const { filtered: visibleRows, filters, setFilter, clearFilters, activeCount } = useColumnFilters(rows, getSortValue);
   const { sorted, sortKey, sortDir, toggle } = useTableSort(visibleRows, getSortValue);
 
   // Same 3 frozen columns as always, plus a leading Department column when
@@ -260,34 +263,21 @@ function GaeForecastTable({
 
   return (
     <>
-    <div className="mb-2 flex flex-wrap items-center gap-2 text-xs">
-      <input
-        type="search"
-        value={searchText}
-        onChange={(e) => setSearchText(e.target.value)}
-        placeholder="Filter by Budget Code, Expense Category, or Expense Line Item…"
-        className="w-96 rounded border border-slate-300 px-2 py-1"
-      />
-      {filtersActive && (
-        <button
-          type="button"
-          onClick={() => {
-            setSearchText("");
-          }}
-          className="text-emerald-700 hover:underline"
-        >
-          Clear filters
-        </button>
-      )}
-    </div>
     <div className="mb-1 flex items-center justify-between gap-2">
       <div className="flex flex-wrap items-center gap-3">
         <p className="text-xs italic text-slate-500">All amounts are in PHP.</p>
         <span className="text-xs text-slate-500">Showing {visibleRows.length} of {rows.length} line item(s)</span>
+        {activeCount > 0 && (
+          <button type="button" onClick={clearFilters} className="text-xs font-medium text-emerald-700 hover:underline">
+            Clear filters ({activeCount})
+          </button>
+        )}
       </div>
       <ExpandButton />
     </div>
-    <div className="max-h-[70vh] overflow-auto rounded-lg border border-emerald-200 bg-white shadow-sm">
+    {/* scrollPaddingLeft: tabbing into a filter box (or anything) in a scrolled
+        column brings it into view clear of the frozen columns, not under them. */}
+    <div className="max-h-[70vh] overflow-auto rounded-lg border border-emerald-200 bg-white shadow-sm" style={{ scrollPaddingLeft: frozenWidths.reduce((a, b) => a + b, 0) }}>
       <table
         className="table-fixed text-xs"
         style={{ width: "100%", minWidth: Array.from({ length: columnCount }, (_, i) => localColWidthPx(i)).reduce((a, b) => a + b, 0) }}
@@ -323,6 +313,22 @@ function GaeForecastTable({
               </th>
             ))}
             <th className="whitespace-nowrap px-2 py-2 text-right align-middle">Total</th>
+          </tr>
+          <tr className="border-t border-emerald-100">
+            {(consolidated ? [{ key: "department", label: "Department" }] : []).concat(GAE_FROZEN_FILTER_COLUMNS).map((c, i) => (
+              <ColumnFilterCell key={c.key} columnKey={c.key} label={c.label} filters={filters} onChange={setFilter} className="sticky z-30 bg-[#edf6f1]" style={{ left: frozenLeft[i] }} />
+            ))}
+            {[
+              { key: "approved", label: "Approved Budget" },
+              { key: "ytd", label: "YTD Actuals" },
+              { key: "available", label: "Available Budget" },
+              ...remainingMonths.map((m) => ({ key: `month-${m}`, label: `${MONTH_NAMES[m - 1]} forecast` })),
+              { key: "monthsTotal", label: "Remaining Months Forecast total" },
+              { key: "totalForecast", label: "Total Actual + Forecast" },
+              { key: "remaining", label: "Remaining Budget" },
+            ].map((c) => (
+              <ColumnFilterCell key={c.key} columnKey={c.key} label={c.label} filters={filters} onChange={setFilter} numeric />
+            ))}
           </tr>
           <tr className="font-semibold text-[#164b33]">
             {frozenWidths.map((_w, i) => {

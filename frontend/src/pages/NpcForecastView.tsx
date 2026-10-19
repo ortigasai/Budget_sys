@@ -1,4 +1,6 @@
-import { useState } from "react";
+import { useCallback, useState } from "react";
+import { ColumnFilterCell } from "../components/ColumnFilters";
+import { useColumnFilters, type FilterValue } from "../lib/useColumnFilters";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, NPC_GROUP_SCOPE_TO_SBU, NPC_SBU_OPTIONS, type NpcSbu } from "../api/client";
 import { useAuth } from "../context/AuthContext";
@@ -154,20 +156,30 @@ export function NpcForecastView() {
   // the TOTAL row above always reflects the full SBU, not the filtered/
   // sorted subset, same as a spreadsheet's own grand total staying put
   // under an AutoFilter.
-  const [filterText, setFilterText] = useState("");
   const [sortColumn, setSortColumn] = useState<SortColumn | null>(null);
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
 
-  const filteredRows = filterText.trim()
-    ? rows.filter((r) => {
-        const needle = filterText.trim().toLowerCase();
-        return (
-          r.budgetCode.toLowerCase().includes(needle) ||
-          r.projectTitle.toLowerCase().includes(needle) ||
-          r.ios.some((io) => io.code.includes(needle) || io.description.toLowerCase().includes(needle))
-        );
-      })
-    : rows;
+  // What each column displays, for the per-column filters. IO columns show
+  // one line per IO, so they filter on each line rather than the row's sum.
+  const filterValue = useCallback((r: NpcForecastRow, key: string): FilterValue => {
+    if (key.startsWith("month-")) return r.monthlyRemainingForecast[key.slice(6)] ?? 0;
+    const hasIos = r.ios.length > 0;
+    switch (key) {
+      case "budgetCode": return r.isCarryOver ? "Carry-over" : r.budgetCode;
+      case "projectTitle": return r.projectTitle;
+      case "npcBudget": return r.npcBudget;
+      case "ioCodes": return hasIos ? r.ios.map((io) => formatAufnr(io.code)) : null;
+      case "ioDescription": return hasIos ? r.ios.map((io) => io.description) : null;
+      case "ioBudget": return hasIos ? r.ios.map((io) => io.budget) : 0;
+      case "ioActual": return hasIos ? r.ios.map((io) => io.actual) : null;
+      case "npcAvailableBudget": return r.npcAvailableBudget;
+      case "remainingMonthsForecast": return r.remainingMonthsForecast;
+      case "totalActualForecast": return r.totalActualForecast;
+      case "npcSurplus": return r.npcSurplus;
+      default: return null;
+    }
+  }, []);
+  const { filtered: filteredRows, filters, setFilter, clearFilters, activeCount } = useColumnFilters(rows, filterValue);
 
   const displayRows = sortColumn
     ? [...filteredRows].sort((a, b) => {
@@ -265,21 +277,6 @@ export function NpcForecastView() {
 
       {isError && <div className="text-sm text-red-700">You do not have access to this SBU's NPC forecast.</div>}
 
-      <div className="mb-2 flex flex-wrap items-center gap-2 text-xs">
-        <input
-          type="search"
-          value={filterText}
-          onChange={(e) => setFilterText(e.target.value)}
-          placeholder="Filter by Budget Code, Project Title, or IO Code…"
-          className="w-96 rounded border border-slate-300 px-2 py-1"
-        />
-        {filterText && (
-          <button type="button" onClick={() => setFilterText("")} className="text-emerald-700 hover:underline">
-            Clear
-          </button>
-        )}
-      </div>
-
       <ExpandableSection title="NPC Forecast" inlineExpand>
         {/* max-h + overflow-auto (not a lone overflow-x-auto) so this is a
             real 2-axis scroll pane - a bare overflow-x-auto gets silently
@@ -291,10 +288,16 @@ export function NpcForecastView() {
           <div className="flex flex-wrap items-center gap-3">
             <p className="text-xs italic text-slate-500">All amounts are in PHP.</p>
             <span className="text-xs text-slate-500">Showing {displayRows.length} of {rows.length} line item(s)</span>
+            {activeCount > 0 && (
+              <button type="button" onClick={clearFilters} className="text-xs font-medium text-emerald-700 hover:underline">
+                Clear filters ({activeCount})
+              </button>
+            )}
           </div>
           <ExpandButton />
         </div>
-        <div className="max-h-[70vh] overflow-auto rounded-lg border border-emerald-200 bg-white shadow-sm">
+        {/* scrollPaddingLeft keeps a focused filter box clear of the frozen columns. */}
+        <div className="max-h-[70vh] overflow-auto rounded-lg border border-emerald-200 bg-white shadow-sm" style={{ scrollPaddingLeft: BUDGET_CODE_COL_WIDTH_PX + PROJECT_TITLE_COL_WIDTH_PX }}>
           <table className="table-fixed text-xs" style={{ width: Array.from({ length: columnCount }, (_, i) => colWidthPx(i)).reduce((a, b) => a + b, 0) }}>
             <colgroup>
               {Array.from({ length: columnCount }).map((_, i) => (
@@ -351,6 +354,24 @@ export function NpcForecastView() {
                   {sortHeader("remainingMonthsForecast", "Total")}
                 </th>
               </tr>
+              <tr className="border-t border-emerald-100">
+                <ColumnFilterCell columnKey="budgetCode" label="Budget Code" filters={filters} onChange={setFilter} className="sticky z-30 bg-[#edf6f1]" style={{ left: FROZEN_LEFT_PX[0] }} />
+                <ColumnFilterCell columnKey="projectTitle" label="Project Title" filters={filters} onChange={setFilter} className="sticky z-30 bg-[#edf6f1]" style={{ left: FROZEN_LEFT_PX[1] }} />
+                <ColumnFilterCell columnKey="npcBudget" label="NPC Budget" filters={filters} onChange={setFilter} numeric />
+                <ColumnFilterCell columnKey="ioCodes" label="IO Code(s)" filters={filters} onChange={setFilter} />
+                <ColumnFilterCell columnKey="ioDescription" label="IO Description" filters={filters} onChange={setFilter} />
+                {[
+                  { key: "ioBudget", label: "IO Budget" },
+                  { key: "ioActual", label: "IO Actual" },
+                  { key: "npcAvailableBudget", label: "NPC Available Budget" },
+                  ...remainingMonths.map((m) => ({ key: `month-${m}`, label: `${MONTH_NAMES[m - 1]} forecast` })),
+                  { key: "remainingMonthsForecast", label: "Remaining Months Forecast total" },
+                  { key: "totalActualForecast", label: "Total Actual + Forecast" },
+                  { key: "npcSurplus", label: "NPC Surplus/(Deficit)" },
+                ].map((c) => (
+                  <ColumnFilterCell key={c.key} columnKey={c.key} label={c.label} filters={filters} onChange={setFilter} numeric />
+                ))}
+              </tr>
               {rows.length > 0 && (
                 <tr className="border-t-2 border-emerald-200 bg-[#edf6f1] font-semibold text-[#164b33]">
                   <td className="sticky z-30 whitespace-nowrap bg-[#edf6f1] px-2 py-1" style={{ left: FROZEN_LEFT_PX[0] }} colSpan={2}>
@@ -389,7 +410,7 @@ export function NpcForecastView() {
               ) : displayRows.length === 0 ? (
                 <tr>
                   <td colSpan={columnCount} className="px-2 py-6 text-center text-slate-400">
-                    No rows match "{filterText}".
+                    No rows match the filters.
                   </td>
                 </tr>
               ) : (

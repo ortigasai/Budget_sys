@@ -7,6 +7,8 @@ import { PageHeader } from "../components/PageHeader";
 import { IoDetailModal } from "../components/IoDetailModal";
 import { ExpandableSection, ExpandButton } from "../components/ExpandableSection";
 import { formatAufnr } from "../lib/formatAufnr";
+import { ColumnFilterCell } from "../components/ColumnFilters";
+import { useColumnFilters, type FilterValue } from "../lib/useColumnFilters";
 import { SearchableSelect } from "../components/SearchableSelect";
 import { useFiscalYear } from "../lib/fiscalCycle";
 import { timeAgo } from "../lib/timeAgo";
@@ -90,6 +92,31 @@ function peso(n: number) {
   return `${n.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
 }
 
+const OVERVIEW_FILTER_COLUMNS: { key: keyof OverviewRow; label: string; numeric?: boolean }[] = [
+  { key: "glAccount", label: "GL Account" },
+  { key: "costCenter", label: "Cost Center" },
+  { key: "glAccountName", label: "GL Account Name" },
+  { key: "costCenterName", label: "Cost Center Name" },
+  { key: "approvedBudget", label: "Approved Budget", numeric: true },
+  { key: "actualExpenditures", label: "Actual Expenditures", numeric: true },
+  { key: "commitments", label: "Commitments", numeric: true },
+  { key: "totalAllotted", label: "Total Allotted", numeric: true },
+  { key: "available", label: "Available", numeric: true },
+];
+const overviewValue = (r: OverviewRow, key: string): FilterValue => r[key as keyof OverviewRow];
+
+const NPC_UTIL_FILTER_COLUMNS: { key: string; label: string; numeric?: boolean }[] = [
+  { key: "budgetCode", label: "Budget Code" },
+  { key: "projectTitle", label: "Project Title" },
+  { key: "amount", label: "Amount (VAT excl.)", numeric: true },
+  { key: "group", label: "Group" },
+  { key: "sbu", label: "SBU" },
+  { key: "ioCodes", label: "IO Code" },
+  { key: "ioAmount", label: "IO Amount", numeric: true },
+  { key: "balance", label: "Balance", numeric: true },
+];
+const npcValue = (r: NpcUtilizationRow, key: string): FilterValue => (key === "ioCodes" ? r.ioCodes.map(formatAufnr) : (r[key as keyof NpcUtilizationRow] as FilterValue));
+
 interface SapSyncStatus {
   status: "idle" | "running" | "success" | "error";
   fiscalYear: number;
@@ -117,15 +144,12 @@ export function UtilizationPage() {
   const { forecastYear: FISCAL_YEAR } = useFiscalYear();
   const [openIo, setOpenIo] = useState<string | null>(null);
   const [exportingNpc, setExportingNpc] = useState(false);
-  const [npcSearch, setNpcSearch] = useState("");
   const [npcBalanceFilter, setNpcBalanceFilter] = useState<"all" | "positive" | "negative" | "zero">("all");
   const [npcSort, setNpcSort] = useState<{ key: keyof NpcUtilizationRow | "ioCodes"; dir: "asc" | "desc" } | null>(null);
   const toggleNpcSort = (key: keyof NpcUtilizationRow | "ioCodes") => setNpcSort((cur) => (cur?.key === key ? (cur.dir === "asc" ? { key, dir: "desc" } : null) : { key, dir: "asc" }));
   const [exportingOv, setExportingOv] = useState(false);
-  // Per-column text filters on the Overview table (case-insensitive "contains").
   const [ovSort, setOvSort] = useState<{ key: keyof OverviewRow; dir: "asc" | "desc" } | null>(null);
   const toggleOvSort = (key: keyof OverviewRow) => setOvSort((cur) => (cur?.key === key ? (cur.dir === "asc" ? { key, dir: "desc" } : null) : { key, dir: "asc" }));
-  const [ovSearch, setOvSearch] = useState("");
   const [availFilter, setAvailFilter] = useState<"all" | "positive" | "negative" | "zero">("all");
   // Which view is active lives in `?view=`, driven by Layout.tsx's
   // UtilizationSidebarNav (spec item 17 - moved out of this page's own
@@ -156,12 +180,10 @@ export function UtilizationPage() {
       ).data,
     enabled: !!effectiveDeptId && tab === "overview",
   });
-  const filteredUnsorted = overviewRows.filter((r) => {
-    const has = (v: string | null, q: string) => !q.trim() || (v ?? "").toLowerCase().includes(q.trim().toLowerCase());
-    const availOk = availFilter === "all" || (availFilter === "positive" ? r.available > 0 : availFilter === "negative" ? r.available < 0 : r.available === 0);
-    const q = ovSearch.trim().toLowerCase();
-    return availOk && (!q || [r.glAccount, r.costCenter, r.glAccountName, r.costCenterName].some((v) => (v ?? "").toLowerCase().includes(q)));
-  });
+  const ovFilters = useColumnFilters(overviewRows, overviewValue);
+  const filteredUnsorted = ovFilters.filtered.filter(
+    (r) => availFilter === "all" || (availFilter === "positive" ? r.available > 0 : availFilter === "negative" ? r.available < 0 : r.available === 0)
+  );
   const filteredOverviewRows = ovSort
     ? [...filteredUnsorted].sort((a, b) => {
         const av = a[ovSort.key] ?? "";
@@ -212,14 +234,10 @@ export function UtilizationPage() {
       ).data,
     enabled: !!effectiveNpcSbu && tab === "npc",
   });
-  const filteredNpcRows = npcRows.filter((r) => {
-    const has = (v: string, q: string) => !q.trim() || v.toLowerCase().includes(q.trim().toLowerCase());
-    const balanceOk = npcBalanceFilter === "all" || (npcBalanceFilter === "positive" ? r.balance > 0 : npcBalanceFilter === "negative" ? r.balance < 0 : r.balance === 0);
-    return (
-      balanceOk &&
-      (!npcSearch.trim() || [r.budgetCode, r.projectTitle, r.group ?? "", r.sbu, r.ioCodes.join(", ")].some((v) => v.toLowerCase().includes(npcSearch.trim().toLowerCase())))
-    );
-  });
+  const npcFilters = useColumnFilters(npcRows, npcValue);
+  const filteredNpcRows = npcFilters.filtered.filter(
+    (r) => npcBalanceFilter === "all" || (npcBalanceFilter === "positive" ? r.balance > 0 : npcBalanceFilter === "negative" ? r.balance < 0 : r.balance === 0)
+  );
   const sortedNpcRows = npcSort
     ? [...filteredNpcRows].sort((a, b) => {
         const av = npcSort.key === "ioCodes" ? a.ioCodes.join(", ") : a[npcSort.key];
@@ -324,13 +342,6 @@ export function UtilizationPage() {
           <ExpandableSection title="Departmental Overview" inlineExpand>
         <>
         <div className="mb-2 flex flex-wrap items-start gap-2">
-          <input
-            type="search"
-            value={ovSearch}
-            onChange={(e) => setOvSearch(e.target.value)}
-            placeholder="Filter by GL, cost center, or name…"
-            className="h-9 w-96 rounded border border-slate-300 px-2 text-sm"
-          />
             <select value={availFilter} onChange={(e) => setAvailFilter(e.target.value as typeof availFilter)} className="h-9 w-40 rounded border border-slate-300 bg-white px-2 text-sm font-normal text-slate-700">
             <option value="all">All</option>
             <option value="positive">Within budget</option>
@@ -386,11 +397,11 @@ export function UtilizationPage() {
         <div className="mb-1 flex items-center gap-3">
           <p className="text-xs italic text-slate-500">All amounts are in PHP.</p>
           <span className="text-xs text-slate-500">Showing {filteredOverviewRows.length} of {overviewRows.length} line item(s)</span>
-          {(ovSearch || availFilter !== "all") && (
+          {(ovFilters.activeCount > 0 || availFilter !== "all") && (
             <button
               type="button"
               onClick={() => {
-                setOvSearch("");
+                ovFilters.clearFilters();
                 setAvailFilter("all");
               }}
               className="text-xs text-emerald-700 hover:underline"
@@ -462,6 +473,11 @@ export function UtilizationPage() {
                   </button>
                 </th>
               </tr>
+              <tr className="border-t border-emerald-100">
+                {OVERVIEW_FILTER_COLUMNS.map((c) => (
+                  <ColumnFilterCell key={c.key} columnKey={c.key} label={c.label} numeric={c.numeric} filters={ovFilters.filters} onChange={ovFilters.setFilter} />
+                ))}
+              </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
               {!overviewLoading && filteredOverviewRows.length > 0 && (
@@ -485,7 +501,7 @@ export function UtilizationPage() {
               ) : filteredOverviewRows.length === 0 ? (
                 <tr>
                   <td colSpan={9} className="px-2 py-4 text-center text-slate-400">
-                    No approved budget lines for this department yet.
+                    {overviewRows.length > 0 ? "No rows match the filters." : "No approved budget lines for this department yet."}
                   </td>
                 </tr>
               ) : (
@@ -610,13 +626,6 @@ export function UtilizationPage() {
         <ExpandableSection inlineExpand>
         <>
         <div className="mb-2 flex flex-wrap items-start gap-2">
-          <input
-            type="search"
-            value={npcSearch}
-            onChange={(e) => setNpcSearch(e.target.value)}
-            placeholder="Filter by budget code, project, group, SBU, or IO…"
-            className="h-9 w-96 rounded border border-slate-300 px-2 text-sm"
-          />
             <select value={npcBalanceFilter} onChange={(e) => setNpcBalanceFilter(e.target.value as typeof npcBalanceFilter)} className="h-9 w-40 rounded border border-slate-300 bg-white px-2 text-sm font-normal text-slate-700">
             <option value="all">All</option>
             <option value="positive">Within budget</option>
@@ -681,11 +690,11 @@ export function UtilizationPage() {
         <div className="mb-1 flex items-center gap-3">
           <p className="text-xs italic text-slate-500">All amounts are in PHP.</p>
           <span className="text-xs text-slate-500">Showing {sortedNpcRows.length} of {npcRows.length} line item(s)</span>
-          {(npcSearch || npcBalanceFilter !== "all") && (
+          {(npcFilters.activeCount > 0 || npcBalanceFilter !== "all") && (
             <button
               type="button"
               onClick={() => {
-                setNpcSearch("");
+                npcFilters.clearFilters();
                 setNpcBalanceFilter("all");
               }}
               className="text-xs text-emerald-700 hover:underline"
@@ -751,6 +760,11 @@ export function UtilizationPage() {
                   </button>
                 </th>
               </tr>
+              <tr className="border-t border-emerald-100">
+                {NPC_UTIL_FILTER_COLUMNS.map((c) => (
+                  <ColumnFilterCell key={c.key} columnKey={c.key} label={c.label} numeric={c.numeric} filters={npcFilters.filters} onChange={npcFilters.setFilter} />
+                ))}
+              </tr>
               {sortedNpcRows.length > 0 && (
                 <tr className="bg-[#edf6f1] font-semibold text-[#164b33]">
                   <td className="px-2 py-1" colSpan={2}>Total</td>
@@ -771,7 +785,7 @@ export function UtilizationPage() {
               ) : sortedNpcRows.length === 0 ? (
                 <tr>
                   <td colSpan={8} className="px-2 py-4 text-center text-slate-400">
-                    No approved NPC budget codes for this SBU yet.
+                    {npcRows.length > 0 ? "No rows match the filters." : "No approved NPC budget codes for this SBU yet."}
                   </td>
                 </tr>
               ) : (

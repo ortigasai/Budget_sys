@@ -1,9 +1,11 @@
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type Department, type DemoUser } from "../../api/client";
 import { SearchableSelect } from "../../components/SearchableSelect";
 import { roleLabel } from "../../components/RoleSwitcher";
-import { SortableHeader, TableFilter } from "../../components/SortableHeader";
+import { SortableHeader } from "../../components/SortableHeader";
+import { ColumnFilterCell, FilterStatus } from "../../components/ColumnFilters";
+import { useColumnFilters } from "../../lib/useColumnFilters";
 import { useTableSort } from "../../lib/useTableSort";
 
 interface RoleAssignment {
@@ -41,20 +43,14 @@ export function RoleAssignmentsTab() {
   // Sort alphabetically by department, then user name, so the table reads
   // in a stable, scannable order rather than insertion order.
   const sortedAssignments = useMemo(() => [...assignments].sort((a, b) => a.department.name.localeCompare(b.department.name) || a.user.name.localeCompare(b.user.name)), [assignments]);
-  const [filterText, setFilterText] = useState("");
-  const filteredAssignments = useMemo(() => {
-    const q = filterText.trim().toLowerCase();
-    if (!q) return sortedAssignments;
-    return sortedAssignments.filter((a) =>
-      [a.department.name, roleLabel(a.roleType), a.user.name, a.user.email].some((v) => v.toLowerCase().includes(q))
-    );
-  }, [sortedAssignments, filterText]);
-  const { sorted, sortKey, sortDir, toggle } = useTableSort(filteredAssignments, (a, key) => {
+  const getValue = useCallback((a: RoleAssignment, key: string) => {
     if (key === "department") return a.department.name;
     if (key === "role") return roleLabel(a.roleType);
     if (key === "user") return a.user.name;
     return a.user.email;
-  });
+  }, []);
+  const { filtered: filteredAssignments, filters, setFilter, clearFilters, activeCount } = useColumnFilters(sortedAssignments, getValue);
+  const { sorted, sortKey, sortDir, toggle } = useTableSort(filteredAssignments, getValue);
 
   // Notes_6: fields are (1) Username - searchable from the employee list,
   // (2) Department - defaults to that user's own department but is
@@ -202,7 +198,7 @@ export function RoleAssignmentsTab() {
       </div>
       {assignMutation.isError && <div className="text-xs text-red-600">{(assignMutation.error as any)?.response?.data?.error ?? "Could not assign this role."}</div>}
 
-      <TableFilter value={filterText} onChange={setFilterText} placeholder="Filter assignments…" count={sorted.length} total={assignments.length} />
+      <FilterStatus count={sorted.length} total={assignments.length} activeCount={activeCount} onClear={clearFilters} />
       <table className="w-full overflow-hidden rounded-lg border border-slate-200 bg-white text-sm">
         <thead className="bg-emerald-50 text-left text-xs tracking-wide text-emerald-800">
           <tr>
@@ -211,6 +207,17 @@ export function RoleAssignmentsTab() {
             <SortableHeader label="User" sortKey="user" activeKey={sortKey} dir={sortDir} onToggle={toggle} className="px-3 py-2" />
             <SortableHeader label="Email" sortKey="email" activeKey={sortKey} dir={sortDir} onToggle={toggle} className="px-3 py-2" />
             <th className="px-3 py-2" />
+          </tr>
+          <tr className="border-t border-emerald-100 bg-white">
+            {[
+              { key: "department", label: "Department" },
+              { key: "role", label: "Role" },
+              { key: "user", label: "User" },
+              { key: "email", label: "Email" },
+            ].map((c) => (
+              <ColumnFilterCell key={c.key} columnKey={c.key} label={c.label} filters={filters} onChange={setFilter} />
+            ))}
+            <th />
           </tr>
         </thead>
         <tbody>

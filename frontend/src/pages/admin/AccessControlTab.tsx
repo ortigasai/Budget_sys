@@ -2,6 +2,8 @@ import { Fragment, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type DemoUser } from "../../api/client";
 import { SearchableSelect } from "../../components/SearchableSelect";
+import { ColumnFilterCell, FilterStatus } from "../../components/ColumnFilters";
+import { useColumnFilters } from "../../lib/useColumnFilters";
 
 interface MatrixRow {
   key: string;
@@ -32,6 +34,8 @@ interface AccessControlData {
 }
 
 const COLUMNS = ["CD", "NCD", "MC", "SF", "NPC"] as const;
+
+const memberValue = (m: Member, key: string) => (key === "name" ? m.name : key === "email" ? m.email : m.scope);
 const SCOPED_GROUPS = ["CD", "NCD", "SF", "NPC"];
 const scopeLabel = (group: string) => (group === "SF" ? "SBU" : group === "NPC" ? "NPC SBU" : "Department");
 
@@ -91,23 +95,30 @@ export function AccessControlTab() {
   });
 
   const [group, setGroup] = useState("CD");
-  const [search, setSearch] = useState("");
   const [userId, setUserId] = useState("");
   const [scope, setScope] = useState("");
+  // Pre-filled from the picked employee; editing it updates their email, same as Role Assignments.
+  const [email, setEmail] = useState("");
+  const selectedUser = users.find((u) => u.id === userId);
 
   const current = data?.groups.find((g) => g.group === group);
-  const members = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return (current?.members ?? []).filter((m) => !q || m.name.toLowerCase().includes(q) || m.email.toLowerCase().includes(q) || m.scope.toLowerCase().includes(q));
-  }, [current, search]);
+  const allMembers = useMemo(() => current?.members ?? [], [current]);
+  const { filtered: members, filters, setFilter, clearFilters, activeCount } = useColumnFilters(allMembers, memberValue);
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ["admin", "access-control"] });
   const addMutation = useMutation({
-    mutationFn: async () => (await api.post("/admin/access-control/members", { userId, group, scope })).data,
+    mutationFn: async () => {
+      if (selectedUser && email.trim() && email.trim().toLowerCase() !== selectedUser.email.toLowerCase()) {
+        await api.patch(`/admin/users/${selectedUser.id}`, { email: email.trim() });
+      }
+      return (await api.post("/admin/access-control/members", { userId, group, scope })).data;
+    },
     onSuccess: () => {
       invalidate();
+      queryClient.invalidateQueries({ queryKey: ["auth", "users"] });
       setUserId("");
       setScope("");
+      setEmail("");
     },
   });
   const cellMutation = useMutation({
@@ -257,7 +268,19 @@ export function AccessControlTab() {
         <div className="flex flex-wrap items-end gap-2 text-sm">
           <div className="w-64">
             <label className="mb-1 block text-xs font-medium text-slate-500">Add member</label>
-            <SearchableSelect placeholder="Search employees…" options={users.map((u) => ({ value: u.id, label: u.name, sublabel: u.email }))} value={userId} onChange={setUserId} />
+            <SearchableSelect
+              placeholder="Search employees…"
+              options={users.map((u) => ({ value: u.id, label: u.name, sublabel: u.email }))}
+              value={userId}
+              onChange={(v) => {
+                setUserId(v);
+                setEmail(users.find((u) => u.id === v)?.email ?? "");
+              }}
+            />
+          </div>
+          <div className="w-64">
+            <label htmlFor="access-member-email" className="mb-1 block text-xs font-medium text-slate-500">Email address</label>
+            <input id="access-member-email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="name@ortigas.com.ph" className="w-full rounded border border-slate-300 px-2 py-2 text-sm" />
           </div>
           {SCOPED_GROUPS.includes(group) && (
             <div className="w-64">
@@ -265,13 +288,13 @@ export function AccessControlTab() {
               <input value={scope} onChange={(e) => setScope(e.target.value)} className="w-full rounded border border-slate-300 px-2 py-2 text-sm" />
             </div>
           )}
-          <button onClick={() => addMutation.mutate()} disabled={!userId || addMutation.isPending} className="rounded bg-emerald-700 px-3 py-2 text-xs font-medium text-white hover:bg-emerald-600 disabled:opacity-50">
+          <button onClick={() => addMutation.mutate()} disabled={!userId || !email.trim() || addMutation.isPending} className="rounded bg-emerald-700 px-3 py-2 text-xs font-medium text-white hover:bg-emerald-600 disabled:opacity-50">
             Add
           </button>
-          <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Filter members…" className="ml-auto w-56 rounded border border-slate-300 px-2 py-2 text-sm" />
         </div>
-        {addMutation.isError && <div className="text-xs text-red-600">Could not add member (Budget Officer only).</div>}
+        {addMutation.isError && <div className="text-xs text-red-600">{(addMutation.error as any)?.response?.data?.error ?? "Could not add member (Budget Officer only)."}</div>}
 
+        <FilterStatus count={members.length} total={allMembers.length} activeCount={activeCount} onClear={clearFilters} />
         <div className="max-h-96 overflow-y-auto rounded-lg border border-slate-200">
           <table className="w-full bg-white text-sm">
             <thead className="sticky top-0 bg-[#edf6f1] text-left text-xs tracking-wide text-[#164b33]">
@@ -280,6 +303,12 @@ export function AccessControlTab() {
                 <th className="px-3 py-2">Email</th>
                 <th className="px-3 py-2">{scopeLabel(group)}</th>
                 <th className="w-16 px-3 py-2" />
+              </tr>
+              <tr className="border-t border-emerald-100">
+                <ColumnFilterCell columnKey="name" label="Name" filters={filters} onChange={setFilter} />
+                <ColumnFilterCell columnKey="email" label="Email" filters={filters} onChange={setFilter} />
+                <ColumnFilterCell columnKey="scope" label={scopeLabel(group)} filters={filters} onChange={setFilter} />
+                <th />
               </tr>
             </thead>
             <tbody>
@@ -298,7 +327,7 @@ export function AccessControlTab() {
               {members.length === 0 && (
                 <tr>
                   <td colSpan={4} className="px-3 py-4 text-center text-xs text-slate-400">
-                    No members.
+                    {allMembers.length > 0 ? "No members match the filters." : "No members."}
                   </td>
                 </tr>
               )}

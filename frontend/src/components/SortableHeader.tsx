@@ -37,26 +37,3 @@ export function SortableHeader({
     </th>
   );
 }
-
-// Single text box above a table that narrows its rows by any matching text.
-export function TableFilter({ value, onChange, placeholder = "Filter rows…", count, total }: { value: string; onChange: (v: string) => void; placeholder?: string; count: number; total: number }) {
-  return (
-    <div className="mb-2 flex flex-wrap items-center gap-2 text-xs">
-      <input
-        type="search"
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder={placeholder}
-        className="w-64 rounded border border-slate-300 px-2 py-1"
-      />
-      {value && (
-        <button type="button" onClick={() => onChange("")} className="text-emerald-700 hover:underline">
-          Clear
-        </button>
-      )}
-      <span className="text-slate-500">
-        Showing {count} of {total}
-      </span>
-    </div>
-  );
-}
