@@ -237,8 +237,16 @@ bulkUploadRouter.get(
       ["3. Enter the amount for each month (Jan to Dec) under the month columns, plus a Business Justification. To budget the same line item twice, pick it (and its Company, if it has one) again in one of the empty rows at the bottom."],
       ["4. Fill in any Additional Field marked as required, in that field's own column on the data sheet (see the Catalog Reference tab for which fields your chosen item needs)."],
       ["5. Save the file and upload it on the New Request page."],
+      [""],
+      ["Expense line item not on the list?"],
+      ["Don't add it to this sheet - the upload only accepts the line items already listed. Instead, create it as its own request on the New Request page:"],
+      ["   tick \"This expense isn't in the standard list\", enter the expense's name and details, then save and submit it there."],
+      ["   The Budget Officer reviews it and assigns its GL Account and Cost Center."],
     ].forEach((row) => instructions.addRow(row));
     instructions.getRow(1).font = { bold: true, size: 13 };
+    instructions.eachRow((row) => {
+      if (row.getCell(1).value === "Expense line item not on the list?") row.font = { bold: true };
+    });
     instructions.getColumn(1).width = 100;
 
     const sheet = workbook.addWorksheet(dataSheetName);

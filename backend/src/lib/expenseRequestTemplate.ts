@@ -187,7 +187,7 @@ export const companyLabel = (item: { company: { code: string } | null }) => item
 function resolveLineItem(itemsByName: Map<string, VisibleLineItem[]>, name: string, category: string, company: string): VisibleLineItem {
   let candidates = itemsByName.get(name.toLowerCase()) ?? [];
   if (candidates.length === 0) {
-    throw new Error(`Expense line item "${name}" is not in the standard catalog.`);
+    throw new Error(`Expense line item "${name}" is not in the standard catalog - to request it, use the New Request page and tick "This expense isn't in the standard list".`);
   }
   if (category) {
     const inCategory = candidates.filter((i) => i.category.toLowerCase() === category.toLowerCase());
