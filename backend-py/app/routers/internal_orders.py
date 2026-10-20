@@ -27,7 +27,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
-from ..auth import AuthedUser, get_current_user, require_role
+from ..auth import AuthedUser, get_current_user, require_transfers_module, require_role
 from ..db import enum_eq, get_session
 from ..models_phase1 import BudgetRequest, Department, User
 from ..models_phase3 import InternalOrderRequest, IoLocation, IoReviewDecision
@@ -290,7 +290,7 @@ class SalrOptionOut(BaseModel):
     available: float
 
 
-@router.get("/salr-options", response_model=list[SalrOptionOut])
+@router.get("/salr-options", response_model=list[SalrOptionOut], dependencies=[Depends(require_transfers_module)])
 def salr_options(fiscalYear: int, user: AuthedUser = Depends(get_current_user), session: Session = Depends(get_session)):
     """S_ALR_87013019-backed options for the "IO Budget" reallocation source
     (spec: "IO Budget should have a dropdown list of the created IO in
@@ -343,7 +343,7 @@ def _assert_salr_available(session: Session, fiscal_year: int, aufnr: str, amoun
         )
 
 
-@router.post("", response_model=InternalOrderRequestOut, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=InternalOrderRequestOut, status_code=status.HTTP_201_CREATED, dependencies=[Depends(require_transfers_module)])
 def create_internal_order(
     body: InternalOrderRequestIn,
     user: AuthedUser = Depends(get_current_user),
@@ -408,7 +408,7 @@ def create_internal_order(
     return _to_out(session, io)
 
 
-@router.post("/{io_id}/submit", response_model=InternalOrderRequestOut)
+@router.post("/{io_id}/submit", response_model=InternalOrderRequestOut, dependencies=[Depends(require_transfers_module)])
 def submit_internal_order(
     io_id: int,
     user: AuthedUser = Depends(get_current_user),
@@ -435,7 +435,7 @@ def submit_internal_order(
     return _to_out(session, io)
 
 
-@router.get("/mine", response_model=list[InternalOrderRequestOut])
+@router.get("/mine", response_model=list[InternalOrderRequestOut], dependencies=[Depends(require_transfers_module)])
 def my_internal_orders(user: AuthedUser = Depends(get_current_user), session: Session = Depends(get_session)):
     rows = session.exec(
         select(InternalOrderRequest).where(InternalOrderRequest.requestor_id == user.id).order_by(InternalOrderRequest.updated_at.desc())
@@ -443,7 +443,7 @@ def my_internal_orders(user: AuthedUser = Depends(get_current_user), session: Se
     return [_to_out(session, io) for io in rows]
 
 
-@router.get("/inbox", response_model=list[InternalOrderRequestOut])
+@router.get("/inbox", response_model=list[InternalOrderRequestOut], dependencies=[Depends(require_transfers_module)])
 def inbox(user: AuthedUser = Depends(get_current_user), session: Session = Depends(get_session)):
     all_pending = session.exec(select(InternalOrderRequest).where(InternalOrderRequest.current_stage.in_(REVIEW_STAGES))).all()
     matches = [io for io in all_pending if io.status == "IN_REVIEW" and _is_eligible_for_stage(user, io, io.current_stage)]  # type: ignore[arg-type]
@@ -451,7 +451,7 @@ def inbox(user: AuthedUser = Depends(get_current_user), session: Session = Depen
     return [_to_out(session, io) for io in matches]
 
 
-@router.get("/reviewed-by-me", response_model=list[InternalOrderRequestOut])
+@router.get("/reviewed-by-me", response_model=list[InternalOrderRequestOut], dependencies=[Depends(require_transfers_module)])
 def reviewed_by_me(user: AuthedUser = Depends(get_current_user), session: Session = Depends(get_session)):
     decisions = session.exec(
         select(IoReviewDecision).where(IoReviewDecision.decided_by_id == user.id).order_by(IoReviewDecision.timestamp.desc())
@@ -470,7 +470,7 @@ def reviewed_by_me(user: AuthedUser = Depends(get_current_user), session: Sessio
     return out
 
 
-@router.get("/{io_id}", response_model=InternalOrderRequestOut)
+@router.get("/{io_id}", response_model=InternalOrderRequestOut, dependencies=[Depends(require_transfers_module)])
 def get_internal_order(io_id: int, user: AuthedUser = Depends(get_current_user), session: Session = Depends(get_session)):
     io = _get_or_404(session, io_id)
     _assert_io_access(user, io)
@@ -482,7 +482,7 @@ class DecisionIn(BaseModel):
     comment: str | None = None
 
 
-@router.post("/{io_id}/decision", response_model=InternalOrderRequestOut)
+@router.post("/{io_id}/decision", response_model=InternalOrderRequestOut, dependencies=[Depends(require_transfers_module)])
 def decide(
     io_id: int,
     body: DecisionIn,

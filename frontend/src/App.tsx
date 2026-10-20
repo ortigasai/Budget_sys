@@ -23,6 +23,7 @@ import { InternalOrderRequestsPage } from "./pages/InternalOrderRequestsPage";
 import { InternalOrderDetailPage } from "./pages/InternalOrderDetailPage";
 import { ReportsPage } from "./pages/ReportsPage";
 import { RequireReportAccess } from "./components/RequireReportAccess";
+import { RequireTransfersModule } from "./components/RequireTransfersModule";
 import { ReportsTrendPage } from "./pages/ReportsTrendPage";
 import { NpcReportPage } from "./pages/NpcReportPage";
 import { UploadStatusStack } from "./components/UploadStatusStack";
@@ -100,10 +101,10 @@ export default function App() {
             same as Phase 1's own BudgetRequest creation; review/approval
             actions are gated per-decision instead (see
             TransferDetailPage.tsx's canDecide). */}
-        <Route path="transfers" element={<TransfersPage />} />
-        <Route path="transfers/:id" element={<TransferDetailPage />} />
-        <Route path="internal-orders" element={<InternalOrderRequestsPage />} />
-        <Route path="internal-orders/:id" element={<InternalOrderDetailPage />} />
+        <Route path="transfers" element={<RequireTransfersModule><TransfersPage /></RequireTransfersModule>} />
+        <Route path="transfers/:id" element={<RequireTransfersModule><TransferDetailPage /></RequireTransfersModule>} />
+        <Route path="internal-orders" element={<RequireTransfersModule><InternalOrderRequestsPage /></RequireTransfersModule>} />
+        <Route path="internal-orders/:id" element={<RequireTransfersModule><InternalOrderDetailPage /></RequireTransfersModule>} />
         <Route
           path="reports"
           element={

@@ -38,6 +38,15 @@ export const PHASES: Phase[] = [
   },
 ];
 
+// Module 3 is switched off for everyone except the Budget Officer until the
+// user says it's ready. Flip to true to open it to all users again (and the
+// same flag in backend-py/app/auth.py).
+export const TRANSFERS_MODULE_ENABLED = false;
+
+export function canUseTransfersModule(hasRole: (role: string) => boolean): boolean {
+  return TRANSFERS_MODULE_ENABLED || hasRole("BUDGET_OFFICER");
+}
+
 export function phaseForPath(pathname: string): Phase {
   if (pathname.startsWith("/utilization") || pathname.startsWith("/dash-flow")) return PHASES[1];
   if (pathname.startsWith("/transfers") || pathname.startsWith("/internal-orders")) return PHASES[2];

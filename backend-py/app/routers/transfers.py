@@ -34,7 +34,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
-from ..auth import AuthedUser, get_current_user
+from ..auth import AuthedUser, get_current_user, require_transfers_module
 from ..db import enum_eq, get_session
 from ..models_phase1 import Department, RoleAssignment, User
 from ..models_phase3 import CostCenter, GlAccount, IoLocation, TransferAttachment, TransferRequest, TransferReviewDecision
@@ -334,7 +334,7 @@ class TransferBalanceOut(BaseModel):
     available: float  # budget - allotted
 
 
-@router.get("/cc-gl-balance", response_model=TransferBalanceOut)
+@router.get("/cc-gl-balance", response_model=TransferBalanceOut, dependencies=[Depends(require_transfers_module)])
 def cc_gl_balance(costCenter: str, glAccount: str, fiscalYear: int, session: Session = Depends(get_session)):
     """The CC-GL pair's current Budget/Actual/Commitment breakdown - used by
     the New Transfer form to show, for a picked To or From CC-GL pair, the
@@ -458,7 +458,7 @@ class DepartmentHeadOut(BaseModel):
     name: str
 
 
-@router.get("/department-heads", response_model=list[DepartmentHeadOut])
+@router.get("/department-heads", response_model=list[DepartmentHeadOut], dependencies=[Depends(require_transfers_module)])
 def department_heads(user: AuthedUser = Depends(get_current_user), session: Session = Depends(get_session)):
     """Powers the Submit-time "which Department Head should review this"
     picker - scoped to the requestor's own department only.
@@ -510,7 +510,7 @@ def _generate_ticket_number(session: Session, fiscal_year: int) -> str:
     return f"TR-{fiscal_year}-{len(existing) + 1}"
 
 
-@router.post("", response_model=TransferRequestOut, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=TransferRequestOut, status_code=status.HTTP_201_CREATED, dependencies=[Depends(require_transfers_module)])
 def create_transfer(
     body: TransferRequestIn,
     user: AuthedUser = Depends(get_current_user),
@@ -560,7 +560,7 @@ def create_transfer(
     return _to_out(session, t)
 
 
-@router.post("/{transfer_id}/submit", response_model=TransferRequestOut)
+@router.post("/{transfer_id}/submit", response_model=TransferRequestOut, dependencies=[Depends(require_transfers_module)])
 def submit_transfer(
     transfer_id: int,
     body: SubmitIn,
@@ -602,7 +602,7 @@ def submit_transfer(
     return _to_out(session, t)
 
 
-@router.get("/mine", response_model=list[TransferRequestOut])
+@router.get("/mine", response_model=list[TransferRequestOut], dependencies=[Depends(require_transfers_module)])
 def my_transfers(user: AuthedUser = Depends(get_current_user), session: Session = Depends(get_session)):
     rows = session.exec(
         select(TransferRequest).where(TransferRequest.requestor_id == user.id).order_by(TransferRequest.updated_at.desc())
@@ -610,7 +610,7 @@ def my_transfers(user: AuthedUser = Depends(get_current_user), session: Session 
     return [_to_out(session, t) for t in rows]
 
 
-@router.get("/inbox", response_model=list[TransferRequestOut])
+@router.get("/inbox", response_model=list[TransferRequestOut], dependencies=[Depends(require_transfers_module)])
 def inbox(user: AuthedUser = Depends(get_current_user), session: Session = Depends(get_session)):
     all_pending = session.exec(select(TransferRequest).where(TransferRequest.current_stage.in_(REVIEW_STAGES))).all()
     matches = [t for t in all_pending if t.status == "IN_REVIEW" and _is_eligible_for_stage(user, t, t.current_stage)]
@@ -618,7 +618,7 @@ def inbox(user: AuthedUser = Depends(get_current_user), session: Session = Depen
     return [_to_out(session, t) for t in matches]
 
 
-@router.get("/reviewed-by-me", response_model=list[TransferRequestOut])
+@router.get("/reviewed-by-me", response_model=list[TransferRequestOut], dependencies=[Depends(require_transfers_module)])
 def reviewed_by_me(user: AuthedUser = Depends(get_current_user), session: Session = Depends(get_session)):
     decisions = session.exec(
         select(TransferReviewDecision)
@@ -639,7 +639,7 @@ def reviewed_by_me(user: AuthedUser = Depends(get_current_user), session: Sessio
     return out
 
 
-@router.get("/{transfer_id}", response_model=TransferRequestOut)
+@router.get("/{transfer_id}", response_model=TransferRequestOut, dependencies=[Depends(require_transfers_module)])
 def get_transfer(
     transfer_id: int,
     user: AuthedUser = Depends(get_current_user),
@@ -650,7 +650,7 @@ def get_transfer(
     return _to_out(session, t, with_detail=True)
 
 
-@router.post("/{transfer_id}/decision", response_model=TransferRequestOut)
+@router.post("/{transfer_id}/decision", response_model=TransferRequestOut, dependencies=[Depends(require_transfers_module)])
 def decide(
     transfer_id: int,
     body: DecisionIn,
@@ -691,7 +691,7 @@ def decide(
     return _to_out(session, t, with_detail=True)
 
 
-@router.post("/{transfer_id}/reassign", response_model=TransferRequestOut)
+@router.post("/{transfer_id}/reassign", response_model=TransferRequestOut, dependencies=[Depends(require_transfers_module)])
 def reassign(
     transfer_id: int,
     body: ReassignIn,
@@ -721,7 +721,7 @@ def reassign(
     return _to_out(session, t, with_detail=True)
 
 
-@router.post("/{transfer_id}/cancel", response_model=TransferRequestOut)
+@router.post("/{transfer_id}/cancel", response_model=TransferRequestOut, dependencies=[Depends(require_transfers_module)])
 def cancel_transfer(
     transfer_id: int,
     user: AuthedUser = Depends(get_current_user),
@@ -741,7 +741,7 @@ def cancel_transfer(
     return _to_out(session, t, with_detail=True)
 
 
-@router.post("/{transfer_id}/attachments", response_model=TransferAttachmentOut, status_code=status.HTTP_201_CREATED)
+@router.post("/{transfer_id}/attachments", response_model=TransferAttachmentOut, status_code=status.HTTP_201_CREATED, dependencies=[Depends(require_transfers_module)])
 async def upload_attachment(
     transfer_id: int,
     file: UploadFile = File(...),
@@ -776,7 +776,7 @@ async def upload_attachment(
     return TransferAttachmentOut(id=attachment.id, fileName=attachment.file_name)
 
 
-@router.get("/attachments/{attachment_id}")
+@router.get("/attachments/{attachment_id}", dependencies=[Depends(require_transfers_module)])
 def download_attachment(
     attachment_id: int,
     user: AuthedUser = Depends(get_current_user),

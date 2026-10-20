@@ -128,3 +128,18 @@ def require_role(*role_types: str):
         return user
 
     return dependency
+
+
+# Module 3 (Budget Transfer & Reallocation, incl. Internal Order Requests) is
+# switched off for everyone except the Budget Officer until the user says it's
+# ready. Flip to True to reopen it (and TRANSFERS_MODULE_ENABLED in
+# frontend/src/lib/phases.ts). Only the module's own endpoints carry this
+# guard - the CC/GL list, CC/GL admin and IO Locations endpoints in the same
+# routers stay open, since New Request and the Admin Console use them.
+TRANSFERS_MODULE_ENABLED = False
+
+
+def require_transfers_module(user: AuthedUser = Depends(get_current_user)) -> AuthedUser:
+    if not TRANSFERS_MODULE_ENABLED and not any(r.roleType == "BUDGET_OFFICER" for r in user.roles):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Budget Transfer & Reallocation isn't available yet.")
+    return user

@@ -1,6 +1,6 @@
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { PHASES } from "../lib/phases";
+import { PHASES, canUseTransfersModule } from "../lib/phases";
 import { useAuth } from "../context/AuthContext";
 import { api2 } from "../api/client";
 
@@ -33,7 +33,8 @@ export function PhaseMenuPage() {
           // Module 2 for someone whose group grants Dash Flow but none of the Utilization pages lands on Dash Flow instead.
           const phase = basePhase.number === 2 && currentUser?.access && !currentUser.access["util.overview"] && !currentUser.access["util.reconciliation"] && !currentUser.access["util.npc"] && currentUser.access["util.dashflow"] ? { ...basePhase, to: "/dash-flow" } : basePhase;
           const restricted = phase.number === 4 && !hasReportAccess;
-          return phase.to && !restricted ? (
+          const notYetAvailable = phase.number === 3 && !canUseTransfersModule(hasRole);
+          return phase.to && !restricted && !notYetAvailable ? (
             <Link
               key={phase.number}
               to={phase.to}
@@ -49,7 +50,7 @@ export function PhaseMenuPage() {
             <div key={phase.number} className="flex flex-col rounded-xl border border-slate-200 bg-slate-50 p-5 opacity-60">
               <div className="mb-3 flex items-center gap-2">
                 <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-slate-400 text-sm font-bold text-white">{phase.number}</div>
-                <span className="rounded-full bg-slate-200 px-2 py-0.5 text-[10px] font-semibold tracking-wide text-slate-500">{restricted ? "Restricted" : "Coming soon"}</span>
+                <span className="rounded-full bg-slate-200 px-2 py-0.5 text-[10px] font-semibold tracking-wide text-slate-500">{restricted ? "Restricted" : notYetAvailable ? "Not yet available" : "Coming soon"}</span>
               </div>
               <div title={phase.description} className="text-base font-semibold text-slate-700">
                 {phase.title}
