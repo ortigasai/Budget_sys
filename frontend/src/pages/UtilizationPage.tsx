@@ -170,8 +170,15 @@ export function UtilizationPage() {
   });
 
   const [departmentId, setDepartmentId] = useState("");
+  // The Budget Officer picks an SBU instead of a department ("ALL" = every SBU).
+  const { data: sbuScopes = [] } = useQuery({
+    queryKey: ["utilization", "sbus"],
+    queryFn: async () => (await api2.get<Department[]>("/utilization/sbus")).data,
+    enabled: isBudgetOfficer,
+  });
+  const [sbuScope, setSbuScope] = useState("ALL");
   // BCA sees every department combined, always - no picker needed (or shown).
-  const effectiveDeptId = isBca ? "ALL" : departmentId || departments[0]?.id || "";
+  const effectiveDeptId = isBudgetOfficer ? sbuScope : isBca ? "ALL" : departmentId || departments[0]?.id || "";
 
   const { data: overviewRows = [], isLoading: overviewLoading } = useQuery({
     queryKey: ["utilization", "overview", effectiveDeptId],
@@ -309,10 +316,24 @@ export function UtilizationPage() {
     },
   });
 
+  // Budget Officer only: on Overview it sits in the filter row, beside the
+  // budget-status filter; on Live Reconciliation, in the page header.
+  const sbuPicker = (
+    <select value={sbuScope} onChange={(e) => setSbuScope(e.target.value)} className="h-9 w-40 rounded border border-slate-300 bg-white px-2 text-sm font-normal text-slate-700">
+      <option value="ALL">All SBUs</option>
+      {sbuScopes.map((s) => (
+        <option key={s.id} value={s.id}>
+          {s.name}
+        </option>
+      ))}
+    </select>
+  );
+
   return (
     <div className="mt-2 space-y-6">
-      {((tab === "reconciliation" && lastSyncedLabel) || (!isBca && tab !== "npc" && departments.length > 1)) && (
+      {((tab === "reconciliation" && lastSyncedLabel) || (isBudgetOfficer && tab === "reconciliation") || (!isBca && tab !== "npc" && departments.length > 1)) && (
       <PageHeader
+        subtitle={isBudgetOfficer && tab === "reconciliation" ? sbuPicker : undefined}
         actions={
           <>
             {tab === "reconciliation" && lastSyncedLabel && (
@@ -320,7 +341,7 @@ export function UtilizationPage() {
                 {lastSyncedLabel}
               </span>
             )}
-            {!isBca && departments.length > 1 && (
+            {!isBudgetOfficer && !isBca && departments.length > 1 && (
               <select value={effectiveDeptId} onChange={(e) => setDepartmentId(e.target.value)} className="rounded border border-slate-300 px-2 py-1.5 text-sm">
                 <option value="ALL">All Departments</option>
                 {departments.map((d) => (
@@ -345,6 +366,7 @@ export function UtilizationPage() {
           <ExpandableSection title="Departmental Overview" inlineExpand>
         <>
         <div className="mb-2 flex flex-wrap items-start gap-2">
+            {isBudgetOfficer && sbuPicker}
             <select value={availFilter} onChange={(e) => setAvailFilter(e.target.value as typeof availFilter)} className="h-9 w-40 rounded border border-slate-300 bg-white px-2 text-sm font-normal text-slate-700">
             <option value="all">All</option>
             <option value="positive">Within budget</option>

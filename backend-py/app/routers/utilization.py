@@ -322,6 +322,20 @@ def list_departments(
     return out
 
 
+@router.get("/sbus", response_model=list[DepartmentOut])
+def list_sbus(
+    user: AuthedUser = Depends(_require_utilization_access),
+    session: Session = Depends(get_session),
+):
+    """The Budget Officer's SBU picker on Departmental Overview/Live
+    Reconciliation: every SBU the CC-GL workbook tags a cost center with, as
+    "SBU:<CODE>" scope ids (see _scope_from_id)."""
+    if not user.has_role("BUDGET_OFFICER"):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Only the Budget Officer can pick an SBU.")
+    sbus = session.exec(select(CostCenter.sbu).where(CostCenter.sbu != None).distinct()).all()  # noqa: E711
+    return [DepartmentOut(id=f"{SBU_SCOPE_PREFIX}{sbu}", name=sbu.title()) for sbu in sorted(sbus)]
+
+
 def _approved_budget_by_gl_cc(session: Session, department_id: str, fiscal_year: int, cond=None) -> dict[tuple[str, str], float]:
     """Sum(FinalizedBudgetLine.amount) for this department's catalog, grouped
     by (glAccount, costCenter) - Note 11: reads the finalized/uploaded budget
