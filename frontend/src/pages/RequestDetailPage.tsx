@@ -3,7 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, requestLineDisplay, type BudgetRequest, type DemoUser } from "../api/client";
 import { ApproverPicker } from "../components/ApproverPicker";
-import { NpcBudgetSummary } from "../components/NpcBudgetSummary";
+import { RequestBudgetSummary } from "../components/RequestBudgetSummary";
 import { SearchableSelect } from "../components/SearchableSelect";
 import { StatusBadge, STAGE_LABELS } from "../components/StatusBadge";
 import { useAuth } from "../context/AuthContext";
@@ -207,7 +207,7 @@ export function RequestDetailPage() {
         <Field label="Created By" value={request.createdBy.name} />
       </div>
 
-      {request.requestCategory === "NPC" && request.currentStage !== "DRAFT" && <NpcBudgetSummary requestId={request.id} />}
+      {(request.requestCategory === "NPC" || request.requestCategory === "GAE") && request.currentStage !== "DRAFT" && <RequestBudgetSummary requestId={request.id} />}
 
       <div className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
         <div className="bg-emerald-50 px-4 py-2 text-xs font-semibold tracking-wide text-emerald-800">Monthly Spend Grid</div>

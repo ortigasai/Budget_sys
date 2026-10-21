@@ -57,7 +57,7 @@ export function CapPoolWidget({ departmentId, fiscalYear }: { departmentId: stri
           </Link>
         )}
       </div>
-      <Stat label={`${fiscalYear} Portal Requests`} value={peso(data.totalPortalRequests)} tone="blue" />
+      <Stat label={`${fiscalYear} Portal Approved and Pending Requests`} value={peso(data.totalPortalRequests)} tone="blue" />
       <Stat label="Remaining Departmental Pool" value={peso(data.remainingPool)} tone={data.remainingPool < 0 ? "red" : "emerald"} />
       <Stat label="Growth Rate Used" value={`${data.growthRateUsed}%`} tone="amber" />
     </div>

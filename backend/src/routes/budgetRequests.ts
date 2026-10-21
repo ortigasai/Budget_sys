@@ -13,9 +13,10 @@ import { HttpError } from "../httpError";
 import { getFiscalCycle } from "../lib/fiscalCycle";
 import { getFinalizedBudgetLineDetails, getFinalizedBudgetReport } from "../services/finalizedBudgetReportService";
 import { buildSapUploadTemplate, SapTemplateError } from "../services/sapUploadTemplate";
+import { computeDepartmentalCap, POOL_CONSUMING_STAGES } from "../services/budgetCalcService";
 import { buildBoardApprovedPageReport, buildBoardCheckReport, NPC_UNCOUNTED_STAGES } from "../services/boardCheckReport";
 import { nextBudgetCode, nextTicketNumber, sbuBudgetCodePrefix } from "../lib/budgetCode";
-import { NPC_LOCATION_VALUES, NPC_SBU_VALUES, npcSbuBudgetCodePrefix } from "../lib/npcSbu";
+import { NPC_LOCATION_VALUES, NPC_SBU_OPTIONS, NPC_SBU_VALUES, npcSbuBudgetCodePrefix } from "../lib/npcSbu";
 import { resolveBudgetRequestPendingReviewers } from "../lib/pendingReviewers";
 import {
   applyBudgetCut,
@@ -659,35 +660,76 @@ budgetRequestsRouter.get(
   })
 );
 
-// The NPC budget picture a reviewer sees beside an NPC request (Inbox and
-// the request's own page): the Budget Officer's Board-Approved NPC Budget
-// for its NPC SBU and year, what's already been approved against it, and
-// what's left before and after this request. boardApproved is null until
-// the Budget Officer sets that SBU's figure. Board-Approved here is the
-// Total Board-Approved: Original plus Additions/Reductions.
+// The budget picture a reviewer sees beside a request (Inbox and the
+// request's own page), for NPC and GAE:
+//   - NPC: its NPC SBU's Total Board-Approved NPC Budget (Original +
+//     Additions/Reductions); null until the Budget Officer sets it.
+//   - GAE: its owning centralized department's Departmental Budget Cap (the
+//     same pool as the Home page's Cap & Pool card); null when that
+//     department has no forecast to build a cap from.
+// Against it: other requests already fully approved, other requests still
+// pending approval, and this request - all net of budget cuts, and never
+// counting this request among the "other" figures.
 budgetRequestsRouter.get(
-  "/:id/npc-budget-summary",
+  "/:id/budget-summary",
   asyncHandler(async (req, res) => {
-    const request = await prisma.budgetRequest.findUniqueOrThrow({ where: { id: req.params.id } });
-    if (request.requestCategory !== "NPC" || !request.npcSbu) throw new HttpError(400, "This is not an NPC request.");
-    const latestBoard = (isAdjustment: boolean) =>
-      prisma.boardApprovedBudget.findFirst({
-        where: { fiscalYear: request.fiscalYear, requestCategory: "NPC", npcSbu: request.npcSbu, isAdjustment },
-        orderBy: { setAt: "desc" },
+    const request = await prisma.budgetRequest.findUniqueOrThrow({
+      where: { id: req.params.id },
+      include: { expenseLineItem: { select: { ownerDepartmentId: true, ownerDepartment: { select: { name: true } } } } },
+    });
+    const net = (rows: { proposedAmount: number; budgetCutAmount: number }[]) => rows.reduce((sum, r) => sum + r.proposedAmount - r.budgetCutAmount, 0);
+    const amountFields = { proposedAmount: true, budgetCutAmount: true } as const;
+
+    if (request.requestCategory === "NPC" && request.npcSbu) {
+      const latestBoard = (isAdjustment: boolean) =>
+        prisma.boardApprovedBudget.findFirst({
+          where: { fiscalYear: request.fiscalYear, requestCategory: "NPC", npcSbu: request.npcSbu, isAdjustment },
+          orderBy: { setAt: "desc" },
+        });
+      const [original, adjustment] = await Promise.all([latestBoard(false), latestBoard(true)]);
+      const others = { requestCategory: RequestCategory.NPC, npcSbu: request.npcSbu, fiscalYear: request.fiscalYear, id: { not: request.id } };
+      const [approved, pending] = await Promise.all([
+        prisma.budgetRequest.findMany({ where: { ...others, currentStage: RequestStage.APPROVED }, select: amountFields }),
+        prisma.budgetRequest.findMany({ where: { ...others, currentStage: { notIn: [...NPC_UNCOUNTED_STAGES, RequestStage.APPROVED] } }, select: amountFields }),
+      ]);
+      res.json({
+        kind: "NPC",
+        fiscalYear: request.fiscalYear,
+        scope: NPC_SBU_OPTIONS.find((o) => o.value === request.npcSbu)?.label ?? request.npcSbu,
+        budget: original || adjustment ? (original?.amount ?? 0) + (adjustment?.amount ?? 0) : null,
+        approvedToDate: net(approved),
+        approvedCount: approved.length,
+        pendingOthers: net(pending),
+        pendingCount: pending.length,
+        thisRequest: request.proposedAmount - request.budgetCutAmount,
       });
-    const [original, adjustment] = await Promise.all([latestBoard(false), latestBoard(true)]);
-    const approved = await prisma.budgetRequest.findMany({
-      where: { requestCategory: "NPC", npcSbu: request.npcSbu, fiscalYear: request.fiscalYear, currentStage: RequestStage.APPROVED, id: { not: request.id } },
-      select: { proposedAmount: true, budgetCutAmount: true },
-    });
-    res.json({
-      fiscalYear: request.fiscalYear,
-      npcSbu: request.npcSbu,
-      boardApproved: original || adjustment ? (original?.amount ?? 0) + (adjustment?.amount ?? 0) : null,
-      approvedToDate: approved.reduce((sum, r) => sum + r.proposedAmount - r.budgetCutAmount, 0),
-      approvedCount: approved.length,
-      thisRequest: request.proposedAmount - request.budgetCutAmount,
-    });
+      return;
+    }
+
+    if (request.requestCategory === "GAE" && request.expenseLineItem) {
+      const ownerId = request.expenseLineItem.ownerDepartmentId;
+      const cap = await computeDepartmentalCap(ownerId, request.fiscalYear);
+      const hasForecast = (await prisma.historicalActuals.count({ where: { departmentId: ownerId, fiscalYear: request.fiscalYear } })) > 0;
+      const others = { fiscalYear: request.fiscalYear, expenseLineItem: { ownerDepartmentId: ownerId }, id: { not: request.id } };
+      const [approved, pending] = await Promise.all([
+        prisma.budgetRequest.findMany({ where: { ...others, currentStage: RequestStage.APPROVED }, select: amountFields }),
+        prisma.budgetRequest.findMany({ where: { ...others, currentStage: { in: POOL_CONSUMING_STAGES.filter((s) => s !== RequestStage.APPROVED) } }, select: amountFields }),
+      ]);
+      res.json({
+        kind: "GAE",
+        fiscalYear: request.fiscalYear,
+        scope: request.expenseLineItem.ownerDepartment.name,
+        budget: hasForecast ? cap.value : null,
+        approvedToDate: net(approved),
+        approvedCount: approved.length,
+        pendingOthers: net(pending),
+        pendingCount: pending.length,
+        thisRequest: request.proposedAmount - request.budgetCutAmount,
+      });
+      return;
+    }
+
+    res.json(null);
   })
 );
 

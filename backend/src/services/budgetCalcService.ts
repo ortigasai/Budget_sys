@@ -5,7 +5,7 @@ import { prisma } from "../prisma";
 // Departmental Pool (FR-1.5) and the over-budget check at Step 5. A
 // request only leaves the pool once it's fully rejected/returned; anything
 // still moving through the workflow, or finalized, counts against the cap.
-const POOL_CONSUMING_STAGES: RequestStage[] = [
+export const POOL_CONSUMING_STAGES: RequestStage[] = [
   RequestStage.DEPT_HEAD_REVIEW,
   RequestStage.CENTRALIZED_L1_REVIEW,
   RequestStage.CENTRALIZED_HEAD_REVIEW,

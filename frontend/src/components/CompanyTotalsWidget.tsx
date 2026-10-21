@@ -56,7 +56,7 @@ export function CompanyTotalsWidget({ fiscalYear }: { fiscalYear: number }) {
             note={`${gae.departmentCount} centralized departments: (${peso(gae.actualsYtd2026)} YTD Actuals + ${peso(gae.remainingForecast2026)} Remaining Forecast) x each department's growth rate`}
             link={{ to: "/forecast?category=GAE", label: "View Forecast" }}
           />
-          <Tile label={`${fiscalYear} GAE Portal Requests`} value={peso(gae.portalRequests)} tone="blue" />
+          <Tile label={`${fiscalYear} GAE Portal Approved and Pending Requests`} value={peso(gae.portalRequests)} tone="blue" />
           <Tile label="Remaining GAE Pool" value={peso(gae.remainingPool)} tone={gae.remainingPool < 0 ? "red" : "emerald"} />
           <Tile
             label="Board-Approved G&A"

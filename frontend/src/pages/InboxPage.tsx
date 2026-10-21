@@ -1,4 +1,4 @@
-import { NpcBudgetSummary } from "../components/NpcBudgetSummary";
+import { RequestBudgetSummary } from "../components/RequestBudgetSummary";
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -891,9 +891,9 @@ export function InboxPage() {
                 {isOpen && (
                   <div className="mt-3 space-y-2 border-t border-slate-100 pt-3">
                     <div className="text-slate-600">{r.businessJustification}</div>
-                    {r.requestCategory === "NPC" && (
+                    {(r.requestCategory === "NPC" || r.requestCategory === "GAE") && (
                       <div className="max-w-xl">
-                        <NpcBudgetSummary requestId={r.id} />
+                        <RequestBudgetSummary requestId={r.id} />
                       </div>
                     )}
                     <div className="text-xs text-slate-500">

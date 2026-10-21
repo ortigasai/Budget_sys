@@ -68,7 +68,7 @@ export function HomePage() {
           <h2 className="mb-2 text-sm font-semibold text-slate-700">{homeDept.name} — Budget Cap &amp; Pool</h2>
           <CapPoolWidget departmentId={homeDept.id} />
           <div className="mt-4">
-            <SectionLabel>{FISCAL_YEAR} Portal Requests Breakdown</SectionLabel>
+            <SectionLabel>{FISCAL_YEAR} Portal Approved and Pending Requests Breakdown</SectionLabel>
             <PortalRequestsList departmentId={homeDept.id} fiscalYear={FISCAL_YEAR} />
           </div>
         </section>
@@ -84,7 +84,7 @@ export function HomePage() {
               <h2 className="mb-2 text-sm font-semibold text-slate-700">{dept.name} — Budget Cap &amp; Pool</h2>
               <CapPoolWidget departmentId={dept.id} />
               <div className="mt-4">
-                <SectionLabel>{FISCAL_YEAR} Portal Requests Breakdown</SectionLabel>
+                <SectionLabel>{FISCAL_YEAR} Portal Approved and Pending Requests Breakdown</SectionLabel>
                 <PortalRequestsList departmentId={dept.id} fiscalYear={FISCAL_YEAR} />
               </div>
             </section>

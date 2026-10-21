@@ -25,7 +25,7 @@ export function PortalRequestsPage() {
       <PageHeader
         subtitle={
           <>
-            <span className="font-medium text-slate-700">{fiscalYear} Portal Requests</span>
+            <span className="font-medium text-slate-700">{fiscalYear} Portal Approved and Pending Requests</span>
             {department && <> — {department.name}, requests currently consuming this department's pool</>}
           </>
         }

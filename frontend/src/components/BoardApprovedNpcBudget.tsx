@@ -42,7 +42,7 @@ function parseAmount(s: string): number {
 // "Board-Approved NPC Budget" - per NPC SBU (the 8 values NPC requests are
 // tagged with): the Original Board-Approved figure plus any Board-Approved
 // Additions/Reductions, giving the Total Board-Approved that reviewers see
-// each NPC request against (NpcBudgetSummary.tsx). Both parts are saved
+// each NPC request against (RequestBudgetSummary.tsx). Both parts are saved
 // through the same append-only history as the P&L grid, as requestCategory
 // NPC rows keyed by npcSbu and isAdjustment.
 // `sbus` limits the rows to those NPC SBUs (an SBU Finance viewer's own).
