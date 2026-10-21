@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useAuth } from "../context/AuthContext";
 import { roleLabel } from "../components/RoleSwitcher";
 import { CapPoolWidget } from "../components/CapPoolWidget";
+import { CompanyTotalsWidget } from "../components/CompanyTotalsWidget";
 import { DueDateBanner } from "../components/DueDateBanner";
 import { PortalRequestsList } from "../components/PortalRequestsList";
 import { SectionLabel } from "../components/TabBar";
@@ -9,7 +10,10 @@ import { api, type Department } from "../api/client";
 import { useFiscalYear } from "../lib/fiscalCycle";
 
 export function HomePage() {
-  const { currentUser } = useAuth();
+  const { currentUser, hasRole } = useAuth();
+  // The Budget Officer sees company-wide GAE and NPC totals instead of their
+  // own department's Cap & Pool card.
+  const isBudgetOfficer = hasRole("BUDGET_OFFICER");
   const { targetYear: FISCAL_YEAR } = useFiscalYear();
   const { data: departments = [] } = useQuery({
     queryKey: ["departments"],
@@ -57,7 +61,9 @@ export function HomePage() {
         </p>
       </div>
 
-      {homeDept && coreDepartmentIds.has(homeDept.id) && (
+      {isBudgetOfficer && <CompanyTotalsWidget fiscalYear={FISCAL_YEAR} />}
+
+      {!isBudgetOfficer && homeDept && coreDepartmentIds.has(homeDept.id) && (
         <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
           <h2 className="mb-2 text-sm font-semibold text-slate-700">{homeDept.name} — Budget Cap &amp; Pool</h2>
           <CapPoolWidget departmentId={homeDept.id} />
@@ -69,7 +75,7 @@ export function HomePage() {
       )}
 
       {[...centralizedDeptIds]
-        .filter((id) => id !== homeDept?.id && coreDepartmentIds.has(id))
+        .filter((id) => !isBudgetOfficer && id !== homeDept?.id && coreDepartmentIds.has(id))
         .map((id) => {
           const dept = departments.find((d) => d.id === id);
           if (!dept) return null;
