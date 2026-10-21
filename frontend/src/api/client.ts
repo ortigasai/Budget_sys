@@ -236,13 +236,14 @@ export interface ForecastCategoryMapping {
   category: RequestCategory;
 }
 
+// SBU lists are shown in alphabetical order everywhere (user direction).
 export const SBU_OPTIONS: { value: Sbu; label: string }[] = [
-  { value: "RESIDENTIAL", label: "Residential" },
-  { value: "MALLS", label: "Malls" },
-  { value: "OFFICES", label: "Offices" },
+  { value: "CORPORATE", label: "Corporate" },
   { value: "ESTATES", label: "Estates" },
   { value: "LEISURE", label: "Leisure" },
-  { value: "CORPORATE", label: "Corporate" },
+  { value: "MALLS", label: "Malls" },
+  { value: "OFFICES", label: "Offices" },
+  { value: "RESIDENTIAL", label: "Residential" },
 ];
 
 // Spec item 12's NPC-specific SBU list — mirrors backend/src/lib/npcSbu.ts.
@@ -250,14 +251,14 @@ export const SBU_OPTIONS: { value: Sbu; label: string }[] = [
 // Corporate entries that don't apply to DOE.
 export type NpcSbu = "MALLS" | "OFFICES" | "ESTATES" | "RESIDENTIAL" | "LEISURE" | "CORPORATE_IT" | "CORPORATE_HR" | "CORPORATE_ADMIN";
 export const NPC_SBU_OPTIONS: { value: NpcSbu; label: string }[] = [
+  { value: "CORPORATE_ADMIN", label: "Corporate Admin" },
+  { value: "CORPORATE_HR", label: "Corporate HR" },
+  { value: "CORPORATE_IT", label: "Corporate IT" },
+  { value: "ESTATES", label: "Estates" },
+  { value: "LEISURE", label: "Leisure" },
   { value: "MALLS", label: "Malls" },
   { value: "OFFICES", label: "Offices" },
-  { value: "ESTATES", label: "Estates" },
   { value: "RESIDENTIAL", label: "Residential" },
-  { value: "LEISURE", label: "Leisure" },
-  { value: "CORPORATE_IT", label: "Corporate IT" },
-  { value: "CORPORATE_HR", label: "Corporate HR" },
-  { value: "CORPORATE_ADMIN", label: "Corporate Admin" },
 ];
 
 // Spec item 12's fixed Location list for NPC requests — mirrors
@@ -322,14 +323,14 @@ export const COMPANY_OPTIONS: { value: CompanyCode; label: string }[] = [
 // entries route DOE, the 3 Corporate ones route GAE.
 export type IoSbuCode = "MALLS" | "OFFICES" | "ESTATES" | "RESIDENTIAL" | "LEISURE" | "CORPORATE_IT" | "CORPORATE_HR" | "CORPORATE_ADMIN";
 export const IO_SBU_OPTIONS: { value: IoSbuCode; label: string; classification: TransferClassification }[] = [
+  { value: "CORPORATE_ADMIN", label: "Corporate Admin", classification: "GAE" },
+  { value: "CORPORATE_HR", label: "Corporate HR", classification: "GAE" },
+  { value: "CORPORATE_IT", label: "Corporate IT", classification: "GAE" },
+  { value: "ESTATES", label: "Estates", classification: "DOE" },
+  { value: "LEISURE", label: "Leisure", classification: "DOE" },
   { value: "MALLS", label: "Malls", classification: "DOE" },
   { value: "OFFICES", label: "Offices", classification: "DOE" },
-  { value: "ESTATES", label: "Estates", classification: "DOE" },
   { value: "RESIDENTIAL", label: "Residential", classification: "DOE" },
-  { value: "LEISURE", label: "Leisure", classification: "DOE" },
-  { value: "CORPORATE_IT", label: "Corporate IT", classification: "GAE" },
-  { value: "CORPORATE_HR", label: "Corporate HR", classification: "GAE" },
-  { value: "CORPORATE_ADMIN", label: "Corporate Admin", classification: "GAE" },
 ];
 
 export interface IoLocation {
@@ -611,6 +612,8 @@ export interface FinalizedBudgetLineDetail {
 export interface BoardBudgetCheckOut {
   requestCategory: RequestCategory;
   sbu: Sbu | null;
+  // NPC rows are per NPC SBU instead of `sbu`.
+  npcSbu: string | null;
   boardApprovedAmount: number;
   totalFinalizedAmount: number;
   variance: number;

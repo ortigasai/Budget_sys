@@ -10,6 +10,7 @@ import { SectionLabel } from "../../components/TabBar";
 import { evaluateSpendGridFormula, spreadByFrequency, spreadByMonthNumbers } from "../../lib/spendGridFormula";
 import { useFiscalYear } from "../../lib/fiscalCycle";
 import { startUpload, useUploadTaskBySlot } from "../../lib/uploadManager";
+import { UploadedDraftsPanel, type UploadedDraft } from "../../components/UploadedDraftsPanel";
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
@@ -156,6 +157,7 @@ export function StandardRequestTab({ requestCategory, subtitle }: { requestCateg
   // category's next upload replaces it.
   const uploadTask = useUploadTaskBySlot(requestCategory);
   const [templateError, setTemplateError] = useState<string | null>(null);
+  const [uploadedDrafts, setUploadedDrafts] = useState<UploadedDraft[] | null>(null);
   const [frozenHeaderEl, setFrozenHeaderEl] = useState<HTMLDivElement | null>(null);
   const [frozenHeaderHeight, setFrozenHeaderHeight] = useState(0);
   useLayoutEffect(() => {
@@ -448,7 +450,17 @@ export function StandardRequestTab({ requestCategory, subtitle }: { requestCateg
               form.append("file", file);
               form.append("category", requestCategory);
               form.append("fiscalYear", String(FISCAL_YEAR));
-              startUpload({ label: `${requestCategory} bulk upload (${file.name})`, slot: requestCategory, url: "/budget-requests/bulk-upload", form, invalidateKeys: [["my-requests"]] });
+              if (departmentHeadId) form.append("departmentHeadId", departmentHeadId);
+              if (centralizedHeadId) form.append("centralizedHeadId", centralizedHeadId);
+              setUploadedDrafts(null);
+              startUpload<{ createdRequests?: UploadedDraft[] }>({
+                label: `${requestCategory} bulk upload (${file.name})`,
+                slot: requestCategory,
+                url: "/budget-requests/bulk-upload",
+                form,
+                invalidateKeys: [["my-requests"]],
+                onDone: (data) => setUploadedDrafts(data.createdRequests?.length ? data.createdRequests : null),
+              });
             }}
           />
         </label>
@@ -457,6 +469,7 @@ export function StandardRequestTab({ requestCategory, subtitle }: { requestCateg
           <span className={`text-xs ${uploadTask.status === "success" ? "text-emerald-700" : "text-red-600"}`}>{uploadTask.message}</span>
         )}
       </div>
+      {uploadedDrafts && <UploadedDraftsPanel drafts={uploadedDrafts} onClear={() => setUploadedDrafts(null)} />}
       {uploadTask?.errors && uploadTask.errors.length > 0 && (
         <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-800">
           <div className="mb-1 font-medium">{uploadTask.errors.length} row(s) couldn't be uploaded - fix these in the spreadsheet and re-upload:</div>
@@ -763,7 +776,7 @@ export function StandardRequestTab({ requestCategory, subtitle }: { requestCateg
               <li>If the amount is over the threshold shown under Proposed Amount, attach the supporting document before submitting.</li>
             </ol>
             <div className="border-t border-emerald-200 pt-2 text-xs text-slate-600">
-              <span className="font-medium text-emerald-800">Bulk upload:</span> download the template - it already lists your department's line items. Fill in amounts for the ones you need, then upload it. Rows left blank are skipped; any rejected rows are listed here with the reason.
+              <span className="font-medium text-emerald-800">Bulk upload:</span> download the template - it already lists your department's line items. Fill in amounts for the ones you need, then upload it. Each filled-in row is saved as a Draft and listed here. Then, in My Requests, select them, pick the Department Head / Approver once and submit. Rows left blank are skipped; any rejected rows are listed here with the reason.
             </div>
           </div>
           {selectedItem && usesHeadcountTable && rateField && (

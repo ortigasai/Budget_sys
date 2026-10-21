@@ -36,3 +36,47 @@ export async function assertNpcSbu(user: AuthedUser, sbu: string) {
   const allowed = await allowedNpcSbus(user);
   if (allowed && !allowed.includes(sbu)) throw new HttpError(403, "You can only submit requests for your own NPC SBU.");
 }
+
+/**
+ * What an SBU Finance (SF) member may see of Budget Finalization & Upload:
+ * only the Board-Approved figures (Consolidated Board-Approved P&L and
+ * Board-Approved NPC Budget), view-only, for their own SBU(s). `sbus` are
+ * their SF scopes as Sbu values (Corporate covers the GAE figure too);
+ * `npcSbus` the matching NPC SBUs (Corporate covers Corporate IT/HR/Admin).
+ * null = not limited: the Budget Officer, BCA members, and anyone outside the
+ * SF group (unchanged).
+ */
+export interface FinalizationViewScope {
+  sbus: string[];
+  npcSbus: string[];
+}
+const SF_SCOPE_TO_NPC_SBUS: Record<string, string[]> = {
+  CORPORATE: ["CORPORATE_ADMIN", "CORPORATE_HR", "CORPORATE_IT"],
+  ESTATES: ["ESTATES"],
+  LEISURE: ["LEISURE"],
+  MALLS: ["MALLS"],
+  OFFICES: ["OFFICES"],
+  RESIDENTIAL: ["RESIDENTIAL"],
+};
+export async function finalizationViewScope(user: AuthedUser): Promise<FinalizationViewScope | null> {
+  if (isBudgetOfficer(user)) return null;
+  const ms = await prisma.userGroupMembership.findMany({ where: { userId: user.id } });
+  if (ms.some((m) => m.group === "BCA")) return null;
+  const sf = ms.filter((m) => m.group === "SF");
+  if (sf.length === 0) return null;
+  const sbus = [...new Set(sf.map((m) => m.scope.toUpperCase()))];
+  return { sbus, npcSbus: [...new Set(sbus.flatMap((s) => SF_SCOPE_TO_NPC_SBUS[s] ?? []))] };
+}
+
+/** Whether one Board-Approved figure / request / finalized line falls inside a limited scope. */
+export function inFinalizationScope(scope: FinalizationViewScope, row: { requestCategory: string; sbu?: string | null; npcSbu?: string | null }): boolean {
+  if (row.requestCategory === "NPC") return !!row.npcSbu && scope.npcSbus.includes(row.npcSbu);
+  // GAE is one Corporate figure with no SBU of its own.
+  if (row.requestCategory === "GAE" && !row.sbu) return scope.sbus.includes("CORPORATE");
+  return !!row.sbu && scope.sbus.includes(row.sbu);
+}
+
+/** Budget Finalization pages beyond the Board-Approved figures are off-limits to a limited (SF) viewer. */
+export async function assertFullFinalizationAccess(user: AuthedUser) {
+  if (await finalizationViewScope(user)) throw new HttpError(403, "SBU Finance can only view the Board-Approved budgets.");
+}

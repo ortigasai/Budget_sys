@@ -5,7 +5,7 @@ import { SearchableSelect } from "./SearchableSelect";
 // "Department Head / Approver" and "SBU or Division Head" - required
 // drop-downs on the request submission form (Approval Workflow). The list is
 // the employee roster; whoever is picked receives the approval task.
-export function ApproverPicker({ label, value, onChange, disabled }: { label: string; value: string; onChange: (userId: string) => void; disabled?: boolean }) {
+export function ApproverPicker({ label, value, onChange, disabled, optional }: { label: string; value: string; onChange: (userId: string) => void; disabled?: boolean; optional?: boolean }) {
   const { data: users = [] } = useQuery({
     queryKey: ["auth", "users"],
     queryFn: async () => (await api.get<DemoUser[]>("/auth/users")).data,
@@ -14,7 +14,7 @@ export function ApproverPicker({ label, value, onChange, disabled }: { label: st
   return (
     <div>
       <label className="mb-1 block text-sm font-medium text-slate-600">
-        {label} <span className="text-red-500">*</span>
+        {label} {!optional && <span className="text-red-500">*</span>}
       </label>
       <SearchableSelect
         placeholder="Search employees…"

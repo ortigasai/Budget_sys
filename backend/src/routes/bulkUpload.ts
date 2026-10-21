@@ -9,7 +9,7 @@ import { prisma } from "../prisma";
 import { asyncHandler } from "../asyncHandler";
 import { requireAuth } from "../middleware/auth";
 import { HttpError } from "../httpError";
-import { assertCycleOpen, isPostUploadReviewerError, submitRequest } from "../services/workflowService";
+import { assertCycleOpen } from "../services/workflowService";
 import { getFiscalCycle } from "../lib/fiscalCycle";
 import { nextBudgetCode, nextTicketNumber, sbuBudgetCodePrefix } from "../lib/budgetCode";
 import { SBU_BATCH_CATEGORIES } from "../services/approvalChain";
@@ -23,6 +23,22 @@ import { buildSapUploadTemplate, SapTemplateError } from "../services/sapUploadT
 export const bulkUploadRouter = Router();
 
 bulkUploadRouter.use(requireAuth);
+
+// Uploaded rows are saved as drafts (same as the form's Save Draft), listed
+// back on the upload page so the requestor can submit them from there.
+interface CreatedDraft {
+  id: string;
+  ticketNumber: string;
+  title: string;
+  amount: number;
+}
+
+// The approver(s) picked on the upload page's own Approval section, applied
+// to every uploaded row.
+function approversFromForm(body: Record<string, unknown>): { departmentHeadId?: string; centralizedHeadId?: string } {
+  const pick = (v: unknown) => (typeof v === "string" && v ? v : undefined);
+  return { departmentHeadId: pick(body.departmentHeadId), centralizedHeadId: pick(body.centralizedHeadId) };
+}
 
 // Same uploads directory/convention doeBatches.ts and revenueBatches.ts
 // already persist their source files under - one shared location for every
@@ -366,6 +382,7 @@ bulkUploadRouter.post(
     const { targetCalendarYear } = await getFiscalCycle();
     const fiscalYear = Number(req.body.fiscalYear ?? targetCalendarYear);
     const category = req.body.category === "DOE" ? RequestCategory.DOE : RequestCategory.GAE;
+    const approvers = approversFromForm(req.body);
     let sbu: Sbu | undefined;
     if (category === RequestCategory.DOE) {
       if (!Object.values(Sbu).includes(req.body.sbu)) {
@@ -410,6 +427,7 @@ bulkUploadRouter.post(
     }
     const errors: RowError[] = [...parsed.errors];
     let created = 0;
+    const createdRequests: CreatedDraft[] = [];
     const rowCount = parsed.rowCount;
 
     for (const parsedRow of parsed.rows) {
@@ -434,29 +452,17 @@ bulkUploadRouter.post(
             sbu,
             budgetCode,
             ticketNumber,
+            ...approvers,
             createdById: req.user!.id,
             bulkUploadBatchId: batch.id,
           },
         });
         createdRequestId = requestRecord.id;
-
-        try {
-          await submitRequest(requestRecord.id);
-        } catch (submitErr) {
-          // Attachment-threshold and reviewer-selection rows can't
-          // auto-submit (nothing in the spreadsheet supplies them) — leave
-          // as a draft the Requestor finishes on the request's own screen
-          // rather than failing the whole row.
-          if (!isPostUploadReviewerError(submitErr)) {
-            throw submitErr;
-          }
-        }
+        createdRequests.push({ id: requestRecord.id, ticketNumber, title: parsedRow.lineItem.name, amount: parsedRow.proposedAmount });
 
         created++;
       } catch (err) {
         // A rejected row must not leave its draft behind in My Requests.
-        // submitRequest writes nothing before it throws, so the draft has no
-        // child rows yet.
         if (createdRequestId) await prisma.budgetRequest.delete({ where: { id: createdRequestId } });
         errors.push({ row: parsedRow.row, error: err instanceof Error ? err.message : "Unknown error" });
       }
@@ -468,7 +474,7 @@ bulkUploadRouter.post(
       data: { rowCount, validationErrors: errors as unknown as Prisma.InputJsonValue, status },
     });
 
-    res.status(201).json({ batch: updatedBatch, created, errors });
+    res.status(201).json({ batch: updatedBatch, created, createdRequests, errors });
   })
 );
 
@@ -534,6 +540,7 @@ bulkUploadRouter.post(
     const { targetCalendarYear } = await getFiscalCycle();
     const fiscalYear = Number(req.body.fiscalYear ?? targetCalendarYear);
     const npcSbu = req.body.npcSbu as string | undefined;
+    const approvers = approversFromForm(req.body);
     if (!npcSbu || !(NPC_SBU_VALUES as readonly string[]).includes(npcSbu)) {
       throw new HttpError(400, "Select a valid NPC SBU for this upload.");
     }
@@ -560,6 +567,7 @@ bulkUploadRouter.post(
     const errors: RowError[] = [];
     let created = 0;
     let rowCount = 0;
+    const createdRequests: CreatedDraft[] = [];
 
     for (let rowNumber = 2; rowNumber <= sheet.rowCount; rowNumber++) {
       const row = sheet.getRow(rowNumber);
@@ -621,19 +629,13 @@ bulkUploadRouter.post(
             projectEndDate,
             budgetCode,
             ticketNumber,
+            ...approvers,
             createdById: req.user!.id,
             bulkUploadBatchId: batch.id,
           },
         });
         createdRequestId = requestRecord.id;
-
-        try {
-          await submitRequest(requestRecord.id);
-        } catch (submitErr) {
-          if (!isPostUploadReviewerError(submitErr)) {
-            throw submitErr;
-          }
-        }
+        createdRequests.push({ id: requestRecord.id, ticketNumber, title: projectTitle, amount });
 
         created++;
       } catch (err) {
@@ -651,6 +653,6 @@ bulkUploadRouter.post(
       data: { rowCount, validationErrors: errors as unknown as Prisma.InputJsonValue, status },
     });
 
-    res.status(201).json({ batch: updatedBatch, created, errors });
+    res.status(201).json({ batch: updatedBatch, created, createdRequests, errors });
   })
 );

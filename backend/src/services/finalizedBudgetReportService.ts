@@ -26,6 +26,8 @@ export interface FinalizedBudgetLineOut {
 export interface BoardBudgetCheckOut {
   requestCategory: RequestCategory;
   sbu: Sbu | null;
+  // NPC rows are per NPC SBU (lib/npcSbu.ts) instead of `sbu`.
+  npcSbu: string | null;
   boardApprovedAmount: number;
   totalFinalizedAmount: number;
   variance: number;
@@ -117,41 +119,49 @@ export async function getFinalizedBudgetReport(filter: FinalizedBudgetReportFilt
 
   // Board-budget-vs-total-finalized check, same shape as the figure already
   // shown on Step5DashboardPage.tsx, now computed server-side per
-  // (requestCategory, sbu) present in this filtered set of lines.
-  const history = await prisma.boardApprovedBudget.findMany({
+  // (requestCategory, sbu) present in this filtered set of lines - and, for
+  // NPC, per NPC SBU against its Total Board-Approved (Original plus
+  // Additions/Reductions, see the Board-Approved NPC Budget page). NPC's old
+  // single company-wide figure (an NPC row with no npcSbu) is no longer used.
+  const allHistory = await prisma.boardApprovedBudget.findMany({
     where: { fiscalYear: filter.fiscalYear },
     orderBy: { setAt: "desc" },
   });
-  const latestBoardAmount = (category: RequestCategory, sbu: Sbu | null): number => {
+  const history = allHistory.filter((h) => h.requestCategory !== RequestCategory.NPC);
+  const npcHistory = allHistory.filter((h) => h.requestCategory === RequestCategory.NPC && h.npcSbu);
+  const latestBoardAmount = (category: RequestCategory, sbu: Sbu | null, npcSbu: string | null): number => {
+    if (category === RequestCategory.NPC) {
+      const latestPart = (isAdjustment: boolean) => npcHistory.find((h) => h.npcSbu === npcSbu && h.isAdjustment === isAdjustment)?.amount ?? 0;
+      return latestPart(false) + latestPart(true);
+    }
     const match = history.find((h) => h.requestCategory === category && h.sbu === sbu);
     return match?.amount ?? 0;
   };
 
-  const totalsByCategorySbu = new Map<string, { requestCategory: RequestCategory; sbu: Sbu | null; total: number }>();
-  for (const line of lines) {
-    const key = `${line.requestCategory}|${line.sbu ?? ""}`;
+  type CheckKey = { requestCategory: RequestCategory; sbu: Sbu | null; npcSbu: string | null; total: number };
+  const totalsByCategorySbu = new Map<string, CheckKey>();
+  const addTotal = (requestCategory: RequestCategory, sbu: Sbu | null, npcSbu: string | null, amount: number) => {
+    const scope = requestCategory === RequestCategory.NPC ? { sbu: null, npcSbu } : { sbu, npcSbu: null };
+    const key = `${requestCategory}|${scope.sbu ?? ""}|${scope.npcSbu ?? ""}`;
     const existing = totalsByCategorySbu.get(key);
-    if (existing) {
-      existing.total += line.amount;
-    } else {
-      totalsByCategorySbu.set(key, { requestCategory: line.requestCategory, sbu: line.sbu, total: line.amount });
-    }
-  }
+    if (existing) existing.total += amount;
+    else totalsByCategorySbu.set(key, { requestCategory, ...scope, total: amount });
+  };
+  for (const line of lines) addTotal(line.requestCategory, line.sbu, line.npcSbu, line.amount);
   // Also list every approved budget that matches the filter, even one nothing has been
   // finalized against yet (its total is 0), so it shows as not yet finalized.
-  for (const h of history) {
+  for (const h of [...history, ...npcHistory]) {
     if (filter.requestCategory && h.requestCategory !== filter.requestCategory) continue;
     if (filter.sbu && h.sbu !== filter.sbu) continue;
-    const key = `${h.requestCategory}|${h.sbu ?? ""}`;
-    if (!totalsByCategorySbu.has(key)) {
-      totalsByCategorySbu.set(key, { requestCategory: h.requestCategory, sbu: h.sbu, total: 0 });
-    }
+    if (filter.npcSbu && h.npcSbu !== filter.npcSbu) continue;
+    addTotal(h.requestCategory, h.sbu, h.npcSbu, 0);
   }
-  const boardBudgetChecks: BoardBudgetCheckOut[] = Array.from(totalsByCategorySbu.values()).map(({ requestCategory, sbu, total }) => {
-    const boardApprovedAmount = latestBoardAmount(requestCategory, sbu);
+  const boardBudgetChecks: BoardBudgetCheckOut[] = Array.from(totalsByCategorySbu.values()).map(({ requestCategory, sbu, npcSbu, total }) => {
+    const boardApprovedAmount = latestBoardAmount(requestCategory, sbu, npcSbu);
     return {
       requestCategory,
       sbu,
+      npcSbu,
       boardApprovedAmount,
       totalFinalizedAmount: total,
       variance: boardApprovedAmount - total,

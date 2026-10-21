@@ -3,15 +3,16 @@ Kept as a small standalone module (not part of models_phase1.py) since it's
 plain reference data, not a DB-backed model.
 """
 
+# Alphabetical by label - the order every SBU list is shown in.
 NPC_SBU_LABELS: dict[str, str] = {
+    "CORPORATE_ADMIN": "Corporate Admin",
+    "CORPORATE_HR": "Corporate HR",
+    "CORPORATE_IT": "Corporate IT",
+    "ESTATES": "Estates",
+    "LEISURE": "Leisure",
     "MALLS": "Malls",
     "OFFICES": "Offices",
-    "ESTATES": "Estates",
     "RESIDENTIAL": "Residential",
-    "LEISURE": "Leisure",
-    "CORPORATE_IT": "Corporate IT",
-    "CORPORATE_HR": "Corporate HR",
-    "CORPORATE_ADMIN": "Corporate Admin",
 }
 
 # The User Management workbook's own labels for the NPC group's scope (its

@@ -3,6 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, requestLineDisplay, type BudgetRequest, type DemoUser } from "../api/client";
 import { ApproverPicker } from "../components/ApproverPicker";
+import { NpcBudgetSummary } from "../components/NpcBudgetSummary";
 import { SearchableSelect } from "../components/SearchableSelect";
 import { StatusBadge, STAGE_LABELS } from "../components/StatusBadge";
 import { useAuth } from "../context/AuthContext";
@@ -77,6 +78,22 @@ export function RequestDetailPage() {
       setSubmitError(null);
     },
     onError: (err: any) => setSubmitError(err.response?.data?.error ?? "Could not submit request."),
+  });
+
+  // Drafts need their supporting attachments added here - a bulk-uploaded
+  // row over the documentation threshold can't be submitted without one.
+  const [attachError, setAttachError] = useState<string | null>(null);
+  const attachMutation = useMutation({
+    mutationFn: async (file: File) => {
+      const form = new FormData();
+      form.append("file", file);
+      return (await api.post(`/budget-requests/${id}/attachments`, form)).data;
+    },
+    onSuccess: () => {
+      setAttachError(null);
+      queryClient.invalidateQueries({ queryKey: ["budget-request", id] });
+    },
+    onError: (err: any) => setAttachError(err.response?.data?.error ?? "Could not upload the attachment."),
   });
 
   // Reviewer's own decision controls, same actions/endpoints as the Inbox's
@@ -190,6 +207,8 @@ export function RequestDetailPage() {
         <Field label="Created By" value={request.createdBy.name} />
       </div>
 
+      {request.requestCategory === "NPC" && request.currentStage !== "DRAFT" && <NpcBudgetSummary requestId={request.id} />}
+
       <div className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
         <div className="bg-emerald-50 px-4 py-2 text-xs font-semibold tracking-wide text-emerald-800">Monthly Spend Grid</div>
         <div className="grid grid-cols-3 divide-x divide-y divide-slate-100 border-t border-slate-100 text-sm sm:grid-cols-4 lg:grid-cols-6">
@@ -264,6 +283,24 @@ export function RequestDetailPage() {
               </li>
             ))}
           </ul>
+        )}
+        {canSubmit && (
+          <div className="mt-2">
+            <label className={`inline-block rounded-md border px-3 py-1.5 text-xs font-medium ${attachMutation.isPending ? "border-slate-200 text-slate-400" : "cursor-pointer border-slate-300 text-slate-700 hover:bg-slate-100"}`}>
+              {attachMutation.isPending ? "Uploading…" : "Add Attachment"}
+              <input
+                type="file"
+                className="hidden"
+                disabled={attachMutation.isPending}
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  e.target.value = "";
+                  if (file) attachMutation.mutate(file);
+                }}
+              />
+            </label>
+            {attachError && <span className="ml-2 text-xs text-red-600">{attachError}</span>}
+          </div>
         )}
       </div>
 

@@ -1,13 +1,14 @@
-import { Fragment, useCallback, useMemo } from "react";
+import { Fragment, useCallback, useMemo, useState } from "react";
 import { SortableHeader } from "../components/SortableHeader";
 import { ColumnFilterCell, FilterStatus } from "../components/ColumnFilters";
 import { useColumnFilters } from "../lib/useColumnFilters";
 import { useTableSort } from "../lib/useTableSort";
-import { useQueries, useQuery } from "@tanstack/react-query";
+import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { api, downloadFile, requestLineDisplay, type AdditionalHeadcountRequest, type BudgetRequest, type DoeBatchDetail, type MobilePhoneBudgetRequest, type Office365AccountRequest, type RevenueBatchSummary } from "../api/client";
 import { STAGE_LABELS, StatusBadge } from "../components/StatusBadge";
 import { PageHeader } from "../components/PageHeader";
+import { ApproverPicker } from "../components/ApproverPicker";
 import { SBU_BATCH_TYPES } from "../components/SbuTypeSwitch";
 import { STAGE_LABELS as REVENUE_STAGE_LABELS } from "./newRequest/RevenueRequestTab";
 
@@ -21,6 +22,9 @@ const REQUEST_CATEGORY_LABELS: Record<string, string> = {
   DEPRECIATION_AMORTIZATION: "Depreciation & Amortization",
   INTEREST_EXPENSE: "Interest Expense",
 };
+
+// Rows still in play - the only ones My Requests' multi-select offers.
+const TERMINAL_STAGES = new Set(["APPROVED", "CANCELLED", "REJECTED", "UPLOADED_TO_SAP"]);
 
 const MY_REQUEST_COLUMNS = [
   { key: "type", label: "Type" },
@@ -174,6 +178,43 @@ export function MyRequestsPage() {
   const { filtered: visibleRows, filters, setFilter, clearFilters, activeCount } = useColumnFilters(rows, getValue);
   const { sorted, sortKey, sortDir, toggle } = useTableSort(visibleRows, getValue);
 
+  // Multi-select: Submit (drafts) or Cancel several budget requests at once
+  // via /budget-requests/bulk-action - each item runs its normal checks and
+  // any failure is listed with its reason.
+  const queryClient = useQueryClient();
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  // Picked once for the whole selection and applied to every selected draft
+  // on Submit; left blank, each draft keeps the approver it already has.
+  const [bulkApproverId, setBulkApproverId] = useState("");
+  const [bulkResult, setBulkResult] = useState<{ action: "SUBMIT" | "CANCEL"; succeeded: number; failed: { id: string; error: string }[] } | null>(null);
+  const selectableIds = useMemo(() => sorted.filter((r) => r.kind === "budget" && !TERMINAL_STAGES.has(r.data.currentStage)).map((r) => r.id), [sorted]);
+  const selectedIds = selectableIds.filter((id) => selected.has(id));
+  const selectedDraftCount = budgetRequests.filter((r) => selectedIds.includes(r.id) && r.currentStage === "DRAFT").length;
+  const allSelected = selectableIds.length > 0 && selectedIds.length === selectableIds.length;
+  const toggleOne = (id: string) =>
+    setSelected((cur) => {
+      const next = new Set(cur);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  const bulkMutation = useMutation({
+    mutationFn: async (action: "SUBMIT" | "CANCEL") => ({
+      action,
+      ...(await api.post<{ succeeded: string[]; failed: { id: string; error: string }[] }>("/budget-requests/bulk-action", { ids: selectedIds, action, approverId: action === "SUBMIT" && bulkApproverId ? bulkApproverId : undefined })).data,
+    }),
+    onSuccess: (res) => {
+      setBulkResult({ action: res.action, succeeded: res.succeeded.length, failed: res.failed });
+      setSelected(new Set(res.failed.map((f) => f.id)));
+      queryClient.invalidateQueries({ queryKey: ["my-requests"] });
+    },
+    onError: (err: any) => setBulkResult({ action: "SUBMIT", succeeded: 0, failed: [{ id: "", error: err.response?.data?.error ?? "Action failed." }] }),
+  });
+  const requestLabel = (id: string) => {
+    const r = budgetRequests.find((b) => b.id === id);
+    return r ? `${r.ticketNumber ?? "—"} — ${requestLineDisplay(r).name}` : "";
+  };
+
   return (
     <div className="space-y-4">
       <PageHeader subtitle={`${totalCount} request(s) submitted`} />
@@ -184,10 +225,72 @@ export function MyRequestsPage() {
       ) : (
         <>
         <FilterStatus count={visibleRows.length} total={rows.length} activeCount={activeCount} onClear={clearFilters} />
+        {selectedIds.length > 0 && (
+          <div className="flex flex-wrap items-end gap-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm">
+            <span className="pb-2 font-medium text-emerald-900">{selectedIds.length} selected</span>
+            {selectedDraftCount > 0 && (
+              <div className="w-72">
+                <ApproverPicker label="Department Head / Approver" value={bulkApproverId} onChange={setBulkApproverId} optional />
+              </div>
+            )}
+            <button
+              type="button"
+              onClick={() => bulkMutation.mutate("SUBMIT")}
+              disabled={bulkMutation.isPending}
+              className="mb-1 rounded-md bg-emerald-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-600 disabled:opacity-50"
+            >
+              Submit for Approval
+            </button>
+            <button
+              type="button"
+              onClick={() => window.confirm(`Cancel ${selectedIds.length} request(s)? This can't be undone.`) && bulkMutation.mutate("CANCEL")}
+              disabled={bulkMutation.isPending}
+              className="mb-1 rounded-md border border-red-300 bg-white px-3 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-50 disabled:opacity-50"
+            >
+              Cancel Request
+            </button>
+            <button type="button" onClick={() => setSelected(new Set())} className="pb-2 text-xs text-slate-500 hover:text-slate-700">
+              Clear selection
+            </button>
+            {bulkMutation.isPending && <span className="pb-2 text-xs text-slate-500">Working…</span>}
+            {selectedDraftCount > 0 && <span className="w-full text-xs text-slate-500">The approver picked here is applied to every selected draft on Submit. Leave it blank to keep each draft's own approver.</span>}
+          </div>
+        )}
+        {bulkResult && (
+          <div className={`rounded-lg border p-3 text-xs ${bulkResult.failed.length ? "border-amber-200 bg-amber-50 text-amber-900" : "border-emerald-200 bg-emerald-50 text-emerald-800"}`}>
+            <div className="flex items-start gap-2">
+              <div className="font-medium">
+                {bulkResult.action === "SUBMIT" ? "Submitted" : "Cancelled"} {bulkResult.succeeded} request(s).
+                {bulkResult.failed.length > 0 && ` ${bulkResult.failed.length} couldn't be ${bulkResult.action === "SUBMIT" ? "submitted" : "cancelled"} (still selected):`}
+              </div>
+              <button type="button" onClick={() => setBulkResult(null)} className="ml-auto text-slate-400 hover:text-slate-600" aria-label="Dismiss">
+                ×
+              </button>
+            </div>
+            {bulkResult.failed.length > 0 && (
+              <ul className="mt-1 list-disc space-y-0.5 pl-4">
+                {bulkResult.failed.map((f) => (
+                  <li key={f.id}>
+                    {f.id && <span className="font-medium">{requestLabel(f.id)}:</span>} {f.error}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
         <div className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
           <table className="w-full text-sm">
             <thead className="bg-emerald-50 text-left text-xs tracking-wide text-emerald-800">
               <tr>
+                <th rowSpan={2} className="w-8 px-3 py-2 align-middle">
+                  <input
+                    type="checkbox"
+                    aria-label="Select all open requests"
+                    checked={allSelected}
+                    disabled={selectableIds.length === 0}
+                    onChange={() => setSelected(allSelected ? new Set() : new Set(selectableIds))}
+                  />
+                </th>
                 <SortableHeader label="Type" sortKey="type" activeKey={sortKey} dir={sortDir} onToggle={toggle} className="px-4 py-2" />
                 <SortableHeader label="Item" sortKey="item" activeKey={sortKey} dir={sortDir} onToggle={toggle} className="px-4 py-2" />
                 <SortableHeader label="Ticket #" sortKey="ticket" activeKey={sortKey} dir={sortDir} onToggle={toggle} className="px-4 py-2" />
@@ -207,7 +310,12 @@ export function MyRequestsPage() {
             <tbody>
               {sorted.map((row, i) => (
                 <Fragment key={row.id}>
-                  <tr className={`border-t border-slate-100 ${i % 2 === 1 ? "bg-slate-50/60" : ""}`}>
+                  <tr className={`border-t border-slate-100 ${selected.has(row.id) ? "bg-emerald-50/70" : i % 2 === 1 ? "bg-slate-50/60" : ""}`}>
+                    <td className="w-8 px-3 py-2">
+                      {row.kind === "budget" && !TERMINAL_STAGES.has(row.data.currentStage) && (
+                        <input type="checkbox" aria-label={`Select ${row.data.ticketNumber ?? "request"}`} checked={selected.has(row.id)} onChange={() => toggleOne(row.id)} />
+                      )}
+                    </td>
                     {row.kind === "budget" ? (
                       <>
                         <td className="px-4 py-2 text-xs font-medium text-slate-500">{REQUEST_CATEGORY_LABELS[row.data.requestCategory] ?? row.data.requestCategory}</td>
@@ -310,6 +418,7 @@ export function MyRequestsPage() {
                   </tr>
                   {row.kind === "headcount" && row.office365 && (
                     <tr className="border-t border-dashed border-slate-100 bg-slate-50/40">
+                      <td />
                       <td className="px-4 py-1.5 pl-8 text-xs text-slate-400">
                         <span className="mr-1 text-slate-300">↳</span>Office 365 Account
                       </td>
@@ -330,6 +439,7 @@ export function MyRequestsPage() {
                   )}
                   {row.kind === "headcount" && row.mobilePhone && (
                     <tr className="border-t border-dashed border-slate-100 bg-slate-50/40">
+                      <td />
                       <td className="px-4 py-1.5 pl-8 text-xs text-slate-400">
                         <span className="mr-1 text-slate-300">↳</span>Mobile Phone Budget
                       </td>

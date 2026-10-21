@@ -2,7 +2,7 @@ import ExcelJS from "exceljs";
 import { RequestCategory, Sbu } from "@prisma/client";
 import { prisma } from "../prisma";
 import { getFiscalCycle } from "../lib/fiscalCycle";
-import { fetchFbl3nCache } from "../lib/pyBackendClient";
+import { fetchFbl3nCache, fetchFbl3nMonthlyCache } from "../lib/pyBackendClient";
 
 // Notes_6/9 (Forecast section): Budget-Officer-only bulk upload for the
 // Forecast page's reference data. Matches by ExpenseLineItem.name against
@@ -162,7 +162,10 @@ export async function parseForecastTemplate(buffer: Buffer) {
   let glCol = -1;
   let approvedCol = -1;
   let ytdCol = -1;
-  const actualMonthCols: number[] = [];
+  // Monthly Actual columns, month (1-12) -> column: year-numbered ("2026A-01")
+  // headers, or the app template's bare "Jan".."Aug" before the Remaining
+  // Months Forecast block.
+  const actualMonthCols = new Map<number, number>();
   const forecastMonthCols = new Map<number, number>(); // month (1-12) -> column
   const headerCells = sheet.getRow(headerRowIdx);
   for (let c = 1; c <= headerCells.cellCount; c++) {
@@ -178,8 +181,10 @@ export async function parseForecastTemplate(buffer: Buffer) {
     else {
       const actualMatch = label.match(/^\d{4}a-(\d{2})$/);
       const forecastMatch = label.match(/^\d{4}f-(\d{2})$/);
-      if (actualMatch) actualMonthCols.push(c);
+      const bareMonth = MONTH_NAMES.findIndex((m) => m.toLowerCase() === label) + 1;
+      if (actualMatch) actualMonthCols.set(Number(actualMatch[1]), c);
       else if (forecastMatch) forecastMonthCols.set(Number(forecastMatch[1]), c);
+      else if (bareMonth > 0 && c < REMAINING_MONTHS_START_COL) actualMonthCols.set(bareMonth, c);
     }
   }
   if (nameCol === -1 || approvedCol === -1) {
@@ -227,6 +232,7 @@ export async function parseForecastTemplate(buffer: Buffer) {
     expenseLineItemId: string;
     requestCategory: RequestCategory;
     monthlyRemainingForecast: Record<string, number>;
+    monthlyActuals: Record<string, number>;
   }[] = [];
 
   for (let r = headerRowIdx + 1; r <= sheet.rowCount; r++) {
@@ -255,8 +261,25 @@ export async function parseForecastTemplate(buffer: Buffer) {
       }
       ytdActual = v;
     } else {
-      for (const c of actualMonthCols) ytdActual += cellNumber(row.getCell(c)) ?? 0;
+      for (const c of actualMonthCols.values()) ytdActual += cellNumber(row.getCell(c)) ?? 0;
     }
+
+    // Monthly Actuals as-uploaded (blank cells skipped), so the generated
+    // template can print them back - the app otherwise keeps only the YTD total.
+    let actualCellError = false;
+    const monthlyActuals: Record<string, number> = {};
+    for (const [m, c] of actualMonthCols) {
+      const cell = row.getCell(c);
+      if (cell.value === null || cell.value === undefined || cell.value === "") continue;
+      const value = cellNumber(cell);
+      if (value === null) {
+        errors.push({ row: r, error: `"${name}": the ${MONTH_NAMES[m - 1]} Actual isn't a number.` });
+        actualCellError = true;
+        continue;
+      }
+      monthlyActuals[String(m)] = value;
+    }
+    if (actualCellError) continue;
 
     // Remaining Months Forecast - optional per month; a blank cell leaves
     // that month's already-saved value untouched (see the merge-with-
@@ -307,6 +330,7 @@ export async function parseForecastTemplate(buffer: Buffer) {
       expenseLineItemId: item.id,
       requestCategory,
       monthlyRemainingForecast,
+      monthlyActuals,
     });
   }
 
@@ -331,17 +355,17 @@ export async function parseForecastTemplate(buffer: Buffer) {
       consolidatedRows.push(group[0]);
       continue;
     }
-    const monthlyRemainingForecast: Record<string, number> = {};
-    for (const g of group) {
-      for (const [month, value] of Object.entries(g.monthlyRemainingForecast)) {
-        monthlyRemainingForecast[month] = (monthlyRemainingForecast[month] ?? 0) + value;
-      }
-    }
+    const sumMonths = (pick: (g: (typeof group)[number]) => Record<string, number>) => {
+      const out: Record<string, number> = {};
+      for (const g of group) for (const [month, value] of Object.entries(pick(g))) out[month] = (out[month] ?? 0) + value;
+      return out;
+    };
     consolidatedRows.push({
       ...group[0],
       approvedBudget: group.reduce((sum, g) => sum + g.approvedBudget, 0),
       ytdActual: group.reduce((sum, g) => sum + g.ytdActual, 0),
-      monthlyRemainingForecast,
+      monthlyRemainingForecast: sumMonths((g) => g.monthlyRemainingForecast),
+      monthlyActuals: sumMonths((g) => g.monthlyActuals),
     });
   }
 
@@ -370,6 +394,11 @@ export async function parseForecastTemplate(buffer: Buffer) {
       ...((existing?.monthlyRemainingForecast2026 as Record<string, number> | null) ?? {}),
       ...row.monthlyRemainingForecast,
     };
+    // Same "only touch what's given" merge for the monthly Actuals.
+    const mergedMonthlyActuals = {
+      ...((existing?.monthlyActuals2026 as Record<string, number> | null) ?? {}),
+      ...row.monthlyActuals,
+    };
     const data = {
       departmentId: row.departmentId,
       glAccount: row.glAccount,
@@ -381,6 +410,7 @@ export async function parseForecastTemplate(buffer: Buffer) {
       approvedBudget2026: row.approvedBudget,
       ytdActuals2026: row.ytdActual,
       monthlyRemainingForecast2026: mergedMonthlyForecast,
+      monthlyActuals2026: mergedMonthlyActuals,
     };
     await prisma.historicalActuals.upsert({
       where: key,
@@ -540,10 +570,15 @@ export async function syncHistoricalActualsFromSap() {
 // HistoricalActuals rows for the category, so a Requestor edits and
 // re-uploads instead of retyping every CC-GL row from scratch. Column
 // positions (F=Approved Budget, O=YTD Actuals) match the parser exactly;
-// G-N ("Actual" monthly breakdown) are left blank for the user to fill in -
-// the parser never reads them, only F and O, so no data is fabricated by
-// leaving them empty. Gated to fiscal year 2027+ by the caller (2026 keeps
-// only the plain upload flow).
+// G-N ("Actual" monthly breakdown, Jan-Aug, through the as-of month): for
+// forecast year 2026, the months saved from the Budget Officer's uploaded
+// workbook (monthlyActuals2026, so they always agree with its YTD Actuals);
+// from 2027, SAP's FBL3N postings per month (sap_cache's fbl3n-monthly) for
+// the line's CC-GL. SAP has no Budget Code yet (planned for 2027), so a CC-GL
+// shared by more than one line can't be split between them and is left
+// blank rather than repeated on each - once SAP carries the Budget Code,
+// match those on Budget Code + CC + GL. Gated to fiscal year 2027+ by the
+// caller (2026 keeps only the plain upload flow).
 export async function buildForecastTemplateWorkbook(departmentId: string, category: RequestCategory) {
   const { targetCalendarYear, forecastYear, asOfMonth } = await getFiscalCycle();
   const remainingMonths = remainingMonthColumns(asOfMonth);
@@ -552,6 +587,29 @@ export async function buildForecastTemplateWorkbook(departmentId: string, catego
     where: { departmentId, fiscalYear: targetCalendarYear, requestCategory: category },
     orderBy: { glDescription: "asc" },
   });
+
+  // From 2027: SAP monthly actuals per CC-GL, keyed the same way the YTD sync
+  // matches them, used only for a CC-GL that belongs to one line here.
+  const sapMonthly = new Map<string, Map<number, number>>();
+  const linesPerGlCc = new Map<string, number>();
+  if (forecastYear >= 2027) {
+    for (const r of rows) linesPerGlCc.set(`${r.glAccount}:${r.costCenter}`, (linesPerGlCc.get(`${r.glAccount}:${r.costCenter}`) ?? 0) + 1);
+    for (const a of await fetchFbl3nMonthlyCache(forecastYear, asOfMonth)) {
+      const key = `${a.glAccount}:${a.costCenter}`;
+      const byMonth = sapMonthly.get(key) ?? new Map<number, number>();
+      byMonth.set(a.month, (byMonth.get(a.month) ?? 0) + a.amount);
+      sapMonthly.set(key, byMonth);
+    }
+  }
+  const monthlyActualsFor = (r: (typeof rows)[number]): Map<number, number> | null => {
+    if (forecastYear < 2027) {
+      const saved = (r.monthlyActuals2026 as Record<string, number> | null) ?? {};
+      return new Map(Object.entries(saved).map(([m, v]) => [Number(m), v]));
+    }
+    const key = `${r.glAccount}:${r.costCenter}`;
+    if ((linesPerGlCc.get(key) ?? 0) > 1) return null;
+    return sapMonthly.get(key) ?? new Map();
+  };
 
   const workbook = new ExcelJS.Workbook();
   const sheet = workbook.addWorksheet(category);
@@ -599,6 +657,13 @@ export async function buildForecastTemplateWorkbook(departmentId: string, catego
     row.getCell(4).value = r.costCenter;
     row.getCell(5).value = r.glAccount;
     row.getCell(6).value = r.approvedBudget2026;
+    // Jan-Aug actuals (columns G-N), through the as-of month; blank where
+    // there's no figure to show.
+    const actualByMonth = monthlyActualsFor(r);
+    for (let m = 1; m <= Math.min(asOfMonth, 8); m++) {
+      const value = actualByMonth?.get(m);
+      row.getCell(6 + m).value = value ?? (actualByMonth && forecastYear >= 2027 ? 0 : null);
+    }
     row.getCell(15).value = r.ytdActuals2026;
     row.getCell(16).value = { formula: `F${rowNumber}-O${rowNumber}` } as any;
     const monthlyForecast = (r.monthlyRemainingForecast2026 as Record<string, number> | null) ?? {};

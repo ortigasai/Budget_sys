@@ -280,7 +280,7 @@ def _filter_cc_gl_map(
 # from Department.sbu (spec item 13's admin-assigned field) via each
 # ExpenseLineItem's owning department - reuses that field rather than
 # introducing a second, competing department->SBU mapping.
-SBU_REPORT_OPTIONS = ["Malls", "Offices", "Estates", "Residential", "Corporate-GAE"]
+SBU_REPORT_OPTIONS = ["Corporate-GAE", "Estates", "Malls", "Offices", "Residential"]
 _DEPT_SBU_TO_REPORT_BUCKET = {
     "MALLS": "Malls",
     "OFFICES": "Offices",

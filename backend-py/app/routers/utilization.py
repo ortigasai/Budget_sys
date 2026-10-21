@@ -835,7 +835,7 @@ def npc_sbu_options(
 ):
     if user.has_role("BUDGET_OFFICER"):
         return [NpcSbuOut(value=v, label=l) for v, l in NPC_SBU_LABELS.items()]
-    return [NpcSbuOut(value=v, label=NPC_SBU_LABELS.get(v, v)) for v in _my_npc_sbus(user, session)]
+    return sorted((NpcSbuOut(value=v, label=NPC_SBU_LABELS.get(v, v)) for v in _my_npc_sbus(user, session)), key=lambda o: o.label)
 
 
 class NpcIoDetailOut(BaseModel):

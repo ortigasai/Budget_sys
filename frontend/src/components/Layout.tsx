@@ -1,3 +1,4 @@
+import { useFinalizationViewScope } from "../lib/finalizationScope";
 import { useLayoutEffect, useState, type ReactNode } from "react";
 import { Link, NavLink, Outlet, useLocation, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -234,7 +235,9 @@ function SubLinkBadge({ count }: { count: number }) {
   return <span className="ml-1.5 rounded-full bg-red-500 px-1.5 py-0.5 text-[10px] font-bold leading-none text-white">{count}</span>;
 }
 
-function Step5SubMenu() {
+// boardOnly: an SBU Finance viewer (lib/finalizationScope.ts) sees just the
+// two Board-Approved pages - no Pending Requests or Finalized Budget Report.
+function Step5SubMenu({ boardOnly = false }: { boardOnly?: boolean }) {
   const [searchParams] = useSearchParams();
   const currentCategory = searchParams.get("category");
 
@@ -261,18 +264,26 @@ function Step5SubMenu() {
       <NavLink to="/step5?category=SBU" className={subLinkClass(currentCategory === "SBU")}>
         Consolidated Board-Approved P&amp;L
       </NavLink>
+      {/* NPC's Board-Approved figures are per NPC SBU, not part of the P&L grid. */}
+      <NavLink to="/step5?category=NPC" className={subLinkClass(currentCategory === "NPC")}>
+        Board-Approved NPC Budget
+      </NavLink>
       {/* Every category's own Finalize & Upload / Return pending list,
           filterable by SBU/NPC SBU (see Step5PendingRequestsPage.tsx) -
           split out from the Consolidated Board-Approved P&L page so that
           page is just the board-approved figures, and NPC's own pending
           list folded in here too instead of a separate NPC page. */}
-      <NavLink to="/step5/pending" className={({ isActive }) => subLinkClass(isActive)}>
-        Pending Requests
-        <SubLinkBadge count={pendingMenuCount} />
-      </NavLink>
-      <NavLink to="/step5/finalized-budget" className={({ isActive }) => subLinkClass(isActive)}>
-        Finalized Budget Report
-      </NavLink>
+      {!boardOnly && (
+        <>
+          <NavLink to="/step5/pending" className={({ isActive }) => subLinkClass(isActive)}>
+            Pending Requests
+            <SubLinkBadge count={pendingMenuCount} />
+          </NavLink>
+          <NavLink to="/step5/finalized-budget" className={({ isActive }) => subLinkClass(isActive)}>
+            Finalized Budget Report
+          </NavLink>
+        </>
+      )}
     </div>
   );
 }
@@ -501,6 +512,7 @@ export function Layout() {
 
   const activeReportView = location.pathname === "/reports/trend" ? "trend" : location.pathname === "/reports/npc" ? "npc" : (new URLSearchParams(location.search).get("comparison") ?? "budget-actual");
   const isBudgetOfficer = hasRole("BUDGET_OFFICER");
+  const finalizationViewScope = useFinalizationViewScope();
   const isReviewer = hasRole("DEPARTMENT_HEAD") || hasRole("CENTRALIZED_FIRST_LEVEL_REVIEWER") || hasRole("CENTRALIZED_DEPARTMENT_HEAD") || hasRole("BCA_HEAD") || hasRole("CFO") || isBudgetOfficer;
   // Spec item 16 - Revenue's 4-stage chain reuses BCA_HEAD/BUDGET_OFFICER
   // (already covered by isReviewer) plus Phase 3's two SBU-scoped roles.
@@ -763,7 +775,11 @@ export function Layout() {
                     ))}
                   {gate("finalization", isBudgetOfficer) && (
                     <>
-                      <div className="mb-1 mt-4 border-t border-slate-100 pt-4 text-xs font-semibold tracking-wide text-emerald-800/70">Budget Officer</div>
+                      {finalizationViewScope ? (
+                        <div className="mb-1 mt-4 border-t border-slate-100" />
+                      ) : (
+                        <div className="mb-1 mt-4 border-t border-slate-100 pt-4 text-xs font-semibold tracking-wide text-emerald-800/70">Budget Officer</div>
+                      )}
                       <CollapsibleNavGroup
                         to="/step5"
                         icon="step5"
@@ -775,7 +791,7 @@ export function Layout() {
                         }
                         defaultOpen
                       >
-                        <Step5SubMenu />
+                        <Step5SubMenu boardOnly={!!finalizationViewScope} />
                       </CollapsibleNavGroup>
                     </>
                   )}

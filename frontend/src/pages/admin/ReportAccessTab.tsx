@@ -34,6 +34,10 @@ export function ReportAccessTab() {
 
   return (
     <div className="space-y-4">
+      <div className="text-sm">
+        <div className="font-semibold text-slate-700">Module 4 - Budget Report &amp; Analysis</div>
+        <div className="text-xs text-slate-500">Who can open Module 4 besides the Budget Officer and BCA members. Grant access to individual employees here; everyone else sees the module as Restricted.</div>
+      </div>
       <div className="flex flex-wrap items-end gap-2 text-sm">
         <div className="w-64">
           <label className="mb-1 block text-xs font-medium text-slate-500">Grant access to</label>

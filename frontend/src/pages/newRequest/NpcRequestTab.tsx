@@ -10,6 +10,7 @@ import { SearchableSelect } from "../../components/SearchableSelect";
 import { SectionLabel } from "../../components/TabBar";
 import { useFiscalYear } from "../../lib/fiscalCycle";
 import { startUpload, useUploadTaskBySlot } from "../../lib/uploadManager";
+import { UploadedDraftsPanel, type UploadedDraft } from "../../components/UploadedDraftsPanel";
 
 // Spec item 12: NPC is not the same form as GAE/DOE — its own required
 // fields (SBU, Location, Project Title/Start/End, Amount, Cost Center), no
@@ -50,6 +51,7 @@ export function NpcRequestTab({ subtitle }: { subtitle: string }) {
   // looked up by slot so a rejected-rows list survives switching tabs.
   const uploadTask = useUploadTaskBySlot("NPC");
   const [templateError, setTemplateError] = useState<string | null>(null);
+  const [uploadedDrafts, setUploadedDrafts] = useState<UploadedDraft[] | null>(null);
   const [frozenHeaderEl, setFrozenHeaderEl] = useState<HTMLDivElement | null>(null);
   const [frozenHeaderHeight, setFrozenHeaderHeight] = useState(0);
   useLayoutEffect(() => {
@@ -199,7 +201,16 @@ export function NpcRequestTab({ subtitle }: { subtitle: string }) {
               form.append("file", file);
               form.append("npcSbu", npcSbu);
               form.append("fiscalYear", String(FISCAL_YEAR));
-              startUpload({ label: `NPC bulk upload (${file.name})`, slot: "NPC", url: "/budget-requests/npc-template-upload", form, invalidateKeys: [["my-requests"]] });
+              if (departmentHeadId) form.append("departmentHeadId", departmentHeadId);
+              setUploadedDrafts(null);
+              startUpload<{ createdRequests?: UploadedDraft[] }>({
+                label: `NPC bulk upload (${file.name})`,
+                slot: "NPC",
+                url: "/budget-requests/npc-template-upload",
+                form,
+                invalidateKeys: [["my-requests"]],
+                onDone: (data) => setUploadedDrafts(data.createdRequests?.length ? data.createdRequests : null),
+              });
             }}
           />
         </label>
@@ -208,6 +219,7 @@ export function NpcRequestTab({ subtitle }: { subtitle: string }) {
           <span className={`text-xs ${uploadTask.status === "success" ? "text-emerald-700" : "text-red-600"}`}>{uploadTask.message}</span>
         )}
       </div>
+      {uploadedDrafts && <UploadedDraftsPanel drafts={uploadedDrafts} onClear={() => setUploadedDrafts(null)} />}
       {uploadTask?.errors && uploadTask.errors.length > 0 && (
         <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-800">
           <div className="mb-1 font-medium">{uploadTask.errors.length} row(s) couldn't be uploaded - fix these in the spreadsheet and re-upload:</div>
@@ -323,7 +335,7 @@ export function NpcRequestTab({ subtitle }: { subtitle: string }) {
             <li>Save Draft to keep working on it later, then submit it for approval.</li>
           </ol>
           <div className="border-t border-emerald-200 pt-2 text-xs text-slate-600">
-            <span className="font-medium text-emerald-800">Bulk upload:</span> download the template, add one row per project, then upload it. Any rejected rows are listed here with the reason.
+            <span className="font-medium text-emerald-800">Bulk upload:</span> download the template, add one row per project, and upload it. Each row is saved as a Draft and listed here. Then, in My Requests, select them, pick the Department Head / Approver once and submit. Any rejected rows are listed here with the reason.
           </div>
         </div>
       </div>

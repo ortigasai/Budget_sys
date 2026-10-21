@@ -24,7 +24,7 @@ from .utilization import _npc_utilization_from_monitoring_import
 
 router = APIRouter(prefix="/reports", tags=["reports"])
 
-NPC_SBUS = ["MALLS", "OFFICES", "ESTATES", "RESIDENTIAL", "LEISURE", "CORPORATE_IT", "CORPORATE_HR", "CORPORATE_ADMIN"]
+NPC_SBUS = ["CORPORATE_ADMIN", "CORPORATE_HR", "CORPORATE_IT", "ESTATES", "LEISURE", "MALLS", "OFFICES", "RESIDENTIAL"]
 
 
 class NpcSbuRowOut(BaseModel):

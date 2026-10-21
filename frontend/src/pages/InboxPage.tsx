@@ -1,3 +1,4 @@
+import { NpcBudgetSummary } from "../components/NpcBudgetSummary";
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -890,6 +891,11 @@ export function InboxPage() {
                 {isOpen && (
                   <div className="mt-3 space-y-2 border-t border-slate-100 pt-3">
                     <div className="text-slate-600">{r.businessJustification}</div>
+                    {r.requestCategory === "NPC" && (
+                      <div className="max-w-xl">
+                        <NpcBudgetSummary requestId={r.id} />
+                      </div>
+                    )}
                     <div className="text-xs text-slate-500">
                       If you proceed, this moves to: <span className="font-medium text-slate-700">{nav.nextStage ? StageLabel(nav.nextStage) : "Finalize & Upload"}</span>
                       {(r.nextPendingReviewers ?? []).length > 0 && <span> — {r.nextPendingReviewers!.join(", ")}</span>}

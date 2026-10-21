@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api, downloadFile, NPC_SBU_OPTIONS, SBU_OPTIONS, type FinalizedBudgetLineOut, type FinalizedBudgetReport, type NpcSbu, type RequestCategory, type Sbu } from "../api/client";
+import { BoardCheckReportPanel } from "../components/BoardCheckReportPanel";
 import { FinalizedBudgetLineDetailModal } from "../components/FinalizedBudgetLineDetailModal";
 import { PageHeader } from "../components/PageHeader";
 import { SectionLabel } from "../components/TabBar";
@@ -65,22 +66,7 @@ export function FinalizedBudgetReportPage() {
 
   return (
     <div className="mx-auto max-w-6xl space-y-6">
-      <PageHeader
-        subtitle="The finalized/uploaded budget per CC-GL, from every category's one-click Finalize & Upload action."
-        actions={
-          <button
-            type="button"
-            onClick={() => {
-              const qs = new URLSearchParams();
-              for (const [key, value] of Object.entries(filterParams)) if (value !== undefined) qs.set(key, String(value));
-              downloadFile(`/budget-requests/finalized-budget-report/export?${qs.toString()}`, `finalized-budget-report-${FISCAL_YEAR}.xlsx`).catch(() => setExportError("Failed to export the report."));
-            }}
-            className="rounded-md border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-100"
-          >
-            Generate Report
-          </button>
-        }
-      />
+      <PageHeader subtitle="The finalized/uploaded budget per CC-GL, from every category's one-click Finalize & Upload action." />
       {exportError && <div className="rounded bg-red-50 p-2 text-sm text-red-700">{exportError}</div>}
 
       <div className="flex flex-wrap items-center gap-2">
@@ -145,7 +131,10 @@ export function FinalizedBudgetReportPage() {
 
       {boardBudgetChecks.length > 0 && (
         <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
-          <SectionLabel>Board-Approved Budget vs. Total Finalized</SectionLabel>
+          <div className="flex items-start justify-between gap-2">
+            <SectionLabel>Board-Approved Budget vs. Total Finalized</SectionLabel>
+            <BoardCheckReportPanel fiscalYear={FISCAL_YEAR} />
+          </div>
           <table className="mt-2 w-full text-xs">
             <thead className="text-left tracking-wide text-slate-500">
               <tr>
@@ -161,7 +150,11 @@ export function FinalizedBudgetReportPage() {
               {boardBudgetChecks.map((c, i) => (
                 <tr key={i} className="border-t border-slate-100">
                   <td className="py-1 pr-3">{c.requestCategory}</td>
-                  <td className="py-1 pr-3">{c.sbu ?? (CORPORATE_ONLY_CATEGORIES.includes(c.requestCategory) ? "Corporate" : "—")}</td>
+                  <td className="py-1 pr-3">
+                    {c.requestCategory === "NPC"
+                      ? (NPC_SBU_OPTIONS.find((o) => o.value === c.npcSbu)?.label ?? c.npcSbu ?? "—")
+                      : c.sbu ?? (CORPORATE_ONLY_CATEGORIES.includes(c.requestCategory) ? "Corporate" : "—")}
+                  </td>
                   <td className="py-1 pr-3">{peso(c.boardApprovedAmount)}</td>
                   <td className="py-1 pr-3">{peso(c.totalFinalizedAmount)}</td>
                   <td className={`py-1 pr-3 font-semibold ${c.variance < 0 ? "text-red-700" : "text-slate-700"}`}>{peso(c.variance)}</td>
@@ -188,6 +181,20 @@ export function FinalizedBudgetReportPage() {
         </div>
       )}
 
+      <div className="space-y-2">
+      <div className="flex justify-end">
+        <button
+          type="button"
+          onClick={() => {
+            const qs = new URLSearchParams();
+            for (const [key, value] of Object.entries(filterParams)) if (value !== undefined) qs.set(key, String(value));
+            downloadFile(`/budget-requests/finalized-budget-report/export?${qs.toString()}`, `finalized-budget-report-${FISCAL_YEAR}.xlsx`).catch(() => setExportError("Failed to export the report."));
+          }}
+          className="rounded-md border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-100"
+        >
+          Generate Report
+        </button>
+      </div>
       <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white shadow-sm">
         <table className="w-full text-sm">
           <thead className="bg-emerald-50 text-left text-xs tracking-wide text-emerald-800">
@@ -260,6 +267,7 @@ export function FinalizedBudgetReportPage() {
             )}
           </tbody>
         </table>
+      </div>
       </div>
 
       {detailLine && (

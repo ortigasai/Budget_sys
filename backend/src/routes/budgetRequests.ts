@@ -8,11 +8,12 @@ import { Prisma, RequestCategory, RequestStage, RoleType, Sbu } from "@prisma/cl
 import { prisma } from "../prisma";
 import { asyncHandler } from "../asyncHandler";
 import { hasRole, requireAuth, requireRole, requireRoleOrAccess } from "../middleware/auth";
-import { assertNpcSbu } from "../lib/groupScope";
+import { assertFullFinalizationAccess, assertNpcSbu, finalizationViewScope, inFinalizationScope } from "../lib/groupScope";
 import { HttpError } from "../httpError";
 import { getFiscalCycle } from "../lib/fiscalCycle";
 import { getFinalizedBudgetLineDetails, getFinalizedBudgetReport } from "../services/finalizedBudgetReportService";
 import { buildSapUploadTemplate, SapTemplateError } from "../services/sapUploadTemplate";
+import { buildBoardApprovedPageReport, buildBoardCheckReport, NPC_UNCOUNTED_STAGES } from "../services/boardCheckReport";
 import { nextBudgetCode, nextTicketNumber, sbuBudgetCodePrefix } from "../lib/budgetCode";
 import { NPC_LOCATION_VALUES, NPC_SBU_VALUES, npcSbuBudgetCodePrefix } from "../lib/npcSbu";
 import { resolveBudgetRequestPendingReviewers } from "../lib/pendingReviewers";
@@ -385,11 +386,15 @@ budgetRequestsRouter.get(
 budgetRequestsRouter.get(
   "/step5-dashboard",
   asyncHandler(async (req, res) => {
-    const requests = await prisma.budgetRequest.findMany({
+    const allRequests = await prisma.budgetRequest.findMany({
       where: { currentStage: RequestStage.BUDGET_OFFICER_REVIEW },
       include: DETAIL_INCLUDE,
       orderBy: { updatedAt: "asc" },
     });
+    // SBU Finance members only see their own SBU(s)' requests (their
+    // Consolidated Board-Approved P&L compares against these).
+    const scope = await finalizationViewScope(req.user!);
+    const requests = scope ? allRequests.filter((r) => inFinalizationScope(scope, r)) : allRequests;
     // The "Return…" dropdown's own stages - this category's chain, minus the
     // Budget Officer Review stage every one of these requests is already at.
     res.json(
@@ -442,7 +447,14 @@ budgetRequestsRouter.get(
   requireRoleOrAccess([RoleType.BUDGET_OFFICER], "finalization"),
   asyncHandler(async (req, res) => {
     const filter = finalizedBudgetReportQuerySchema.parse(req.query);
-    res.json(await getFinalizedBudgetReport(filter));
+    const report = await getFinalizedBudgetReport(filter);
+    // SBU Finance members (Consolidated Board-Approved P&L only) see their own SBU(s).
+    const scope = await finalizationViewScope(req.user!);
+    if (scope) {
+      report.lines = report.lines.filter((l) => inFinalizationScope(scope, l));
+      report.boardBudgetChecks = report.boardBudgetChecks.filter((c) => inFinalizationScope(scope, c));
+    }
+    res.json(report);
   })
 );
 
@@ -462,8 +474,63 @@ budgetRequestsRouter.get(
   "/finalized-budget-report/group-details",
   requireRoleOrAccess([RoleType.BUDGET_OFFICER], "finalization"),
   asyncHandler(async (req, res) => {
+    await assertFullFinalizationAccess(req.user!);
     const filter = finalizedBudgetLineDetailsQuerySchema.parse(req.query);
     res.json(await getFinalizedBudgetLineDetails({ ...filter, sbu: filter.sbu ?? null, npcSbu: filter.npcSbu ?? null }));
+  })
+);
+
+// "Board-Approved Budget vs. Total Finalized" as its own Excel report, laid
+// out like the Consolidated Board-Approved P&L grid - see
+// services/boardCheckReport.ts. Choices: sections (Consolidated P&L, NPC),
+// figures (Board-Approved, Total Finalized, Board-Approved vs Total
+// Finalized) and one SBU or all.
+const csvList = <T extends string>(values: readonly [T, ...T[]]) =>
+  z
+    .string()
+    .transform((v) => v.split(",").filter(Boolean))
+    .pipe(z.array(z.enum(values)).min(1));
+const boardCheckExportQuerySchema = z.object({
+  fiscalYear: z.coerce.number().int(),
+  sections: csvList(["PL", "NPC"] as const),
+  measures: csvList(["BOARD", "FINALIZED", "VARIANCE"] as const),
+  sbu: z.nativeEnum(Sbu).optional(),
+});
+
+budgetRequestsRouter.get(
+  "/finalized-budget-report/board-check-export",
+  requireRoleOrAccess([RoleType.BUDGET_OFFICER], "finalization"),
+  asyncHandler(async (req, res) => {
+    await assertFullFinalizationAccess(req.user!);
+    const { buffer, filename } = await buildBoardCheckReport(boardCheckExportQuerySchema.parse(req.query));
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    res.send(buffer);
+  })
+);
+
+// "Generate Report" on the Consolidated Board-Approved P&L and Board-Approved
+// NPC Budget pages: the page as shown, as Excel (services/boardCheckReport.ts).
+// SBU Finance viewers get their own SBU only, same as the pages themselves.
+const boardApprovedExportQuerySchema = z.object({
+  fiscalYear: z.coerce.number().int(),
+  page: z.enum(["PL", "NPC"]),
+  sbu: z.nativeEnum(Sbu).optional(),
+});
+
+budgetRequestsRouter.get(
+  "/board-approved-export",
+  requireRoleOrAccess([RoleType.BUDGET_OFFICER], "finalization"),
+  asyncHandler(async (req, res) => {
+    const query = boardApprovedExportQuerySchema.parse(req.query);
+    const scope = await finalizationViewScope(req.user!);
+    if (scope && query.page === "PL" && (!query.sbu || !scope.sbus.includes(query.sbu))) {
+      throw new HttpError(403, "You can only generate the report for your own SBU.");
+    }
+    const { buffer, filename } = await buildBoardApprovedPageReport({ ...query, npcSbus: scope && query.page === "NPC" ? scope.npcSbus : undefined });
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    res.send(buffer);
   })
 );
 
@@ -477,6 +544,7 @@ budgetRequestsRouter.get(
   "/finalized-budget-report/sap-template",
   requireRoleOrAccess([RoleType.BUDGET_OFFICER], "finalization"),
   asyncHandler(async (req, res) => {
+    await assertFullFinalizationAccess(req.user!);
     const query = sapTemplateQuerySchema.parse(req.query);
     let built;
     try {
@@ -495,6 +563,7 @@ budgetRequestsRouter.get(
   "/finalized-budget-report/export",
   requireRoleOrAccess([RoleType.BUDGET_OFFICER], "finalization"),
   asyncHandler(async (req, res) => {
+    await assertFullFinalizationAccess(req.user!);
     const filter = finalizedBudgetReportQuerySchema.parse(req.query);
     const report = await getFinalizedBudgetReport(filter);
 
@@ -527,6 +596,98 @@ budgetRequestsRouter.get(
     res.setHeader("Content-Disposition", `attachment; filename="finalized-budget-${filter.fiscalYear}.xlsx"`);
     await workbook.xlsx.write(res);
     res.end();
+  })
+);
+
+// Board-Approved NPC Budget page: per NPC SBU, its Total Approved and
+// Proposed NPC requests for the year, net of budget cuts - approved means
+// fully approved, proposed means submitted and still in review at any stage
+// (drafts, returned, rejected and cancelled requests don't count).
+// Registered before GET /:id so the path isn't read as an id.
+budgetRequestsRouter.get(
+  "/npc-approved-totals",
+  requireRoleOrAccess([RoleType.BUDGET_OFFICER], "finalization"),
+  asyncHandler(async (req, res) => {
+    const fiscalYear = Number(req.query.fiscalYear);
+    if (!Number.isInteger(fiscalYear)) throw new HttpError(400, "fiscalYear is required.");
+    // SBU Finance members only see their own NPC SBU(s).
+    const scope = await finalizationViewScope(req.user!);
+    const requests = await prisma.budgetRequest.findMany({
+      where: { requestCategory: "NPC", fiscalYear, currentStage: { notIn: NPC_UNCOUNTED_STAGES }, ...(scope ? { npcSbu: { in: scope.npcSbus } } : {}) },
+      select: {
+        id: true,
+        npcSbu: true,
+        npcLocation: true,
+        currentStage: true,
+        proposedAmount: true,
+        budgetCutAmount: true,
+        ticketNumber: true,
+        budgetCode: true,
+        projectTitle: true,
+        department: { select: { name: true } },
+      },
+      orderBy: { createdAt: "asc" },
+    });
+    // Per NPC SBU: the two totals, plus the requests behind them so the page
+    // can list what makes up each figure.
+    const totals: Record<
+      string,
+      {
+        approved: number;
+        proposed: number;
+        requests: { id: string; ticketNumber: string | null; budgetCode: string | null; projectTitle: string | null; location: string | null; department: string; stage: RequestStage; amount: number }[];
+      }
+    > = {};
+    for (const r of requests) {
+      if (!r.npcSbu) continue;
+      const t = (totals[r.npcSbu] ??= { approved: 0, proposed: 0, requests: [] });
+      const amount = r.proposedAmount - r.budgetCutAmount;
+      if (r.currentStage === RequestStage.APPROVED) t.approved += amount;
+      else t.proposed += amount;
+      t.requests.push({
+        id: r.id,
+        ticketNumber: r.ticketNumber,
+        budgetCode: r.budgetCode,
+        projectTitle: r.projectTitle,
+        location: r.npcLocation,
+        department: r.department.name,
+        stage: r.currentStage,
+        amount,
+      });
+    }
+    res.json(totals);
+  })
+);
+
+// The NPC budget picture a reviewer sees beside an NPC request (Inbox and
+// the request's own page): the Budget Officer's Board-Approved NPC Budget
+// for its NPC SBU and year, what's already been approved against it, and
+// what's left before and after this request. boardApproved is null until
+// the Budget Officer sets that SBU's figure. Board-Approved here is the
+// Total Board-Approved: Original plus Additions/Reductions.
+budgetRequestsRouter.get(
+  "/:id/npc-budget-summary",
+  asyncHandler(async (req, res) => {
+    const request = await prisma.budgetRequest.findUniqueOrThrow({ where: { id: req.params.id } });
+    if (request.requestCategory !== "NPC" || !request.npcSbu) throw new HttpError(400, "This is not an NPC request.");
+    const latestBoard = (isAdjustment: boolean) =>
+      prisma.boardApprovedBudget.findFirst({
+        where: { fiscalYear: request.fiscalYear, requestCategory: "NPC", npcSbu: request.npcSbu, isAdjustment },
+        orderBy: { setAt: "desc" },
+      });
+    const [original, adjustment] = await Promise.all([latestBoard(false), latestBoard(true)]);
+    const approved = await prisma.budgetRequest.findMany({
+      where: { requestCategory: "NPC", npcSbu: request.npcSbu, fiscalYear: request.fiscalYear, currentStage: RequestStage.APPROVED, id: { not: request.id } },
+      select: { proposedAmount: true, budgetCutAmount: true },
+    });
+    res.json({
+      fiscalYear: request.fiscalYear,
+      npcSbu: request.npcSbu,
+      boardApproved: original || adjustment ? (original?.amount ?? 0) + (adjustment?.amount ?? 0) : null,
+      approvedToDate: approved.reduce((sum, r) => sum + r.proposedAmount - r.budgetCutAmount, 0),
+      approvedCount: approved.length,
+      thisRequest: request.proposedAmount - request.budgetCutAmount,
+    });
   })
 );
 
@@ -593,6 +754,49 @@ budgetRequestsRouter.post(
     for (const id of ids) {
       try {
         await decideRequest(id, req.user!, "APPROVE", comment);
+        succeeded.push(id);
+      } catch (err) {
+        failed.push({ id, error: err instanceof Error ? err.message : "Unknown error" });
+      }
+    }
+    res.json({ succeeded, failed });
+  })
+);
+
+// My Requests' multi-select and the upload pages' "Submit All": submit or
+// cancel several of the requestor's own requests in one go. Each item runs
+// the same checks as its single-request route; failures are reported per
+// item, not skipped.
+budgetRequestsRouter.post(
+  "/bulk-action",
+  asyncHandler(async (req, res) => {
+    const { ids, action, approverId } = z
+      .object({ ids: z.array(z.string().min(1)).min(1), action: z.enum(["SUBMIT", "CANCEL"]), approverId: z.string().min(1).optional() })
+      .parse(req.body);
+    const succeeded: string[] = [];
+    const failed: { id: string; error: string }[] = [];
+    for (const id of ids) {
+      try {
+        if (action === "SUBMIT") {
+          const request = await prisma.budgetRequest.findUniqueOrThrow({ where: { id } });
+          if (request.createdById !== req.user!.id) throw new HttpError(403, "You can only submit your own requests.");
+          // One approver picked for the whole selection: it fills whichever
+          // approver this request's first stage needs - the Centralized
+          // Department Head for a GAE request raised by its own centralized
+          // department (see submitRequest), the Department Head otherwise.
+          if (approverId && request.currentStage === "DRAFT") {
+            const lineItem = request.requestCategory === "GAE" && request.expenseLineItemId ? await prisma.expenseLineItem.findUnique({ where: { id: request.expenseLineItemId } }) : null;
+            const ownDept =
+              !!lineItem &&
+              (await prisma.roleAssignment.count({
+                where: { userId: request.createdById, departmentId: lineItem.ownerDepartmentId, roleType: { in: ["CENTRALIZED_BUDGET_PREPARER", "CENTRALIZED_FIRST_LEVEL_REVIEWER"] } },
+              })) > 0;
+            await prisma.budgetRequest.update({ where: { id }, data: ownDept ? { centralizedHeadId: approverId } : { departmentHeadId: approverId } });
+          }
+          await submitRequest(id);
+        } else {
+          await cancelRequest(id, req.user!);
+        }
         succeeded.push(id);
       } catch (err) {
         failed.push({ id, error: err instanceof Error ? err.message : "Unknown error" });

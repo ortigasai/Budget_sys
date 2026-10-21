@@ -36,16 +36,17 @@ const CATEGORY_LABEL: Record<BoardCategory, string> = {
   OTHER_INCOME: "Other income",
 };
 
+// Alphabetical, like every other SBU list (RBU is Residential).
 export const COLUMNS: { key: Sbu; label: string }[] = [
-  { key: "RESIDENTIAL", label: "RBU" },
-  { key: "MALLS", label: "Malls" },
-  { key: "OFFICES", label: "Offices" },
+  { key: "CORPORATE", label: "Corporate" },
   { key: "ESTATES", label: "Estates" },
   { key: "LEISURE", label: "Leisure" },
-  { key: "CORPORATE", label: "Corporate" },
+  { key: "MALLS", label: "Malls" },
+  { key: "OFFICES", label: "Offices" },
+  { key: "RESIDENTIAL", label: "RBU" },
 ];
 
-const ALL: Sbu[] = ["RESIDENTIAL", "MALLS", "OFFICES", "ESTATES", "LEISURE", "CORPORATE"];
+const ALL: Sbu[] = ["CORPORATE", "ESTATES", "LEISURE", "MALLS", "OFFICES", "RESIDENTIAL"];
 
 // Columns to show: every SBU, or only the selected one when the page's SBU filter is set.
 export function columnsFor(sbuFilter?: Sbu | "ALL") {

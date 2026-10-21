@@ -88,7 +88,9 @@ export async function submitRequest(requestId: string) {
     throw new HttpError(400, "Business Justification is mandatory.");
   }
 
-  const docThreshold = await prisma.documentationThresholdConfig.findUnique({ where: { id: "singleton" } });
+  // NPC requests don't need supporting attachments at any amount (user
+  // direction) - the documentation threshold applies to the other categories.
+  const docThreshold = request.requestCategory === "NPC" ? null : await prisma.documentationThresholdConfig.findUnique({ where: { id: "singleton" } });
   if (docThreshold && request.proposedAmount > docThreshold.amount && request.attachments.length === 0) {
     throw new HttpError(
       400,

@@ -4,27 +4,28 @@
 // split Malls into GH/NonGH and isn't a 1:1 match with this fixed 8-value
 // list). Kept as a plain string on BudgetRequest.npcSbu rather than widening
 // the Sbu enum.
+// Alphabetical by label, the order every SBU list is shown in.
 export const NPC_SBU_VALUES = [
+  "CORPORATE_ADMIN",
+  "CORPORATE_HR",
+  "CORPORATE_IT",
+  "ESTATES",
+  "LEISURE",
   "MALLS",
   "OFFICES",
-  "ESTATES",
   "RESIDENTIAL",
-  "LEISURE",
-  "CORPORATE_IT",
-  "CORPORATE_HR",
-  "CORPORATE_ADMIN",
 ] as const;
 export type NpcSbu = (typeof NPC_SBU_VALUES)[number];
 
 export const NPC_SBU_OPTIONS: { value: NpcSbu; label: string }[] = [
+  { value: "CORPORATE_ADMIN", label: "Corporate Admin" },
+  { value: "CORPORATE_HR", label: "Corporate HR" },
+  { value: "CORPORATE_IT", label: "Corporate IT" },
+  { value: "ESTATES", label: "Estates" },
+  { value: "LEISURE", label: "Leisure" },
   { value: "MALLS", label: "Malls" },
   { value: "OFFICES", label: "Offices" },
-  { value: "ESTATES", label: "Estates" },
   { value: "RESIDENTIAL", label: "Residential" },
-  { value: "LEISURE", label: "Leisure" },
-  { value: "CORPORATE_IT", label: "Corporate IT" },
-  { value: "CORPORATE_HR", label: "Corporate HR" },
-  { value: "CORPORATE_ADMIN", label: "Corporate Admin" },
 ];
 
 // NPC Budget Code prefixes, from "Budgeting System_CC-GL" tab CC (NPC SBU ->

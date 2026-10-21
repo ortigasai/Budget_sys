@@ -23,6 +23,7 @@ import { InternalOrderRequestsPage } from "./pages/InternalOrderRequestsPage";
 import { InternalOrderDetailPage } from "./pages/InternalOrderDetailPage";
 import { ReportsPage } from "./pages/ReportsPage";
 import { RequireReportAccess } from "./components/RequireReportAccess";
+import { RequireFullFinalization } from "./components/RequireFullFinalization";
 import { RequireTransfersModule } from "./components/RequireTransfersModule";
 import { ReportsTrendPage } from "./pages/ReportsTrendPage";
 import { NpcReportPage } from "./pages/NpcReportPage";
@@ -54,7 +55,9 @@ export default function App() {
           path="step5/pending"
           element={
             <RequireRole role="BUDGET_OFFICER" access={["finalization"]}>
-              <Step5PendingRequestsPage />
+              <RequireFullFinalization>
+                <Step5PendingRequestsPage />
+              </RequireFullFinalization>
             </RequireRole>
           }
         />
@@ -62,7 +65,9 @@ export default function App() {
           path="step5/finalized-budget"
           element={
             <RequireRole role="BUDGET_OFFICER" access={["finalization"]}>
-              <FinalizedBudgetReportPage />
+              <RequireFullFinalization>
+                <FinalizedBudgetReportPage />
+              </RequireFullFinalization>
             </RequireRole>
           }
         />

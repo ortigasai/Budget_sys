@@ -184,7 +184,13 @@ export function NpcForecastView() {
       default: return null;
     }
   }, []);
-  const { filtered: filteredRows, filters, setFilter, clearFilters, activeCount } = useColumnFilters(rows, filterValue);
+  const { filtered: columnFilteredRows, filters, setFilter, clearFilters, activeCount } = useColumnFilters(rows, filterValue);
+  // Budget status of each project's NPC Surplus/(Deficit) - same choices as
+  // the GAE Forecast's Remaining Budget filter.
+  const [budgetStatus, setBudgetStatus] = useState<"all" | "positive" | "negative" | "zero">("all");
+  const filteredRows = columnFilteredRows.filter((r) =>
+    budgetStatus === "all" ? true : budgetStatus === "positive" ? r.npcSurplus > 0 : budgetStatus === "negative" ? r.npcSurplus < 0 : r.npcSurplus === 0
+  );
 
   const displayRows = sortColumn
     ? [...filteredRows].sort((a, b) => {
@@ -289,13 +295,32 @@ export function NpcForecastView() {
             sticky descendant needs a containing block, which leaves
             `position: sticky` inert with no explicit height cap (same fix
             ForecastPage.tsx's GAE/DOE grid already needed). */}
-        <div className="mb-1 flex items-center justify-between gap-2">
+        <div className="-mt-2 mb-2 flex items-center justify-between gap-2">
           <div className="flex flex-wrap items-center gap-3">
+            <select
+              value={budgetStatus}
+              onChange={(e) => setBudgetStatus(e.target.value as typeof budgetStatus)}
+              aria-label="Filter by NPC Surplus/(Deficit)"
+              title="Filter by NPC Surplus/(Deficit)"
+              className="h-7 w-36 rounded border border-slate-300 bg-white px-2 text-xs text-slate-700"
+            >
+              <option value="all">All</option>
+              <option value="positive">Within budget</option>
+              <option value="negative">Over budget</option>
+              <option value="zero">Fully used</option>
+            </select>
             <p className="text-xs italic text-slate-500">All amounts are in PHP.</p>
             <span className="text-xs text-slate-500">Showing {displayRows.length} of {rows.length} line item(s)</span>
-            {activeCount > 0 && (
-              <button type="button" onClick={clearFilters} className="text-xs font-medium text-emerald-700 hover:underline">
-                Clear filters ({activeCount})
+            {(activeCount > 0 || budgetStatus !== "all") && (
+              <button
+                type="button"
+                onClick={() => {
+                  clearFilters();
+                  setBudgetStatus("all");
+                }}
+                className="text-xs font-medium text-emerald-700 hover:underline"
+              >
+                Clear filters ({activeCount + (budgetStatus !== "all" ? 1 : 0)})
               </button>
             )}
           </div>

@@ -329,27 +329,32 @@ export function UtilizationPage() {
     </select>
   );
 
+  // Everyone else with more than one department to choose from: same
+  // placement as the SBU picker (filter row on Overview, header on Live
+  // Reconciliation), right after the budget-status filter.
+  const showDeptPicker = !isBudgetOfficer && !isBca && departments.length > 1;
+  const deptPicker = (
+    <select value={effectiveDeptId} onChange={(e) => setDepartmentId(e.target.value)} className="h-9 rounded border border-slate-300 bg-white px-2 text-sm font-normal text-slate-700">
+      <option value="ALL">All Departments</option>
+      {departments.map((d) => (
+        <option key={d.id} value={d.id}>
+          {d.name}
+        </option>
+      ))}
+    </select>
+  );
+
   return (
     <div className="mt-2 space-y-6">
-      {((tab === "reconciliation" && lastSyncedLabel) || (isBudgetOfficer && tab === "reconciliation") || (!isBca && tab !== "npc" && departments.length > 1)) && (
+      {((tab === "reconciliation" && lastSyncedLabel) || (isBudgetOfficer && tab === "reconciliation") || (showDeptPicker && tab === "reconciliation")) && (
       <PageHeader
-        subtitle={isBudgetOfficer && tab === "reconciliation" ? sbuPicker : undefined}
+        subtitle={tab === "reconciliation" ? (isBudgetOfficer ? sbuPicker : showDeptPicker ? deptPicker : undefined) : undefined}
         actions={
           <>
             {tab === "reconciliation" && lastSyncedLabel && (
               <span className="text-xs text-slate-500" title="SAP data refreshes automatically every 10 minutes.">
                 {lastSyncedLabel}
               </span>
-            )}
-            {!isBudgetOfficer && !isBca && departments.length > 1 && (
-              <select value={effectiveDeptId} onChange={(e) => setDepartmentId(e.target.value)} className="rounded border border-slate-300 px-2 py-1.5 text-sm">
-                <option value="ALL">All Departments</option>
-                {departments.map((d) => (
-                  <option key={d.id} value={d.id}>
-                    {d.name}
-                  </option>
-                ))}
-              </select>
             )}
           </>
         }
@@ -373,6 +378,7 @@ export function UtilizationPage() {
             <option value="negative">Over budget</option>
             <option value="zero">Fully used</option>
             </select>
+            {showDeptPicker && deptPicker}
 
           <div className="ml-auto flex flex-col items-end gap-1 self-start">
           <div className="flex items-center gap-2">

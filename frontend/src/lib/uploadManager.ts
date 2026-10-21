@@ -112,14 +112,18 @@ export function startUpload<T = { created: number; errors: { row: number; error:
     })
     .then((res) => {
       for (const key of opts.invalidateKeys ?? []) queryClient.invalidateQueries({ queryKey: key });
-      const data = res.data as unknown as { created?: number; errors?: { row: number; error: string }[] };
+      const data = res.data as unknown as { created?: number; createdRequests?: unknown[]; errors?: { row: number; error: string }[] };
       const errors = data.errors ?? [];
+      // GAE/DOE/NPC template uploads save every row as a Draft (see
+      // routes/bulkUpload.ts); other uploads create their records outright.
+      const noun = data.createdRequests ? "request(s) as Draft" : "request(s)";
+      const verb = data.createdRequests ? "Saved" : "Created";
       const message =
         errors.length === 0
           ? data.created !== undefined
-            ? `Created ${data.created} request(s).`
+            ? `${verb} ${data.created} ${noun}.`
             : "Uploaded successfully."
-          : `Created ${data.created ?? 0} request(s). ${errors.length} row(s) were rejected - see details below.`;
+          : `${verb} ${data.created ?? 0} ${noun}. ${errors.length} row(s) were rejected - see details below.`;
       tasks.set(id, { id, label: opts.label, slot: opts.slot, status: "success", progress: 100, message, errors, startedAt: Date.now() });
       notify();
       opts.onDone?.(res.data);

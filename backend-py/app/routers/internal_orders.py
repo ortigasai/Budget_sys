@@ -81,14 +81,14 @@ def _is_eligible_for_stage(user: AuthedUser, io: InternalOrderRequest, stage: st
 # Finance stream), the 3 Corporate entries route GAE (CFO stream) - mirrors
 # TransferRequest's classification concept, just derived instead of chosen.
 IO_SBU_INFO: dict[str, tuple[str, str]] = {
+    "CORPORATE_ADMIN": ("Corporate Admin", "GAE"),
+    "CORPORATE_HR": ("Corporate HR", "GAE"),
+    "CORPORATE_IT": ("Corporate IT", "GAE"),
+    "ESTATES": ("Estates", "DOE"),
+    "LEISURE": ("Leisure", "DOE"),
     "MALLS": ("Malls", "DOE"),
     "OFFICES": ("Offices", "DOE"),
-    "ESTATES": ("Estates", "DOE"),
     "RESIDENTIAL": ("Residential", "DOE"),
-    "LEISURE": ("Leisure", "DOE"),
-    "CORPORATE_IT": ("Corporate IT", "GAE"),
-    "CORPORATE_HR": ("Corporate HR", "GAE"),
-    "CORPORATE_ADMIN": ("Corporate Admin", "GAE"),
 }
 
 

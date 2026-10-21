@@ -18,13 +18,6 @@ import { timeAgo } from "../lib/timeAgo";
 import { NpcForecastView } from "./NpcForecastView";
 import { RevenueRequestTab } from "./newRequest/RevenueRequestTab";
 
-interface ForecastUploadResult {
-  ok: boolean;
-  created?: number;
-  updated?: number;
-  errors?: { row: number; error: string }[];
-}
-
 interface SapSyncResult {
   ok: true;
   created: number;
@@ -234,7 +227,13 @@ function GaeForecastTable({
         return null;
     }
   }, []);
-  const { filtered: visibleRows, filters, setFilter, clearFilters, activeCount } = useColumnFilters(rows, getSortValue);
+  const { filtered: columnFilteredRows, filters, setFilter, clearFilters, activeCount } = useColumnFilters(rows, getSortValue);
+  // Budget status of each line's Remaining Budget - same choices as Budget
+  // Utilization Tracking's Departmental Overview.
+  const [budgetStatus, setBudgetStatus] = useState<"all" | "positive" | "negative" | "zero">("all");
+  const visibleRows = columnFilteredRows.filter((r) =>
+    budgetStatus === "all" ? true : budgetStatus === "positive" ? r.remainingBudget2026 > 0 : budgetStatus === "negative" ? r.remainingBudget2026 < 0 : r.remainingBudget2026 === 0
+  );
   const { sorted, sortKey, sortDir, toggle } = useTableSort(visibleRows, getSortValue);
 
   // Same 3 frozen columns as always, plus a leading Department column when
@@ -263,13 +262,32 @@ function GaeForecastTable({
 
   return (
     <>
-    <div className="mb-1 flex items-center justify-between gap-2">
+    <div className="-mt-2 mb-2 flex items-center justify-between gap-2">
       <div className="flex flex-wrap items-center gap-3">
+        <select
+          value={budgetStatus}
+          onChange={(e) => setBudgetStatus(e.target.value as typeof budgetStatus)}
+          aria-label="Filter by Remaining Budget"
+          title="Filter by Remaining Budget"
+          className="h-7 w-36 rounded border border-slate-300 bg-white px-2 text-xs text-slate-700"
+        >
+          <option value="all">All</option>
+          <option value="positive">Within budget</option>
+          <option value="negative">Over budget</option>
+          <option value="zero">Fully used</option>
+        </select>
         <p className="text-xs italic text-slate-500">All amounts are in PHP.</p>
         <span className="text-xs text-slate-500">Showing {visibleRows.length} of {rows.length} line item(s)</span>
-        {activeCount > 0 && (
-          <button type="button" onClick={clearFilters} className="text-xs font-medium text-emerald-700 hover:underline">
-            Clear filters ({activeCount})
+        {(activeCount > 0 || budgetStatus !== "all") && (
+          <button
+            type="button"
+            onClick={() => {
+              clearFilters();
+              setBudgetStatus("all");
+            }}
+            className="text-xs font-medium text-emerald-700 hover:underline"
+          >
+            Clear filters ({activeCount + (budgetStatus !== "all" ? 1 : 0)})
           </button>
         )}
       </div>
@@ -637,29 +655,6 @@ export function ForecastPage() {
     },
   });
 
-  const [uploadStatus, setUploadStatus] = useState<{ ok: boolean; message: string; errors?: { row: number; error: string }[] } | null>(null);
-  const uploadMutation = useMutation({
-    mutationFn: async (file: File) => {
-      const form = new FormData();
-      form.append("file", file);
-      return (await api.post<ForecastUploadResult>("/admin/historical-actuals/upload", form)).data;
-    },
-    // Every row that validates is imported even when others don't (see
-    // parseForecastTemplate's own comment) - a real upload can run to
-    // hundreds of rows, so a handful of blank/uncatalogued ones no longer
-    // block the rest. `errors` here is informational (what got skipped and
-    // why), not a rejection of the whole file.
-    onSuccess: (data) => {
-      const skipped = data.errors?.length ?? 0;
-      setUploadStatus({
-        ok: true,
-        message: `Uploaded: ${data.created} created, ${data.updated} updated.${skipped > 0 ? ` ${skipped} row(s) skipped.` : ""}`,
-        errors: data.errors,
-      });
-      queryClient.invalidateQueries({ queryKey: ["forecast"] });
-    },
-  });
-
   // The sync itself now also runs automatically every 10 minutes (see
   // backend/src/index.ts's startup scheduler) - this button is a
   // supplementary on-demand refresh, not the only way this data ever
@@ -779,7 +774,7 @@ export function ForecastPage() {
     <div className="space-y-4">
       <div className="sticky top-0 z-30 space-y-2 bg-white pb-1 pt-1">
         {is2026RestrictedToBudgetOfficer && (
-          <div className="text-sm text-slate-500">{forecastYear} Remaining Months Forecast is entered by the Budget Officer only, via Upload Completed Template — the normal per-department process resumes for the next cycle.</div>
+          <div className="text-sm text-slate-500">{forecastYear} Remaining Months Forecast is entered by the Budget Officer only, via the Admin Console's GAE Forecast Import — the normal per-department process resumes for the next cycle.</div>
         )}
       <PageHeader
         subtitle={is2026RestrictedToBudgetOfficer ? undefined : `Months through ${MONTH_NAMES[(fiscalCycle?.asOfMonth2026 ?? asOfMonth) - 1]} are already in Actuals — only remaining months are editable.`}
@@ -831,68 +826,11 @@ export function ForecastPage() {
         <p className="rounded-lg border border-blue-100 bg-blue-50 px-4 py-2 text-sm text-blue-800">Completing this per CC-GL unblocks Centralized First-Level Review (Step 3A). Submission routes to the Centralized Department Head, then the Budget Officer, either of whom can return it.</p>
       )}
 
+      {/* Open Template / Upload Completed Template moved to the Admin
+          Console's GAE Forecast Import (one company-wide workbook) - only
+          the SAP refresh stays here. */}
       {isBudgetOfficer && (
         <div className="flex flex-wrap items-center gap-4">
-          {/* Note 11 §9 - live-generated, pre-populated version of the same
-              template the plain upload below expects (NPC has its own
-              distinct shape/page - see NpcForecastView.tsx). Gated to fiscal
-              year 2027+, same cycle this reference data belongs to; 2026
-              keeps only the plain upload flow. */}
-          {targetYear >= 2027 && (
-            <button
-              type="button"
-              onClick={() =>
-                downloadFile(`/forecast/${effectiveDeptId}/template?category=${category}`, `forecast-template-${String(category).toLowerCase()}.xlsx`).catch(() =>
-                  setUploadStatus({ ok: false, message: "Failed to download the template." })
-                )
-              }
-              className="rounded-md border border-emerald-300 bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-800 hover:bg-emerald-100"
-            >
-              Open Template
-            </button>
-          )}
-          {/* Real SAP pull (FBL3N), replacing the manual upload below for
-              whatever CC-GL pairs it can match unambiguously - see
-              historicalActualsService.ts's syncHistoricalActualsFromSap. The
-              upload stays as a fallback/override for anything it can't
-              (a GL-CC pair shared by more than one catalog item, or a CC not
-              in SAP at all). Sync Now / Last synced moved down next to the
-              department selector (see below) - kept separate from this
-              template download/upload toolbar since it's a different kind
-              of action (SAP refresh vs. spreadsheet round-trip). */}
-          <label className="cursor-pointer rounded-md border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100">
-            {uploadMutation.isPending ? "Uploading…" : "Upload Completed Template"}
-            <input
-              type="file"
-              accept=".xlsx"
-              className="hidden"
-              disabled={uploadMutation.isPending}
-              onChange={(e) => {
-                const file = e.target.files?.[0];
-                e.target.value = "";
-                if (!file) return;
-                setUploadStatus(null);
-                uploadMutation.mutate(file);
-              }}
-            />
-          </label>
-          {uploadStatus && (
-            <div className="text-xs">
-              <span className={uploadStatus.ok ? "text-emerald-700" : "text-red-600"}>{uploadStatus.message}</span>
-              {uploadStatus.errors && uploadStatus.errors.length > 0 && (
-                <details className="mt-1">
-                  <summary className="cursor-pointer text-slate-500">See skipped rows</summary>
-                  <ul className="mt-1 max-h-40 max-w-md list-disc space-y-0.5 overflow-auto pl-4 text-slate-600">
-                    {uploadStatus.errors.map((e, i) => (
-                      <li key={i}>
-                        Row {e.row}: {e.error}
-                      </li>
-                    ))}
-                  </ul>
-                </details>
-              )}
-            </div>
-          )}
           <div className="ml-auto flex flex-wrap items-center gap-3">
             {lastSyncedLabel && (
               <span className="text-xs text-slate-500" title="SAP data refreshes automatically every 10 minutes.">

@@ -17,6 +17,7 @@ import { ForecastCategoryMappingsTab } from "./ForecastCategoryMappingsTab";
 import { ManpowerGlCcTab } from "./ManpowerGlCcTab";
 import { NpcMonitoringImportTab } from "./NpcMonitoringImportTab";
 import { GaePastDataImportTab } from "./GaePastDataImportTab";
+import { GaeForecastImportTab } from "./GaeForecastImportTab";
 import { SapSyncStatusTab } from "./SapSyncStatusTab";
 import { AccessControlTab } from "./AccessControlTab";
 
@@ -49,6 +50,7 @@ export const ADMIN_TABS = [
   // NPC view - spans two modules, not owned by either alone.
   { id: "department-sbu", label: "Department SBU", group: "General", keywords: "department sbu npc utilization" },
   { id: "expense-items", label: "Expense Line Items", group: "GAE", keywords: "expense line item catalog gl account cost center upload template refinement custom visibility company" },
+  { id: "gae-forecast-import", label: "GAE Forecast Import", group: "GAE", keywords: "gae forecast workbook import upload template approved budget ytd actuals remaining months" },
   { id: "gae-past-data", label: "GAE Past Years Data", group: "GAE", keywords: "past years actuals budget 5-year trend workbook upload" },
   { id: "growth-rate", label: "Growth Rate", group: "GAE", keywords: "growth rate override percent audit log department" },
   { id: "thresholds", label: "Thresholds", group: "GAE", keywords: "documentation threshold attachment supporting document amount" },
@@ -57,7 +59,7 @@ export const ADMIN_TABS = [
   { id: "io-locations", label: "IO Locations", group: "Transfers", keywords: "internal order io location" },
   { id: "cc-gl-codes", label: "CC-GL Codes", group: "Transfers", keywords: "cost center gl account code list upload dash flow transfer" },
   { id: "manpower-gl-cc", label: "Manpower GL/CC Mapping", group: "Manpower", keywords: "manpower salary pay component company cost center gl account mapping" },
-  { id: "report-access", label: "Report Access", group: "Reports", keywords: "report access grant user" },
+  { id: "report-access", label: "Report Access", group: "Reports", keywords: "report access grant user module 4 budget report analysis" },
   { id: "period-sign-off", label: "Period Sign-off", group: "Reports", keywords: "period sign-off lock close fiscal year reports" },
 ] as const;
 
@@ -88,6 +90,7 @@ export function AdminConsolePage() {
       {tab === "io-locations" && <IoLocationsTab />}
       {tab === "cc-gl-codes" && <CcGlCodesTab />}
       {tab === "npc-monitoring" && <NpcMonitoringImportTab />}
+      {tab === "gae-forecast-import" && <GaeForecastImportTab />}
       {tab === "gae-past-data" && <GaePastDataImportTab />}
       {tab === "manpower-gl-cc" && <ManpowerGlCcTab />}
       {tab === "department-sbu" && <DepartmentSbuTab />}

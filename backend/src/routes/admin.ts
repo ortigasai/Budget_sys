@@ -11,6 +11,7 @@ import { parseForecastTemplate, syncHistoricalActualsFromSap } from "../services
 import { applyEmployeeImport, parseEmployeesBuffer } from "../lib/employeeImport";
 import { CORE_CENTRALIZED_DEPARTMENT_NAMES } from "../lib/coreDepartments";
 import { getFiscalCycle } from "../lib/fiscalCycle";
+import { finalizationViewScope, inFinalizationScope } from "../lib/groupScope";
 import { NPC_SBU_VALUES } from "../lib/npcSbu";
 import { getSyncStatus, startBackgroundSync } from "../lib/backgroundSync";
 import { ACCESS_GROUPS, ACCESS_MATRIX, getEffectiveMatrix, invalidateAccessMatrix } from "../lib/accessControl";
@@ -810,10 +811,13 @@ adminRouter.get(
   asyncHandler(async (req, res) => {
     const { targetCalendarYear } = await getFiscalCycle();
     const fiscalYear = Number(req.query.fiscalYear ?? targetCalendarYear);
-    const history = await prisma.boardApprovedBudget.findMany({
+    const allHistory = await prisma.boardApprovedBudget.findMany({
       where: { fiscalYear },
       orderBy: { setAt: "desc" },
     });
+    // SBU Finance members only see their own SBU(s)' figures.
+    const scope = await finalizationViewScope(req.user!);
+    const history = scope ? allHistory.filter((h) => inFinalizationScope(scope, h)) : allHistory;
     // setBy holds the saver's user id; add their name for the History view.
     const saverIds = [...new Set(history.map((h) => h.setBy))];
     const savers = saverIds.length ? await prisma.user.findMany({ where: { id: { in: saverIds } }, select: { id: true, name: true } }) : [];
@@ -836,7 +840,12 @@ adminRouter.post(
             z.object({
               requestCategory: z.nativeEnum(RequestCategory),
               sbu: z.nativeEnum(Sbu).nullable().optional(),
-              amount: z.number().min(0),
+              // Board-Approved NPC Budget cells (requestCategory NPC) are per NPC SBU,
+              // each with an Original figure and an Additions/Reductions one.
+              npcSbu: z.enum(NPC_SBU_VALUES).nullable().optional(),
+              isAdjustment: z.boolean().optional(),
+              // Only an Additions/Reductions figure may be negative (checked below).
+              amount: z.number(),
             })
           )
           .min(1),
@@ -845,14 +854,19 @@ adminRouter.post(
     const saved = await prisma.$transaction(async (tx) => {
       let count = 0;
       for (const cell of cells) {
-        const sbu = cell.requestCategory === RequestCategory.GAE ? null : cell.sbu ?? null;
+        const isNpc = cell.requestCategory === RequestCategory.NPC;
+        if (isNpc && !cell.npcSbu) throw new HttpError(400, "Each Board-Approved NPC Budget figure needs its NPC SBU.");
+        const sbu = cell.requestCategory === RequestCategory.GAE || isNpc ? null : cell.sbu ?? null;
+        const npcSbu = isNpc ? cell.npcSbu! : null;
+        const isAdjustment = isNpc && !!cell.isAdjustment;
+        if (!isAdjustment && cell.amount < 0) throw new HttpError(400, "Board-Approved amounts can't be negative - only Additions/Reductions can.");
         const latest = await tx.boardApprovedBudget.findFirst({
-          where: { fiscalYear, requestCategory: cell.requestCategory, sbu },
+          where: { fiscalYear, requestCategory: cell.requestCategory, sbu, npcSbu, isAdjustment },
           orderBy: { setAt: "desc" },
         });
         if (latest && latest.amount === cell.amount) continue;
         await tx.boardApprovedBudget.create({
-          data: { fiscalYear, requestCategory: cell.requestCategory, sbu: sbu ?? undefined, amount: cell.amount, setBy: req.user!.id },
+          data: { fiscalYear, requestCategory: cell.requestCategory, sbu: sbu ?? undefined, npcSbu: npcSbu ?? undefined, isAdjustment, amount: cell.amount, setBy: req.user!.id },
         });
         count++;
       }
@@ -923,6 +937,8 @@ adminRouter.patch(
   })
 );
 
+const GAE_FORECAST_UPLOAD_MODULE = "gaeForecastUpload";
+
 // Notes_6 (Forecast section): Budget Officer uploads an Excel with Expense
 // Line Item / 2026 Approved Budget / 2026 YTD Actuals - these then show on
 // the requesting departments' Forecast page, where they only edit the
@@ -934,7 +950,32 @@ adminRouter.post(
   asyncHandler(async (req, res) => {
     if (!req.file) throw new HttpError(400, "No file uploaded.");
     const result = await parseForecastTemplate(req.file.buffer);
+    // Shown on the Admin Console's GAE Forecast Import as "currently loaded" -
+    // kept in the same status table the SAP syncs report to, as its own
+    // module row, rather than a table of its own.
+    const now = new Date();
+    const lastUpload = {
+      fileName: req.file.originalname,
+      uploadedByName: req.user!.name,
+      created: result.created,
+      updated: result.updated,
+      skipped: result.errors?.length ?? 0,
+    };
+    await prisma.sapSyncStatus.upsert({
+      where: { module: GAE_FORECAST_UPLOAD_MODULE },
+      create: { module: GAE_FORECAST_UPLOAD_MODULE, status: "success", finishedAt: now, lastSuccessAt: now, resultJson: lastUpload },
+      update: { status: "success", finishedAt: now, lastSuccessAt: now, resultJson: lastUpload, error: null },
+    });
     res.json(result);
+  })
+);
+
+adminRouter.get(
+  "/historical-actuals/upload-status",
+  requireRole(RoleType.BUDGET_OFFICER),
+  asyncHandler(async (_req, res) => {
+    const row = await prisma.sapSyncStatus.findUnique({ where: { module: GAE_FORECAST_UPLOAD_MODULE } });
+    res.json(row?.lastSuccessAt ? { uploadedAt: row.lastSuccessAt, ...(row.resultJson as Record<string, unknown>) } : null);
   })
 );
 

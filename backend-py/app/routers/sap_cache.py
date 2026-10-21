@@ -49,6 +49,22 @@ def fbl3n_cache(fiscalYear: int, throughMonth: int | None = None, session: Sessi
     return _summed_by_gl_cc(session, SapFbl3nRaw, fiscalYear, throughMonth)
 
 
+class GlCcMonthAmountOut(GlCcAmountOut):
+    month: int
+
+
+@router.get("/fbl3n-monthly", response_model=list[GlCcMonthAmountOut])
+def fbl3n_monthly_cache(fiscalYear: int, throughMonth: int | None = None, session: Session = Depends(get_session)):
+    """Same postings as /fbl3n, summed per (GL, CC, month) instead of
+    through the whole period - the Forecast template's monthly "Actual"
+    columns (Jan..as-of month), which add up to its YTD Actuals."""
+    query = select(SapFbl3nRaw.gl_account, SapFbl3nRaw.cost_center, SapFbl3nRaw.month, func.sum(SapFbl3nRaw.amount)).where(SapFbl3nRaw.fiscal_year == fiscalYear)
+    if throughMonth is not None:
+        query = query.where(SapFbl3nRaw.month <= throughMonth)
+    query = query.group_by(SapFbl3nRaw.gl_account, SapFbl3nRaw.cost_center, SapFbl3nRaw.month)
+    return [GlCcMonthAmountOut(glAccount=r[0], costCenter=r[1], month=r[2], amount=float(r[3])) for r in session.exec(query).all()]
+
+
 @router.get("/kssb-v1", response_model=list[GlCcAmountOut])
 def kssb_v1_cache(fiscalYear: int, throughMonth: int | None = None, session: Session = Depends(get_session)):
     """`fiscalYear` here is the same "actual postings year" (target - 1) that
