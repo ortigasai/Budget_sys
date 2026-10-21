@@ -18,6 +18,12 @@ import { timeAgo } from "../lib/timeAgo";
 import { NpcForecastView } from "./NpcForecastView";
 import { RevenueRequestTab } from "./newRequest/RevenueRequestTab";
 
+interface ForecastUploadResult {
+  created?: number;
+  updated?: number;
+  errors?: { row: number; error: string }[];
+}
+
 interface SapSyncResult {
   ok: true;
   created: number;
@@ -664,6 +670,24 @@ export function ForecastPage() {
   // continuously (not just right after a manual click), both so an
   // automatic tick's progress shows up too and so "last synced" stays fresh
   // on its own.
+  // A department's own Upload Completed Template (from the 2027 forecast):
+  // only its remaining-month forecast - see POST /forecast/:departmentId/upload.
+  // This year's company-wide workbook goes through the Admin Console instead.
+  const [uploadStatus, setUploadStatus] = useState<{ ok: boolean; message: string; errors?: { row: number; error: string }[] } | null>(null);
+  const uploadMutation = useMutation({
+    mutationFn: async (file: File) => {
+      const form = new FormData();
+      form.append("file", file);
+      return (await api.post<ForecastUploadResult>(`/forecast/${effectiveDeptId}/upload`, form)).data;
+    },
+    onSuccess: (data) => {
+      const skipped = data.errors?.length ?? 0;
+      setUploadStatus({ ok: true, message: `Forecast uploaded for ${data.updated ?? 0} line item(s).${skipped > 0 ? ` ${skipped} row(s) skipped.` : ""}`, errors: data.errors });
+      queryClient.invalidateQueries({ queryKey: ["forecast"] });
+    },
+    onError: (err: any) => setUploadStatus({ ok: false, message: err.response?.data?.error ?? "Upload failed." }),
+  });
+
   const [syncStatus, setSyncStatus] = useState<{ ok: boolean; message: string } | null>(null);
   const startSyncMutation = useMutation({
     mutationFn: async () => (await api.post("/admin/historical-actuals/sync-sap")).data,
@@ -826,11 +850,61 @@ export function ForecastPage() {
         <p className="rounded-lg border border-blue-100 bg-blue-50 px-4 py-2 text-sm text-blue-800">Completing this per CC-GL unblocks Centralized First-Level Review (Step 3A). Submission routes to the Centralized Department Head, then the Budget Officer, either of whom can return it.</p>
       )}
 
-      {/* Open Template / Upload Completed Template moved to the Admin
-          Console's GAE Forecast Import (one company-wide workbook) - only
-          the SAP refresh stays here. */}
-      {isBudgetOfficer && (
+      {/* Open Template / Upload Completed Template: a department's own
+          forecast, from the 2027 forecast on (this year's company-wide
+          workbook is the Admin Console's GAE Forecast Import). Sync Now is
+          the Budget Officer's SAP refresh. */}
+      {(isBudgetOfficer || (forecastYear >= 2027 && !isAllMode && (isOwnDept || isBudgetOfficer))) && (
         <div className="flex flex-wrap items-center gap-4">
+          {forecastYear >= 2027 && !isAllMode && (
+            <button
+              type="button"
+              onClick={() =>
+                downloadFile(`/forecast/${effectiveDeptId}/template?category=${category}`, `forecast-template-${String(category).toLowerCase()}.xlsx`).catch(() =>
+                  setUploadStatus({ ok: false, message: "Failed to download the template." })
+                )
+              }
+              className="rounded-md border border-emerald-300 bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-800 hover:bg-emerald-100"
+            >
+              Open Template
+            </button>
+          )}
+          {forecastYear >= 2027 && canEditValues && (
+            <label className="cursor-pointer rounded-md border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100">
+              {uploadMutation.isPending ? "Uploading…" : "Upload Completed Template"}
+              <input
+                type="file"
+                accept=".xlsx"
+                className="hidden"
+                disabled={uploadMutation.isPending}
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  e.target.value = "";
+                  if (!file) return;
+                  setUploadStatus(null);
+                  uploadMutation.mutate(file);
+                }}
+              />
+            </label>
+          )}
+          {uploadStatus && (
+            <div className="text-xs">
+              <span className={uploadStatus.ok ? "text-emerald-700" : "text-red-600"}>{uploadStatus.message}</span>
+              {uploadStatus.errors && uploadStatus.errors.length > 0 && (
+                <details className="mt-1">
+                  <summary className="cursor-pointer text-slate-500">See skipped rows</summary>
+                  <ul className="mt-1 max-h-40 max-w-md list-disc space-y-0.5 overflow-auto pl-4 text-slate-600">
+                    {uploadStatus.errors.map((e, i) => (
+                      <li key={i}>
+                        Row {e.row}: {e.error}
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              )}
+            </div>
+          )}
+          {isBudgetOfficer && (
           <div className="ml-auto flex flex-wrap items-center gap-3">
             {lastSyncedLabel && (
               <span className="text-xs text-slate-500" title="SAP data refreshes automatically every 10 minutes.">
@@ -850,6 +924,7 @@ export function ForecastPage() {
             </button>
             {syncStatus && <span className={`text-xs ${syncStatus.ok ? "text-emerald-700" : "text-red-600"}`}>{syncStatus.message}</span>}
           </div>
+          )}
         </div>
       )}
       {isError && <div className="text-sm text-red-700">You can only view your own department's forecast.</div>}

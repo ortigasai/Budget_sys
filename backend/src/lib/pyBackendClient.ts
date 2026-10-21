@@ -110,13 +110,6 @@ export async function fetchFbl3nCache(fiscalYear: number, throughMonth: number):
   return data;
 }
 
-// Same FBL3N postings, per (GL, CC, month) - the Forecast template's monthly
-// "Actual" columns.
-export async function fetchFbl3nMonthlyCache(fiscalYear: number, throughMonth: number): Promise<(GlCcAmount & { month: number })[]> {
-  const { data } = await pyClient.get<(GlCcAmount & { month: number })[]>("/sap-cache/fbl3n-monthly", { params: { fiscalYear, throughMonth } });
-  return data;
-}
-
 // `fiscalYear` here must be the same "actual postings year" (target - 1)
 // manpowerService.ts already computes before this call - the cache is keyed
 // by whatever fiscal_year sap_raw_sync_service.py's sync_kssb_v1_raw stored

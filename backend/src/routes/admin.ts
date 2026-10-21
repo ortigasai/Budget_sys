@@ -583,13 +583,20 @@ adminRouter.delete(
   })
 );
 
-// Custom/unlisted expense submissions awaiting Budget Officer refinement (FR-1.14).
+// Custom/unlisted expense submissions awaiting Budget Officer refinement
+// (FR-1.14) - GAE only. NPC projects and Revenue lines are also stored as
+// custom line items awaiting refinement, but those categories have no
+// standardized names yet, so they aren't listed here.
 adminRouter.get(
   "/expense-line-items/pending-refinement",
   requireRole(RoleType.BUDGET_OFFICER),
   asyncHandler(async (_req, res) => {
     const items = await prisma.expenseLineItem.findMany({
-      where: { status: "PENDING_REFINEMENT" },
+      where: {
+        status: "PENDING_REFINEMENT",
+        category: { notIn: ["Non-Project Capex", "Revenue"] },
+        NOT: { budgetRequests: { some: { requestCategory: { not: RequestCategory.GAE } } } },
+      },
       orderBy: { createdAt: "asc" },
     });
     res.json(items);

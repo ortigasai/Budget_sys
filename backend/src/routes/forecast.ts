@@ -9,7 +9,7 @@ import { HttpError } from "../httpError";
 import { isForecastCompleteForDepartment } from "../services/workflowService";
 import { sumMonthlyForecast } from "../services/budgetCalcService";
 import { budgetOfficerDecision, headDecision, submitForecast } from "../services/forecastWorkflowService";
-import { buildForecastTemplateWorkbook } from "../services/historicalActualsService";
+import { buildForecastTemplateWorkbook, parseForecastTemplate } from "../services/historicalActualsService";
 import { buildNpcForecastTemplateWorkbook, getNpcForecastRows, parseNpcForecastTemplate, setNpcForecastMonth } from "../services/npcForecastService";
 import { hasRole } from "../middleware/auth";
 import { CORE_CENTRALIZED_DEPARTMENT_NAMES } from "../lib/coreDepartments";
@@ -357,6 +357,35 @@ forecastRouter.patch(
 // submits -> Centralized Department Head (approve/return) -> Budget Officer
 // (approve/return). Only Budget Officer approval marks the department's
 // forecast "complete" and unblocks Step 3A.
+// A department's own Upload Completed Template (Forecast page): only that
+// department's lines, and only their remaining-month forecast - see
+// parseForecastTemplate's departmentOnly mode. Same rules as entering the
+// months by hand: the owning department or the Budget Officer, Budget-Officer-
+// only for 2026, and only while the department's forecast is still editable.
+const forecastUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
+forecastRouter.post(
+  "/:departmentId/upload",
+  forecastUpload.single("file"),
+  asyncHandler(async (req, res) => {
+    if (!req.file) throw new HttpError(400, "No file uploaded.");
+    const { departmentId } = req.params;
+    if (!(await canViewDepartment(req.user!, departmentId))) {
+      throw new HttpError(403, "Only the owning department or the Budget Officer can upload this forecast.");
+    }
+    const cycle = await getFiscalCycle();
+    if (cycle.forecastYear === 2026 && !hasRole(req.user, RoleType.BUDGET_OFFICER)) {
+      throw new HttpError(403, "2026's Remaining Months Forecast is entered by the Budget Officer only, via the Admin Console's GAE Forecast Import.");
+    }
+    const submission = await prisma.forecastSubmission.findUnique({
+      where: { departmentId_fiscalYear: { departmentId, fiscalYear: cycle.targetCalendarYear } },
+    });
+    if (submission && submission.stage !== "DRAFT" && submission.stage !== "RETURNED") {
+      throw new HttpError(400, "This forecast has already been submitted - it can only be changed if it's returned.");
+    }
+    res.json(await parseForecastTemplate(req.file.buffer, { departmentId }));
+  })
+);
+
 forecastRouter.get(
   "/:departmentId/submission",
   asyncHandler(async (req, res) => {
