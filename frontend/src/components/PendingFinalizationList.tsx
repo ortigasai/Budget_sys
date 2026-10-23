@@ -24,14 +24,13 @@ export function PendingFinalizationList({ requests, canEdit }: { requests: Budge
   // Note 11: one click now does both jobs (finalize + the mock SAP upload,
   // see workflowService.ts's finalizeAtStep5) - the row leaves this "awaiting
   // finalization" list immediately, so there's no persistent place left to
-  // show its SAP document number "inline"; a short banner naming the ticket
-  // stands in for the old page-level "Uploaded — SAP Document #..." banner.
-  const [lastFinalized, setLastFinalized] = useState<{ lineItemName: string; sapDocumentNumber: string | null } | null>(null);
+  // show anything "inline"; a short banner naming the ticket stands in. The
+  // SAP upload is still a mock, so its generated document number isn't shown.
+  const [lastFinalized, setLastFinalized] = useState<{ lineItemName: string } | null>(null);
   const finalize = useMutation({
     mutationFn: async (r: BudgetRequest) => (await api.post<BudgetRequest>(`/budget-requests/${r.id}/finalize`)).data,
-    onSuccess: (updated, r) => {
-      // NPC doesn't post to SAP at Finalize & Upload - no SAP Document # to show for it.
-      setLastFinalized({ lineItemName: requestLineDisplay(r).name, sapDocumentNumber: r.requestCategory === "NPC" ? null : updated.sapDocumentNumber });
+    onSuccess: (_updated, r) => {
+      setLastFinalized({ lineItemName: requestLineDisplay(r).name });
       queryClient.invalidateQueries({ queryKey: ["step5-dashboard"] });
     },
   });
@@ -156,7 +155,6 @@ export function PendingFinalizationList({ requests, canEdit }: { requests: Budge
       {lastFinalized && (
         <div className="inline-block rounded-full bg-emerald-100 px-3 py-1 text-sm font-medium text-emerald-800">
           Finalized "{lastFinalized.lineItemName}"
-          {lastFinalized.sapDocumentNumber && <> — SAP Document #{lastFinalized.sapDocumentNumber}</>}
         </div>
       )}
     </div>

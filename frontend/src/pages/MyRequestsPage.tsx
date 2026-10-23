@@ -35,7 +35,6 @@ const MY_REQUEST_COLUMNS = [
   { key: "cut", label: "Budget Cut", numeric: true },
   { key: "approved", label: "Approved Amount", numeric: true },
   { key: "stage", label: "Stage" },
-  { key: "sap", label: "SAP Doc #" },
 ];
 
 // This page only queried /budget-requests/my-requests, so Additional
@@ -169,8 +168,6 @@ export function MyRequestsPage() {
         return d.proposedAmount - d.budgetCutAmount;
       case "stage":
         return STAGE_LABELS[d.currentStage] ?? d.currentStage;
-      case "sap":
-        return d.sapDocumentNumber ?? null;
       default:
         return null;
     }
@@ -299,7 +296,6 @@ export function MyRequestsPage() {
                 <SortableHeader label="Budget Cut" sortKey="cut" activeKey={sortKey} dir={sortDir} onToggle={toggle} align="right" className="px-4 py-2" />
                 <SortableHeader label="Approved Amount" sortKey="approved" activeKey={sortKey} dir={sortDir} onToggle={toggle} align="right" className="px-4 py-2" />
                 <SortableHeader label="Stage" sortKey="stage" activeKey={sortKey} dir={sortDir} onToggle={toggle} className="px-4 py-2" />
-                <SortableHeader label="SAP Doc #" sortKey="sap" activeKey={sortKey} dir={sortDir} onToggle={toggle} className="px-4 py-2" />
               </tr>
               <tr className="border-t border-emerald-100 bg-white">
                 {MY_REQUEST_COLUMNS.map((c) => (
@@ -346,7 +342,6 @@ export function MyRequestsPage() {
                           <StatusBadge stage={row.data.currentStage} />
                           <PendingReviewers names={row.data.pendingReviewers} />
                         </td>
-                        <td className="px-4 py-2 text-slate-500">{row.data.sapDocumentNumber ?? "—"}</td>
                       </>
                     ) : row.kind === "headcount" ? (
                       <>
@@ -369,7 +364,6 @@ export function MyRequestsPage() {
                           <StatusBadge stage={row.data.currentStage} />
                           <PendingReviewers names={row.data.pendingReviewers} />
                         </td>
-                        <td className="px-4 py-2 text-slate-400">N/A</td>
                       </>
                     ) : row.kind === "revenue" ? (
                       <>
@@ -390,7 +384,6 @@ export function MyRequestsPage() {
                         <td className="px-4 py-2 text-slate-400">N/A</td>
                         <td className="px-4 py-2 text-slate-400">N/A</td>
                         <td className="px-4 py-2">{REVENUE_STAGE_LABELS[row.data.currentStage] ?? row.data.currentStage}</td>
-                        <td className="px-4 py-2 text-slate-400">N/A</td>
                       </>
                     ) : (
                       <>
@@ -412,7 +405,6 @@ export function MyRequestsPage() {
                         <td className="px-4 py-2">
                           <StatusBadge stage={row.data.currentStage} />
                         </td>
-                        <td className="px-4 py-2 text-slate-400">N/A</td>
                       </>
                     )}
                   </tr>
@@ -434,7 +426,6 @@ export function MyRequestsPage() {
                       <td className="px-4 py-1.5">
                         <StatusBadge stage={row.office365.stage} />
                       </td>
-                      <td className="px-4 py-1.5 text-slate-400">—</td>
                     </tr>
                   )}
                   {row.kind === "headcount" && row.mobilePhone && (
@@ -455,7 +446,6 @@ export function MyRequestsPage() {
                       <td className="px-4 py-1.5">
                         <StatusBadge stage={row.mobilePhone.stage} />
                       </td>
-                      <td className="px-4 py-1.5 text-slate-400">—</td>
                     </tr>
                   )}
                 </Fragment>

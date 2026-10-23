@@ -202,7 +202,6 @@ export function RequestDetailPage() {
         {request.requestCategory === "NPC" && request.projectEndDate && <Field label="Project End" value={new Date(request.projectEndDate).toLocaleDateString(undefined, { month: "long", year: "numeric" })} />}
         {request.budgetCutAmount > 0 && <Field label="Budget Cut" value={`${request.budgetCutAmount.toLocaleString()}`} />}
         {request.isOverBudget && <Field label="Flag" value="Over-budget / Requires Realignment" />}
-        {request.sapDocumentNumber && <Field label="SAP Document #" value={request.sapDocumentNumber} />}
         {request.reasonCode && <Field label="Return Reason" value={request.reasonCode} />}
         <Field label="Created By" value={request.createdBy.name} />
       </div>

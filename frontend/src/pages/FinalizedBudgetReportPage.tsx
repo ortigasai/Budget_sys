@@ -278,7 +278,7 @@ export function FinalizedBudgetReportPage() {
           npcSbu={detailLine.npcSbu}
           glAccount={detailLine.glAccount}
           costCenter={detailLine.costCenter}
-          label={`${detailLine.costCenter}${detailLine.costCenterName ? ` (${detailLine.costCenterName})` : ""} / ${detailLine.glAccount}`}
+          label={`${detailLine.costCenter}${detailLine.costCenterName ? ` (${detailLine.costCenterName})` : ""} / ${detailLine.glAccount}${detailLine.glAccountName ? ` (${detailLine.glAccountName})` : ""}`}
           onClose={() => setDetailLine(null)}
         />
       )}

@@ -40,7 +40,6 @@ function RequestCard({ d }: { d: FinalizedBudgetLineDetail }) {
         <Field label="Budget Cut" value={d.budgetCutAmount > 0 ? peso(d.budgetCutAmount) : "—"} />
         <Field label="Finalized Amount" value={peso(net)} />
         <Field label="Finalized" value={`${new Date(d.finalizedAt).toLocaleDateString()} by ${d.finalizedBy}`} />
-        <Field label="SAP Document #" value={d.sapDocumentNumber ?? "—"} />
         {d.npcLocation && <Field label="Location" value={d.npcLocation} />}
         {d.projectStartDate && d.projectEndDate && (
           <Field label="Project Dates" value={`${new Date(d.projectStartDate).toLocaleDateString()} – ${new Date(d.projectEndDate).toLocaleDateString()}`} />
