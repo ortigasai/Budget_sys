@@ -70,7 +70,11 @@ export function RoleSwitcher() {
   // role to (via Admin Console > Role Assignments). Still a real, verified
   // login under the hood (every seeded user shares one known password) -
   // this just skips typing it in, it doesn't skip credential verification.
-  const roleAssignedUsers = users.filter((u) => u.isEmployee);
+  // BC&A members (the BCA group, or anyone in the Budget, Controls &
+  // Analysis department) are left out - they log in with the form only.
+  const isBcaMember = (u: (typeof users)[number]) =>
+    u.department?.name === "Budget, Controls & Analysis" || (u.groups ?? []).some((g) => g.group === "BCA");
+  const roleAssignedUsers = users.filter((u) => u.isEmployee && !isBcaMember(u));
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
