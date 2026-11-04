@@ -1,6 +1,7 @@
 import ExcelJS from "exceljs";
 import bcrypt from "bcryptjs";
 import { PrismaClient, RoleType } from "@prisma/client";
+import { canonicalDepartmentName } from "./departmentAliases";
 
 // Shared employee-roster import logic - used by both the seed-time importer
 // (backend/prisma/importEmployees.ts, reading the source file from disk)
@@ -177,15 +178,16 @@ export async function applyEmployeeImport(prisma: PrismaClient, employees: Parse
   for (const emp of employees) {
     let departmentId: string | undefined;
     if (emp.departmentName) {
-      departmentId = departmentCache.get(emp.departmentName);
+      const departmentName = canonicalDepartmentName(emp.departmentName);
+      departmentId = departmentCache.get(departmentName);
       if (!departmentId) {
         const dept = await prisma.department.upsert({
-          where: { name: emp.departmentName },
+          where: { name: departmentName },
           update: {},
-          create: { name: emp.departmentName, type: "CENTRALIZED" },
+          create: { name: departmentName, type: "CENTRALIZED" },
         });
         departmentId = dept.id;
-        departmentCache.set(emp.departmentName, departmentId);
+        departmentCache.set(departmentName, departmentId);
       }
     }
 

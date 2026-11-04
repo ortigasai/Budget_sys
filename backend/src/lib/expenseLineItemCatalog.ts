@@ -1,4 +1,5 @@
 import ExcelJS from "exceljs";
+import { canonicalDepartmentName } from "./departmentAliases";
 
 // Shared parsing for the "Budgeting System_Expense Line Items" catalog
 // shape — used by both the one-off seed importer (backend/prisma/
@@ -254,7 +255,7 @@ function parseWorkbook(workbook: ExcelJS.Workbook): ParsedExpenseLineItemRow[] {
     const companyRawText = String(row.getCell(7).value ?? "").trim();
     const companyRaw = companyRawText === "OLCP" ? "OCLP" : companyRawText;
     const descriptionRaw = String(row.getCell(8).value ?? "").trim();
-    const departmentName = String(row.getCell(9).value ?? "").trim();
+    const departmentName = canonicalDepartmentName(String(row.getCell(9).value ?? "").trim());
     const centralizedReviewerRaw = String(row.getCell(10).value ?? "").trim();
     const centralizedHeadRaw = String(row.getCell(11).value ?? "").trim();
     const costCenterRaw = row.getCell(12).value;
@@ -287,7 +288,7 @@ function parseWorkbook(workbook: ExcelJS.Workbook): ParsedExpenseLineItemRow[] {
       spendGridComputation: spendGridComputationRaw || null,
       spendGridFrequency: spendGridFrequencyRaw || null,
       sampleCharges: sampleChargesRaw || null,
-      visibleToDepartmentName: visibleToDepartmentRaw || null,
+      visibleToDepartmentName: visibleToDepartmentRaw ? canonicalDepartmentName(visibleToDepartmentRaw) : null,
       centralizedReviewerName: centralizedReviewerRaw || null,
       centralizedHeadName: centralizedHeadRaw || null,
       budgetCodePrefix: budgetCodePrefixRaw || null,

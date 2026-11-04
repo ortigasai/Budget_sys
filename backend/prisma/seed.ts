@@ -15,7 +15,7 @@ const CENTRALIZED_DEPARTMENTS = [
   "Human Resources",
   "IS & IT",
   "Tax",
-  "TSG",
+  "Technical Services Group",
   "Corporate Finance",
   "Legal",
 ];
@@ -340,7 +340,6 @@ async function main() {
     ["Tax", "TX"],
     ["Budget, Controls & Analysis", "BCA"],
     ["Corporate Marketing", "CM"],
-    ["OMD Operations", "OM"],
     ["Procurement", "PR"],
   ];
   const NPC_HEAD_CODES: [string, string][] = [
@@ -406,7 +405,7 @@ async function main() {
     { department: "Human Resources", glAccount: "81111101", costCenter: "52121401", glDescription: "Company Events", actuals2025: 600000, approved2026: 650000, ytd2026: 400000 },
     { department: "Human Resources", glAccount: "81122101", costCenter: "52121502", glDescription: "Trainings & Seminars", actuals2025: 350000, approved2026: 400000, ytd2026: 300000 },
     { department: "Tax", glAccount: "PENDING", costCenter: "TAX-GEN", glDescription: "Taxes & Licenses", actuals2025: 550000, approved2026: 580000, ytd2026: 400000 },
-    { department: "TSG", glAccount: "61041101", costCenter: "80123102", glDescription: "Electricity & Water", actuals2025: 1200000, approved2026: 1250000, ytd2026: 1250000 },
+    { department: "Technical Services Group", glAccount: "61041101", costCenter: "80123102", glDescription: "Electricity & Water", actuals2025: 1200000, approved2026: 1250000, ytd2026: 1250000 },
     { department: "Corporate Finance", glAccount: "603100", costCenter: "CC-CF-01", glDescription: "External Audit Fees", actuals2025: 1200000, approved2026: 1250000, ytd2026: 1250000 },
     { department: "Legal", glAccount: "605100", costCenter: "CC-LEG-01", glDescription: "Outside Legal Counsel", actuals2025: 700000, approved2026: 720000, ytd2026: 500000 },
   ];

@@ -18,7 +18,6 @@ const CD_SCOPE_TO_FORECAST_DEPARTMENT: Record<string, string> = {
   "External Affairs": "External Affairs",
   "Information System & Information Technology": "Information System & Information Technology",
   "Internal Audit": "Internal Audit",
-  "OMD Operations": "OMD Operations",
   Procurement: "Procurement",
 };
 

@@ -19,8 +19,10 @@ export const CORE_CENTRALIZED_DEPARTMENT_NAMES = [
   "Internal Audit",
   "Legal",
   "Office of the CFO",
-  "OMD Operations",
+  // OMD Operations is no longer a centralized department (Expense Line Items
+  // update, Nov 2026 - its Non HQ items moved to Administrative Services).
   "Procurement",
   "Tax",
-  "Technical Services",
+  // Renamed from "Technical Services" in the same workbook update.
+  "Technical Services Group",
 ];
