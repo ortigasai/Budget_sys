@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { api } from "../api/client";
 import { SearchableSelect } from "./SearchableSelect";
+import { RequestAccessForm } from "./RequestAccessForm";
 
 // Notes_7: labels follow the "Role" tab of the real "Budgeting System_Employee
 // List" file exactly.
@@ -49,6 +50,7 @@ export function RoleSwitcher() {
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [quickUserId, setQuickUserId] = useState("");
+  const [requestingAccess, setRequestingAccess] = useState(false);
 
   const doLogin = async (loginEmail: string, loginPassword: string) => {
     const res = await api.post<{ id: string; token: string }>("/auth/login", {
@@ -106,6 +108,8 @@ export function RoleSwitcher() {
     }
   };
 
+  if (requestingAccess) return <RequestAccessForm ownEmail={email} onBack={() => setRequestingAccess(false)} />;
+
   return (
     <div className="flex w-full flex-col gap-3">
       {roleAssignedUsers.length > 0 && (
@@ -139,6 +143,12 @@ export function RoleSwitcher() {
           {submitting ? "Logging in…" : "Log in"}
         </button>
       </form>
+      <div className="text-center text-xs text-slate-500">
+        No access yet?{" "}
+        <button type="button" onClick={() => setRequestingAccess(true)} className="font-semibold text-emerald-800 hover:underline">
+          Request access
+        </button>
+      </div>
     </div>
   );
 }

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api2 } from "../../api/client";
 import { useFiscalYear } from "../../lib/fiscalCycle";
+import { UsedIn } from "./UsedIn";
 
 interface GaePastYear {
   fiscalYear: number;
@@ -62,7 +63,11 @@ export function GaePastDataImportTab() {
       <div className="space-y-3 rounded-lg border border-slate-200 bg-white p-3 shadow-sm">
         <div className="text-sm">
           <div className="font-semibold text-slate-700">Upload GAE Past Years Workbook</div>
-          <div className="text-xs text-slate-500">
+          <UsedIn>
+            <div>Module 4 · Budget Report &amp; Analysis › GAE › Last Year Comparisons: last year's actuals.</div>
+            <div>Module 4 · Budget Report &amp; Analysis › GAE › 5-Year Trend: the closed years' actuals and budgets.</div>
+          </UsedIn>
+          <div className="mt-1 text-xs text-slate-500">
             Loads closed years' GAE actuals (monthly columns such as 2022-01, 2023A-01) and budgets (2023B-01 and later) from the workbook. Each year in the file replaces what was loaded before for that year. Columns for the current year ({forecastYear}) are skipped, so live SAP data is never overwritten.
           </div>
         </div>

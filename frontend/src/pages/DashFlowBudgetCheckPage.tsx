@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api2 } from "../api/client";
 import { PageHeader } from "../components/PageHeader";
+import { useFeatureToggles } from "../lib/featureToggles";
 
 interface DashFlowTicketOut {
   id: number;
@@ -29,14 +30,14 @@ function peso(n: number) {
 // Phase 2/3 page. Restricted to SBU Finance Officers (own SBU only) plus the
 // Budget Officer (all SBUs), enforced server-side; this page shows whatever
 // GET /dash-flow/tickets returns rather than re-deriving access here.
-// Switched off for everyone for now - the menu entry stays visible for SBU
-// Finance members, but the page shows this notice and the API refuses every
-// request (see backend-py/app/routers/dash_flow.py's DASH_FLOW_ENABLED). Set
-// both to true to restore it.
-const DASH_FLOW_ENABLED = false;
-
+// Off until switched on under Admin Console > Hidden Menus ("dashFlow") - the
+// menu entry stays visible for SBU Finance members, but the page shows this
+// notice and the API refuses every request (backend-py's dash_flow.py checks
+// the same switch).
 export function DashFlowBudgetCheckPage() {
-  if (!DASH_FLOW_ENABLED) {
+  const { isOn, isLoading } = useFeatureToggles();
+  if (isLoading) return null;
+  if (!isOn("dashFlow")) {
     return (
       <div className="space-y-4">
         <PageHeader subtitle="Dash Flow Budget Check is temporarily unavailable." />

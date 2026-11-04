@@ -7,6 +7,7 @@ import { SortableHeader } from "../../components/SortableHeader";
 import { ColumnFilterCell, FilterStatus } from "../../components/ColumnFilters";
 import { useColumnFilters } from "../../lib/useColumnFilters";
 import { useTableSort } from "../../lib/useTableSort";
+import { UsedIn } from "./UsedIn";
 
 interface RoleAssignment {
   id: string;
@@ -19,7 +20,7 @@ interface RoleAssignment {
 // Head and SBU or Division Head aren't assigned here: the requester picks them
 // from the list when submitting. Tiered approvers (BCA Head / CFO / CEO) appear
 // once each; SBU Finance and SBU Head roles are assigned in SBU Roles instead.
-const ROLE_TYPES = [
+export const ROLE_TYPES = [
   "HR_ANALYST",
   "CENTRALIZED_BUDGET_PREPARER",
   "CENTRALIZED_DEPARTMENT_HEAD",
@@ -130,7 +131,12 @@ export function RoleAssignmentsTab() {
       <div className="flex flex-wrap items-center gap-3 rounded-lg border border-slate-200 bg-white p-3 shadow-sm">
         <div className="text-sm">
           <div className="font-semibold text-slate-700">Upload Employee List</div>
-          <div className="text-xs text-slate-500">Refreshes the employees available above and their departments (column J) from an updated roster file. Matches by Id Number, so existing users keep their email/login.</div>
+          <UsedIn>
+            <div>All modules: who can log in (including the quick-login picker) and each person's department.</div>
+            <div>Admin Console › User Access › Role Assignments and Access Control: the employees you can pick, plus the roles listed in the file's Role column.</div>
+            <div>Approver and "Reassign to" pickers across the app.</div>
+          </UsedIn>
+          <div className="mt-1 text-xs text-slate-500">Refreshes the employees available above and their departments (column J) from an updated roster file. Matches by Id Number, so existing users keep their email/login.</div>
         </div>
         <label className="cursor-pointer rounded bg-emerald-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-600">
           {uploadMutation.isPending ? "Uploading…" : "Upload Employee List (.xlsx)"}

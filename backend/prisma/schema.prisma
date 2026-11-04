@@ -214,6 +214,7 @@ model Department {
   visibleExpenseLineItems ExpenseLineItem[] @relation("VisibleToDepartment")
   additionalHeadcountRequests AdditionalHeadcountRequest[]
   forecastSubmissions    ForecastSubmission[]
+  accessRequests         AccessRequest[]
 }
 
 // Business unit / legal entity (OCC, OCLP, OCLP Project, OLC, OLC Project,
@@ -1194,4 +1195,48 @@ model CorporateAllocation {
   setAt           DateTime        @default(now())
 
   @@unique([fiscalYear, requestCategory, sbu])
+}
+
+// Admin Console > Hidden Menus: on/off switches for parts of the app that are
+// built but not open yet (see lib/featureToggles.ts for the list). A key with
+// no row is off.
+model FeatureToggle {
+  key         String   @id
+  enabled     Boolean  @default(false)
+  updatedById String?
+  updatedAt   DateTime @updatedAt
+}
+
+// Login page > "Request access": someone with no account asks for one (for
+// themselves or for another person); it lands in Admin Console > Access
+// Requests, where the Budget Officer approves (creates the account) or
+// disapproves it. No password - they sign in through SSO.
+model AccessRequest {
+  id             String      @id @default(cuid())
+  // "SELF" | "OTHER"
+  requestFor     String
+  email          String
+  // Full name - becomes the account's name on approval ("First M. Surname").
+  // Nullable only for requests filed before these were added.
+  firstName      String?
+  middleInitial  String?
+  lastName       String?
+  username       String
+  departmentId   String
+  department     Department  @relation(fields: [departmentId], references: [id])
+  // Who filed it when requestFor = "OTHER" (null for SELF - that's the
+  // person themselves). requesterEmail is no longer asked for.
+  requesterEmail String?
+  requesterName  String?
+  // "PENDING" | "APPROVED" | "DISAPPROVED"
+  status         String      @default("PENDING")
+  decidedById    String?
+  decidedAt      DateTime?
+  decisionNote   String?
+  // The account created (or matched) on approval.
+  createdUserId  String?
+  createdAt      DateTime    @default(now())
+
+  @@index([status, createdAt])
+  @@index([email])
 }

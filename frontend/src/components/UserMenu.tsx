@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { PHASES, canUseTransfersModule } from "../lib/phases";
+import { useFeatureToggles } from "../lib/featureToggles";
 
 // Compact account menu for a top bar's upper-right corner: click the name to
 // open a list of the 4 phases (to jump straight to any built one) and "Log
@@ -11,6 +12,7 @@ export function UserMenu({ dark = false }: { dark?: boolean }) {
   const { currentUser, hasRole, logout } = useAuth();
   const location = useLocation();
   const isBudgetOfficer = hasRole("BUDGET_OFFICER");
+  const { isOn } = useFeatureToggles();
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -47,7 +49,7 @@ export function UserMenu({ dark = false }: { dark?: boolean }) {
           {!isAtPhaseMenu && (
             <div className="border-b border-slate-100 py-1">
               {PHASES.map((phase) =>
-                phase.number === 3 && !canUseTransfersModule(hasRole) ? null : phase.to ? (
+                phase.number === 3 && !canUseTransfersModule(hasRole, isOn("transfersModule")) ? null : phase.to ? (
                   <Link key={phase.number} to={phase.to} onClick={() => setOpen(false)} className="block px-3 py-1.5 text-left text-sm text-slate-600 hover:bg-slate-50">
                     {phase.title}
                   </Link>

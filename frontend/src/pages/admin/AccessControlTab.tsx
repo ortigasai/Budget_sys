@@ -27,7 +27,7 @@ interface GroupInfo {
   label: string;
   members: Member[];
 }
-interface AccessControlData {
+export interface AccessControlData {
   matrix: MatrixRow[];
   defaults: MatrixRow[];
   groups: GroupInfo[];
@@ -36,8 +36,13 @@ interface AccessControlData {
 const COLUMNS = ["CD", "NCD", "MC", "SF", "NPC"] as const;
 
 const memberValue = (m: Member, key: string) => (key === "name" ? m.name : key === "email" ? m.email : m.scope);
-const SCOPED_GROUPS = ["CD", "NCD", "SF", "NPC"];
-const scopeLabel = (group: string) => (group === "SF" ? "SBU" : group === "NPC" ? "NPC SBU" : "Department");
+export const SCOPED_GROUPS = ["CD", "NCD", "SF", "NPC"];
+// Fixed scope choices for the SBU-scoped groups - the workbook's own labels
+// (SF is matched upper-cased against the Sbu enum, NPC via backend's
+// NPC_GROUP_SCOPE_TO_SBU).
+export const SF_SCOPES = ["Corporate", "Estates", "Malls", "Offices", "Residential"];
+export const NPC_SCOPES = ["Malls", "Offices", "Estates", "Residential", "Leisure", "Corporate - IT", "Corporate - HR", "Corporate - Admin"];
+export const scopeLabel = (group: string) => (group === "SF" ? "SBU" : group === "NPC" ? "NPC SBU" : "Department");
 
 // Table order and titles, following the Module titles of the Budget System
 // workbook. "sbu" rows are the merged SBU Budget (Upload Template) rows built
@@ -101,8 +106,22 @@ export function AccessControlTab() {
   const [email, setEmail] = useState("");
   const selectedUser = users.find((u) => u.id === userId);
 
+  const { data: departments = [] } = useQuery({
+    queryKey: ["admin", "departments"],
+    queryFn: async () => (await api.get<{ id: string; name: string }[]>("/admin/departments")).data,
+  });
+
   const current = data?.groups.find((g) => g.group === group);
   const allMembers = useMemo(() => current?.members ?? [], [current]);
+  // Department / SBU dropdown choices for the selected group - plus any
+  // scope already used in that group (some come from the workbook and aren't
+  // in the Department list), so existing values stay pickable.
+  const scopeOptions = useMemo(() => {
+    const base = group === "SF" ? SF_SCOPES : group === "NPC" ? NPC_SCOPES : departments.map((d) => d.name);
+    const used = allMembers.map((m) => m.scope).filter(Boolean);
+    const all = [...new Set([...base, ...used])];
+    return group === "SF" || group === "NPC" ? all : all.sort((a, b) => a.localeCompare(b));
+  }, [group, departments, allMembers]);
   const { filtered: members, filters, setFilter, clearFilters, activeCount } = useColumnFilters(allMembers, memberValue);
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ["admin", "access-control"] });
@@ -256,7 +275,10 @@ export function AccessControlTab() {
           {data.groups.map((g) => (
             <button
               key={g.group}
-              onClick={() => setGroup(g.group)}
+              onClick={() => {
+                setGroup(g.group);
+                setScope("");
+              }}
               className={`rounded-full px-3 py-1 text-xs font-medium ${g.group === group ? "bg-emerald-700 text-white" : "bg-slate-100 text-slate-600 hover:bg-emerald-50"}`}
             >
               {g.group} · {g.members.length}
@@ -273,8 +295,11 @@ export function AccessControlTab() {
               options={users.map((u) => ({ value: u.id, label: u.name, sublabel: u.email }))}
               value={userId}
               onChange={(v) => {
+                const picked = users.find((u) => u.id === v);
                 setUserId(v);
-                setEmail(users.find((u) => u.id === v)?.email ?? "");
+                setEmail(picked?.email ?? "");
+                // Department-scoped groups: start from the employee's own department.
+                if ((group === "CD" || group === "NCD") && picked?.department?.name) setScope(picked.department.name);
               }}
             />
           </div>
@@ -285,10 +310,10 @@ export function AccessControlTab() {
           {SCOPED_GROUPS.includes(group) && (
             <div className="w-64">
               <label className="mb-1 block text-xs font-medium text-slate-500">{scopeLabel(group)}</label>
-              <input value={scope} onChange={(e) => setScope(e.target.value)} className="w-full rounded border border-slate-300 px-2 py-2 text-sm" />
+              <SearchableSelect placeholder={`Select ${scopeLabel(group) === "Department" ? "a department" : "an SBU"}…`} options={scopeOptions.map((s) => ({ value: s, label: s }))} value={scope} onChange={setScope} />
             </div>
           )}
-          <button onClick={() => addMutation.mutate()} disabled={!userId || !email.trim() || addMutation.isPending} className="rounded bg-emerald-700 px-3 py-2 text-xs font-medium text-white hover:bg-emerald-600 disabled:opacity-50">
+          <button onClick={() => addMutation.mutate()} disabled={!userId || !email.trim() || (SCOPED_GROUPS.includes(group) && !scope) || addMutation.isPending} className="rounded bg-emerald-700 px-3 py-2 text-xs font-medium text-white hover:bg-emerald-600 disabled:opacity-50">
             Add
           </button>
         </div>

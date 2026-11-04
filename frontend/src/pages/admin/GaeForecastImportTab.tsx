@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../../api/client";
 import { useFiscalYear } from "../../lib/fiscalCycle";
+import { UsedIn } from "./UsedIn";
 
 interface ForecastUploadResult {
   created: number;
@@ -60,7 +61,12 @@ export function GaeForecastImportTab() {
       <div className="space-y-3 rounded-lg border border-slate-200 bg-white p-3 shadow-sm">
         <div className="text-sm">
           <div className="font-semibold text-slate-700">Upload GAE Forecast Workbook - 2026 only</div>
-          <div className="text-xs text-slate-500">
+          <UsedIn>
+            <div>Module 1 · Annual Budget Setting › Forecast › GAE: each department's Approved Budget, monthly Actuals and Remaining Months Forecast.</div>
+            <div>Module 1 · Annual Budget Setting › Home: each department's budget cap (Cap &amp; Pool cards), which is computed from these figures.</div>
+            <div>Module 4 · Budget Report &amp; Analysis › GAE: the Forecast figures in the comparisons.</div>
+          </UsedIn>
+          <div className="mt-1 text-xs text-slate-500">
             One workbook covering every department (its "Upload Template" sheet): Approved Budget, the monthly Actuals, YTD Actuals and the Remaining Months Forecast per expense line item. From 2027, Actuals sync from SAP and each department enters or uploads its own forecast on the Forecast page. Each upload replaces the year's figures: rows that match the catalog are imported (new rows created, existing ones updated), GAE lines not in the file are cleared to zero, and rows that don't match are listed below with the reason. Results show on the Forecast page.
           </div>
         </div>

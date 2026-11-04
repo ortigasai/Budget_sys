@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api2 } from "../../api/client";
 import { useFiscalYear } from "../../lib/fiscalCycle";
+import { UsedIn } from "./UsedIn";
 
 interface NpcMonitoringStatus {
   fiscalYear: number;
@@ -61,7 +62,12 @@ export function NpcMonitoringImportTab() {
       <div className="space-y-3 rounded-lg border border-slate-200 bg-white p-3 shadow-sm">
         <div className="text-sm">
           <div className="font-semibold text-slate-700">Upload NPC Monitoring Workbook</div>
-          <div className="text-xs text-slate-500">
+          <UsedIn>
+            <div>Module 1 · Annual Budget Setting › Forecast › NPC: the NPC Budget and IO Actuals each SBU forecasts from.</div>
+            <div>Module 2 · Budget Utilization Tracking › Non-Project Capex (NPC): NPC Budget, IO Budget and IO Actual per SBU.</div>
+            <div>Module 4 · Budget Report &amp; Analysis › NPC › NPC Report.</div>
+          </UsedIn>
+          <div className="mt-1 text-xs text-slate-500">
             Replaces every NPC Budget/IO Budget/IO Actual figure for the fiscal year below with what's in the uploaded workbook - the same "NPC Monitoring" file already emailed around monthly (a "Monitoring" tab, plus one tab per SBU). This overrides whatever was uploaded before for that year.
           </div>
         </div>

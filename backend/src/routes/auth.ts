@@ -32,13 +32,19 @@ authRouter.get("/users", async (_req, res) => {
   });
 
   const matrix = await getEffectiveMatrix();
+  // Accounts created by approving a login-page access request.
+  const approvedRequestUserIds = new Set(
+    (await prisma.accessRequest.findMany({ where: { status: "APPROVED", createdUserId: { not: null } }, select: { createdUserId: true } })).map((r) => r.createdUserId)
+  );
   res.json(
     users.map((u) => ({
       id: u.id,
       name: u.name,
       email: u.email,
-      // True for people on the Employee List (vs. accounts created only from other workbooks) - the quick-login picker lists these.
-      isEmployee: u.employeeIdNumber !== null,
+      // True for people on the Employee List or approved through Access
+      // Requests (vs. accounts created only from other workbooks) - the
+      // quick-login picker lists these.
+      isEmployee: u.employeeIdNumber !== null || approvedRequestUserIds.has(u.id),
       department: u.department ? { id: u.department.id, name: u.department.name, sbu: u.department.sbu } : null,
       groups: u.groupMemberships.map((m) => ({ group: m.group, scope: m.scope })),
       access: u.groupMemberships.length > 0 ? computeAccess(u.groupMemberships.map((m) => m.group), matrix) : null,
@@ -98,6 +104,66 @@ authRouter.post("/login", async (req, res) => {
       ...user.sbuRoleAssignments.map((r) => ({ roleType: r.roleType, sbu: r.sbu })),
     ],
   });
+});
+
+// ---- Login page > "Request access" (no login needed) ----
+// Department dropdown for the request form - names only.
+authRouter.get("/departments", async (_req, res) => {
+  const departments = await prisma.department.findMany({ select: { id: true, name: true }, orderBy: { name: "asc" } });
+  res.json(departments);
+});
+
+const accessRequestSchema = z.object({
+  requestFor: z.enum(["SELF", "OTHER"]),
+  // Required when requesting for another user (checked below).
+  requesterName: z.string().trim().max(200).optional().nullable(),
+  email: z.string().trim().toLowerCase().email("Enter a valid email."),
+  firstName: z.string({ required_error: "Enter the first name." }).trim().min(1, "Enter the first name.").max(100),
+  // Optional - not everyone has one. Stored without the period ("M").
+  middleInitial: z
+    .string()
+    .optional()
+    .nullable()
+    .transform((v) => (v ?? "").replace(/[.\s]/g, "").toUpperCase() || null)
+    .refine((v) => v === null || v.length <= 3, "Middle initial should be at most 3 letters."),
+  lastName: z.string({ required_error: "Enter the surname." }).trim().min(1, "Enter the surname.").max(100),
+  username: z.string({ required_error: "Enter a username." }).trim().min(1, "Enter a username.").max(200),
+  departmentId: z.string().min(1, "Choose a department."),
+});
+
+// Lands in Admin Console > Access Requests for the Budget Officer to approve
+// or disapprove.
+authRouter.post("/access-requests", async (req, res) => {
+  const parsed = accessRequestSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.issues[0]?.message ?? "Check the form and try again." });
+    return;
+  }
+  const { requestFor, email, firstName, middleInitial, lastName, username, departmentId } = parsed.data;
+  const requesterName = requestFor === "OTHER" ? parsed.data.requesterName || null : null;
+  if (requestFor === "OTHER" && !requesterName) {
+    res.status(400).json({ error: "Enter your name." });
+    return;
+  }
+
+  const department = await prisma.department.findUnique({ where: { id: departmentId } });
+  if (!department) {
+    res.status(400).json({ error: "Choose a department." });
+    return;
+  }
+  if (await prisma.user.findUnique({ where: { email } })) {
+    res.status(409).json({ error: `${email} already has access to the Budgeting System.` });
+    return;
+  }
+  if (await prisma.accessRequest.findFirst({ where: { email, status: "PENDING" } })) {
+    res.status(409).json({ error: `There is already a pending access request for ${email}.` });
+    return;
+  }
+
+  const created = await prisma.accessRequest.create({
+    data: { requestFor, requesterName, email, firstName, middleInitial, lastName, username, departmentId },
+  });
+  res.status(201).json({ id: created.id });
 });
 
 authRouter.get("/me", async (req, res) => {

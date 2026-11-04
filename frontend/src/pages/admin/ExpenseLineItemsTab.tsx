@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type ExpenseLineItem } from "../../api/client";
+import { UsedIn } from "./UsedIn";
 
 export function ExpenseLineItemsTab() {
   const queryClient = useQueryClient();
@@ -89,8 +90,11 @@ export function ExpenseLineItemsTab() {
 
       <div className="flex flex-wrap items-center gap-3 rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
         <div className="text-sm">
-          <div className="font-semibold text-slate-700">Upload Template</div>
-          <div className="text-xs text-slate-500">Overrides the standard catalog with the uploaded file — added/changed rows are applied, and existing rows missing from the file are removed (unless a request already references them).</div>
+          <div className="font-semibold text-slate-700">Upload Template — Expense Line Items</div>
+          <UsedIn>
+            <div>Module 1 · Annual Budget Setting › New Request › General &amp; Administrative Expenses (GAE): the Expense Category / Expense Line Item choices, their GL account and cost center, and which Centralized Department reviews and approves each one.</div>
+          </UsedIn>
+          <div className="mt-1 text-xs text-slate-500">Overrides the standard catalog with the uploaded file — added/changed rows are applied, and existing rows missing from the file are removed (unless a request already references them).</div>
           {lastUploadLoaded && (
             <div className="mt-1 text-xs text-slate-500">
               {lastUpload

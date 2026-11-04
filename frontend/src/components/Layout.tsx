@@ -6,11 +6,13 @@ import { api, downloadFile, type BudgetRequest, type Department } from "../api/c
 import { useAuth } from "../context/AuthContext";
 import { SBU_TYPES } from "./SbuTypeSwitch";
 import { RoleSwitcher } from "./RoleSwitcher";
+import { useFeatureToggles } from "../lib/featureToggles";
 import { UserMenu } from "./UserMenu";
 import { phaseForPath } from "../lib/phases";
 import { sfSbus } from "../lib/groupScope";
 import { useFiscalYear } from "../lib/fiscalCycle";
 import { ADMIN_GROUPS, ADMIN_TABS } from "../pages/admin/AdminConsolePage";
+import { useAccessRequests } from "../pages/admin/AccessRequestsTab";
 import { AdminConsoleSearch } from "./AdminConsoleSearch";
 
 const linkClass = ({ isActive }: { isActive: boolean }) => `flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${isActive ? "bg-emerald-700 text-white shadow-sm shadow-emerald-700/30" : "text-slate-600 hover:bg-emerald-50 hover:text-emerald-900"}`;
@@ -43,9 +45,6 @@ const ICONS = {
 
 // Budget Report & Analysis's own menu: each item is a view of the same Reports page
 // (or the separate 5-Year Trend page). Active state comes from the URL, not NavLink's path match.
-// Turn back on to show the Manpower Budget sidebar entry again. The module and its routes are kept.
-const SHOW_MANPOWER_BUDGET_NAV = false;
-
 const REPORT_GROUPS: { title: string; items: { id: string; label: string; to: string }[] }[] = [
   {
     title: "GAE",
@@ -470,6 +469,8 @@ function AdminConsoleSidebarNav() {
   const [searchParams] = useSearchParams();
   const tabParam = searchParams.get("tab");
   const activeTab = ADMIN_TABS.find((t) => t.id === tabParam)?.id ?? "expense-items";
+  const { data: accessRequests = [] } = useAccessRequests();
+  const pendingAccessRequests = accessRequests.filter((r) => r.status === "PENDING").length;
 
   return (
     <>
@@ -482,6 +483,9 @@ function AdminConsoleSidebarNav() {
             {tabs.map((t) => (
               <Link key={t.id} to={`/admin?tab=${t.id}`} className={linkClass({ isActive: activeTab === t.id })}>
                 {t.label}
+                {t.id === "access-requests" && pendingAccessRequests > 0 && (
+                  <span className="ml-auto rounded-full bg-red-600 px-1.5 text-[10px] font-semibold leading-4 text-white">{pendingAccessRequests}</span>
+                )}
               </Link>
             ))}
           </div>
@@ -493,6 +497,7 @@ function AdminConsoleSidebarNav() {
 
 export function Layout() {
   const { currentUser, hasRole, hasSbuRole, gate } = useAuth();
+  const { isOn } = useFeatureToggles();
   const location = useLocation();
   // The root route is the post-login phase menu (PhaseMenuPage), not inside
   // any one phase yet - the phase-specific nav below doesn't make sense
@@ -762,8 +767,8 @@ export function Layout() {
                       </span>
                     </NavItem>
                   )}
-                  {/* Manpower Budget is hidden for now (the module is kept, for later). */}
-                  {SHOW_MANPOWER_BUDGET_NAV && (isHrAnalyst || isBudgetOfficer || isHrHead) &&
+                  {/* Hidden until switched on under Admin Console > Hidden Menus (the module is kept). */}
+                  {isOn("manpowerBudget") && (isHrAnalyst || isBudgetOfficer || isHrHead) &&
                     (isHrAnalyst ? (
                       <CollapsibleNavGroup to="/manpower" icon="manpower" label="Manpower Budget" defaultOpen>
                         <ManpowerSubMenu />

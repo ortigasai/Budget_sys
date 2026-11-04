@@ -2,6 +2,7 @@ import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { PHASES, canUseTransfersModule } from "../lib/phases";
 import { useAuth } from "../context/AuthContext";
+import { useFeatureToggles } from "../lib/featureToggles";
 import { api2 } from "../api/client";
 
 // Post-login landing screen (Functional Spec §1.1's four phases). Phase 1-3
@@ -17,6 +18,7 @@ export function PhaseMenuPage() {
   // the /admin route itself (App.tsx) has no matching access bypass, so
   // showing this tile to them would just be a dead-end link.
   const isBudgetOfficer = hasRole("BUDGET_OFFICER");
+  const { isOn } = useFeatureToggles();
   const { data: reportAccess } = useQuery({
     queryKey: ["reports", "my-access"],
     queryFn: async () => (await api2.get<{ hasAccess: boolean }>("/reports/my-access")).data,
@@ -33,7 +35,7 @@ export function PhaseMenuPage() {
           // Module 2 for someone whose group grants Dash Flow but none of the Utilization pages lands on Dash Flow instead.
           const phase = basePhase.number === 2 && currentUser?.access && !currentUser.access["util.overview"] && !currentUser.access["util.reconciliation"] && !currentUser.access["util.npc"] && currentUser.access["util.dashflow"] ? { ...basePhase, to: "/dash-flow" } : basePhase;
           const restricted = phase.number === 4 && !hasReportAccess;
-          const notYetAvailable = phase.number === 3 && !canUseTransfersModule(hasRole);
+          const notYetAvailable = phase.number === 3 && !canUseTransfersModule(hasRole, isOn("transfersModule"));
           return phase.to && !restricted && !notYetAvailable ? (
             <Link
               key={phase.number}

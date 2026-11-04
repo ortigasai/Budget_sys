@@ -20,6 +20,8 @@ import { GaePastDataImportTab } from "./GaePastDataImportTab";
 import { GaeForecastImportTab } from "./GaeForecastImportTab";
 import { SapSyncStatusTab } from "./SapSyncStatusTab";
 import { AccessControlTab } from "./AccessControlTab";
+import { HiddenMenusTab } from "./HiddenMenusTab";
+import { AccessRequestsTab } from "./AccessRequestsTab";
 
 // Shared with Layout.tsx's AdminConsoleSidebarNav, which renders this same
 // list as real `?tab=` links in the leftmost sidebar, grouped by `group`
@@ -30,10 +32,15 @@ import { AccessControlTab } from "./AccessControlTab";
 // guessed from its label) - "General" is for a tab that's genuinely
 // cross-module (applies to more than one, or the whole app) rather than
 // owned by one.
-export const ADMIN_GROUPS = ["General", "GAE", "DOE", "NPC", "Transfers", "Manpower", "Reports"] as const;
+export const ADMIN_GROUPS = ["User Access", "General", "GAE", "DOE", "NPC", "Transfers", "Manpower", "Reports"] as const;
 export type AdminGroup = (typeof ADMIN_GROUPS)[number];
 
 export const ADMIN_TABS = [
+  // Who can get in and what they can do - kept together in one section.
+  // Access Requests is the inbox for the login page's "Request access" form.
+  { id: "access-requests", label: "Access Requests", group: "User Access", keywords: "access request inbox new user account approve disapprove login sso" },
+  { id: "roles", label: "Role Assignments", group: "User Access", keywords: "role assignment employee list upload approver budget officer preparer department head cfo ceo bca" },
+  { id: "access-control", label: "Access Control", group: "User Access", keywords: "access group permission member cd ncd mc sf npc page access" },
   { id: "budget-cycle", label: "Budget Cycle", group: "General", keywords: "target calendar year fiscal year cycle" },
   { id: "due-dates", label: "Stage Due Dates", group: "General", keywords: "deadline due date stage request creation authorization finalize forecast" },
   // Feeds Forecast GAE/DOE, Manpower, Utilization/Transfer/Dash Flow/Reports
@@ -44,8 +51,8 @@ export const ADMIN_TABS = [
   // Classifies Forecast rows across GAE/DOE/NPC/Revenue - not one module's.
   { id: "forecast-categories", label: "Forecast Categories", group: "General", keywords: "forecast category mapping doe npc revenue gl account cost center" },
   { id: "reason-codes", label: "Reason Codes", group: "General", keywords: "budget cut return reason" },
-  { id: "roles", label: "Role Assignments", group: "General", keywords: "role assignment employee list upload approver budget officer preparer department head cfo ceo bca" },
-  { id: "access-control", label: "Access Control", group: "General", keywords: "access group permission member cd ncd mc sf npc page access" },
+  // Switches for Manpower Budget, Dash Flow and Transfers - spans modules.
+  { id: "hidden-menus", label: "Hidden Menus", group: "General", keywords: "hidden menu hide unhide feature toggle manpower dash flow transfers module 3 enable disable" },
   // Assigns each Department to an NPC SBU, which also scopes Utilization's
   // NPC view - spans two modules, not owned by either alone.
   { id: "department-sbu", label: "Department SBU", group: "General", keywords: "department sbu npc utilization" },
@@ -84,6 +91,8 @@ export function AdminConsolePage() {
       {tab === "growth-rate" && <GrowthRateTab />}
       {tab === "thresholds" && <ThresholdsTab />}
       {tab === "reason-codes" && <ReasonCodesTab />}
+      {tab === "hidden-menus" && <HiddenMenusTab />}
+      {tab === "access-requests" && <AccessRequestsTab />}
       {tab === "roles" && <RoleAssignmentsTab />}
       {tab === "access-control" && <AccessControlTab />}
       {tab === "sbu-roles" && <SbuRoleAssignmentsTab />}

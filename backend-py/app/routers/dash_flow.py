@@ -18,6 +18,7 @@ from sqlmodel import Session, select
 
 from ..auth import AuthedUser, get_current_user
 from ..db import get_session
+from ..feature_toggles import feature_enabled
 from ..models_phase1 import User
 from ..models_phase3 import CostCenter, DashFlowTicket
 from ..services.budget_balance import compute_gl_cc_available
@@ -26,14 +27,12 @@ from ..services.dash_flow_adapter import fetch_pending_tickets, notify_ticket_cl
 router = APIRouter(prefix="/dash-flow", tags=["dash-flow"])
 
 
-# Dash Flow Budget Check is switched off for everyone for now (the page stays
-# visible in SBU Finance members' menu, but nothing behind it works). Flip to
-# True to restore the normal access rules below.
-DASH_FLOW_ENABLED = False
-
-
-def _require_dash_flow_access(user: AuthedUser = Depends(get_current_user)) -> AuthedUser:
-    if not DASH_FLOW_ENABLED:
+# Dash Flow Budget Check is off for everyone until it's switched on under
+# Admin Console > Hidden Menus ("dashFlow") - the page stays visible in SBU
+# Finance members' menu, but nothing behind it works. When on, the normal
+# access rules below apply.
+def _require_dash_flow_access(user: AuthedUser = Depends(get_current_user), session: Session = Depends(get_session)) -> AuthedUser:
+    if not feature_enabled(session, "dashFlow"):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Dash Flow Budget Check is temporarily unavailable.")
     if user.has_role("BUDGET_OFFICER") or user.has_sbu_role("BU_FINANCE_OFFICER") or user.can("util.dashflow", False):
         return user

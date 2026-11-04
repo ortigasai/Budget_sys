@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api2, SBU_OPTIONS, type CcGlOptions, type CostCenterEntry, type Sbu } from "../../api/client";
+import { UsedIn } from "./UsedIn";
 
 // Spec item 11: "Change the dropdown list for the CC and GL... Allow this
 // to be edited by the Budget Officer in the Admin Console." Same "upload
@@ -51,7 +52,12 @@ export function CcGlCodesTab() {
       <div className="flex flex-wrap items-center gap-3 rounded-lg border border-slate-200 bg-white p-3 shadow-sm">
         <div className="text-sm">
           <div className="font-semibold text-slate-700">Upload Cost Center / GL Account Lists</div>
-          <div className="text-xs text-slate-500">
+          <UsedIn>
+            <div>Module 1 · Annual Budget Setting › New Request › Non-Project Capex (NPC): the Cost Center and GL Account dropdowns.</div>
+            <div>Module 2 · Budget Utilization Tracking › Dash Flow Budget Check: which SBU's queue each cost center's tickets go to (the SBU column below).</div>
+            <div>Module 3 · Budget Transfer &amp; Reallocation › Transfers: the From / To Cost Center and GL Account dropdowns.</div>
+          </UsedIn>
+          <div className="mt-1 text-xs text-slate-500">
             Replaces both lists from a workbook shaped like "Budgeting System_CC-GL" - a "PCCC" sheet (Cost Center, Name) and a "COA" sheet (GL Account Code, Account Name). Added/changed rows are applied; rows missing from the file are removed.
           </div>
         </div>

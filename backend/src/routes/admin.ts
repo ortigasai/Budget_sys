@@ -8,13 +8,14 @@ import { requireAuth, requireRole, requireRoleOrAccess } from "../middleware/aut
 import { HttpError } from "../httpError";
 import { overrideExpenseLineItemsFromUpload } from "../services/expenseLineItemService";
 import { parseForecastTemplate, syncHistoricalActualsFromSap } from "../services/historicalActualsService";
-import { applyEmployeeImport, parseEmployeesBuffer } from "../lib/employeeImport";
+import { applyEmployeeImport, parseEmployeesBuffer, testPasswordHash } from "../lib/employeeImport";
 import { CORE_CENTRALIZED_DEPARTMENT_NAMES } from "../lib/coreDepartments";
 import { getFiscalCycle } from "../lib/fiscalCycle";
 import { finalizationViewScope, inFinalizationScope } from "../lib/groupScope";
 import { NPC_SBU_VALUES } from "../lib/npcSbu";
 import { getSyncStatus, startBackgroundSync } from "../lib/backgroundSync";
 import { ACCESS_GROUPS, ACCESS_MATRIX, getEffectiveMatrix, invalidateAccessMatrix } from "../lib/accessControl";
+import { FEATURE_TOGGLE_KEYS, FEATURE_TOGGLES } from "../lib/featureToggles";
 
 export const adminRouter = Router();
 
@@ -752,6 +753,126 @@ adminRouter.put(
       create: { stage, dueDate: new Date(dueDate), configuredBy: req.user!.id },
     });
     res.json(updated);
+  })
+);
+
+// ---- Hidden Menus (feature toggles) ----
+// Read by every logged-in user's sidebar/guards, so any authenticated user
+// can list them; only the Budget Officer switches them.
+adminRouter.get(
+  "/feature-toggles",
+  asyncHandler(async (_req, res) => {
+    const rows = await prisma.featureToggle.findMany();
+    const byKey = new Map(rows.map((r) => [r.key, r]));
+    const editorIds = rows.map((r) => r.updatedById).filter((id): id is string => !!id);
+    const editors = new Map((await prisma.user.findMany({ where: { id: { in: editorIds } }, select: { id: true, name: true } })).map((u) => [u.id, u.name]));
+    res.json(
+      FEATURE_TOGGLES.map((t) => {
+        const row = byKey.get(t.key);
+        return { ...t, enabled: row?.enabled ?? false, updatedAt: row?.updatedAt ?? null, updatedBy: row?.updatedById ? (editors.get(row.updatedById) ?? null) : null };
+      })
+    );
+  })
+);
+
+adminRouter.put(
+  "/feature-toggles/:key",
+  requireRole(RoleType.BUDGET_OFFICER),
+  asyncHandler(async (req, res) => {
+    const key = z.enum(FEATURE_TOGGLE_KEYS).parse(req.params.key);
+    const { enabled } = z.object({ enabled: z.boolean() }).parse(req.body);
+    const updated = await prisma.featureToggle.upsert({
+      where: { key },
+      update: { enabled, updatedById: req.user!.id },
+      create: { key, enabled, updatedById: req.user!.id },
+    });
+    res.json(updated);
+  })
+);
+
+// ---- Access Requests (from the login page's "Request access" form) ----
+adminRouter.get(
+  "/access-requests",
+  requireRole(RoleType.BUDGET_OFFICER),
+  asyncHandler(async (_req, res) => {
+    const rows = await prisma.accessRequest.findMany({ include: { department: { select: { id: true, name: true } } }, orderBy: { createdAt: "desc" } });
+    const deciderIds = rows.map((r) => r.decidedById).filter((id): id is string => !!id);
+    const deciders = new Map((await prisma.user.findMany({ where: { id: { in: deciderIds } }, select: { id: true, name: true } })).map((u) => [u.id, u.name]));
+    res.json(rows.map((r) => ({ ...r, fullName: accessRequestFullName(r), decidedBy: r.decidedById ? (deciders.get(r.decidedById) ?? null) : null })));
+  })
+);
+
+const accessDecisionSchema = z.object({ note: z.string().trim().max(500).optional().nullable() });
+
+async function pendingAccessRequest(id: string) {
+  const request = await prisma.accessRequest.findUnique({ where: { id } });
+  if (!request) throw new HttpError(404, "Access request not found.");
+  if (request.status !== "PENDING") throw new HttpError(409, "This request has already been decided.");
+  return request;
+}
+
+// "First M. Surname" - falls back to the username for requests filed before
+// the full-name fields existed.
+function accessRequestFullName(r: { firstName: string | null; middleInitial: string | null; lastName: string | null; username: string }) {
+  if (!r.firstName || !r.lastName) return r.username;
+  return [r.firstName, r.middleInitial ? `${r.middleInitial}.` : null, r.lastName].filter(Boolean).join(" ");
+}
+
+// Approving creates the account (name = the requested full name, in the
+// requested department), along with any role assignments and access-group
+// memberships the Budget Officer picked on the approval screen (both
+// optional - same rows Role Assignments / Access Control would create).
+// Gets the shared testing password like every other account until SSO is
+// connected.
+const accessApprovalSchema = accessDecisionSchema.extend({
+  roles: z.array(z.object({ departmentId: z.string().min(1), roleType: z.nativeEnum(RoleType) })).default([]),
+  groups: z.array(z.object({ group: z.enum(ACCESS_GROUPS), scope: z.string().trim().default("") })).default([]),
+});
+
+adminRouter.post(
+  "/access-requests/:id/approve",
+  requireRole(RoleType.BUDGET_OFFICER),
+  asyncHandler(async (req, res) => {
+    const { note, roles, groups } = accessApprovalSchema.parse(req.body ?? {});
+    const request = await pendingAccessRequest(req.params.id);
+    const memberships = groups.map((g) => ({ group: g.group, scope: g.group === "BCA" || g.group === "MC" ? "" : g.scope }));
+    const missingScope = memberships.find((g) => g.group !== "BCA" && g.group !== "MC" && !g.scope);
+    if (missingScope) throw new HttpError(400, `Choose a department/SBU for the ${missingScope.group} access group.`);
+    const roleDeptIds = [...new Set(roles.map((r) => r.departmentId))];
+    if ((await prisma.department.count({ where: { id: { in: roleDeptIds } } })) !== roleDeptIds.length) throw new HttpError(400, "A role's department was not found.");
+
+    const existing = await prisma.user.findUnique({ where: { email: request.email } });
+    const passwordHash = await testPasswordHash();
+    const result = await prisma.$transaction(async (tx) => {
+      const user =
+        existing ??
+        (await tx.user.create({ data: { name: accessRequestFullName(request), email: request.email, departmentId: request.departmentId, passwordHash } }));
+      if (roles.length > 0) {
+        await tx.roleAssignment.createMany({ data: roles.map((r) => ({ ...r, userId: user.id, assignedById: req.user!.id })), skipDuplicates: true });
+      }
+      if (memberships.length > 0) {
+        await tx.userGroupMembership.createMany({ data: memberships.map((g) => ({ ...g, userId: user.id })), skipDuplicates: true });
+      }
+      return tx.accessRequest.update({
+        where: { id: request.id },
+        data: { status: "APPROVED", decidedById: req.user!.id, decidedAt: new Date(), decisionNote: note || null, createdUserId: user.id },
+      });
+    });
+    res.json(result);
+  })
+);
+
+adminRouter.post(
+  "/access-requests/:id/disapprove",
+  requireRole(RoleType.BUDGET_OFFICER),
+  asyncHandler(async (req, res) => {
+    const { note } = accessDecisionSchema.parse(req.body ?? {});
+    const request = await pendingAccessRequest(req.params.id);
+    const result = await prisma.accessRequest.update({
+      where: { id: request.id },
+      data: { status: "DISAPPROVED", decidedById: req.user!.id, decidedAt: new Date(), decisionNote: note || null },
+    });
+    res.json(result);
   })
 );
 
