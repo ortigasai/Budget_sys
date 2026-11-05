@@ -28,11 +28,15 @@ import { RequireTransfersModule } from "./components/RequireTransfersModule";
 import { ReportsTrendPage } from "./pages/ReportsTrendPage";
 import { NpcReportPage } from "./pages/NpcReportPage";
 import { UploadStatusStack } from "./components/UploadStatusStack";
+import { SsoCallbackPage } from "./pages/SsoCallbackPage";
 
 export default function App() {
   return (
     <>
       <Routes>
+      {/* Microsoft 365 sign-in return URL - outside Layout, which would
+          otherwise show the login card to a signed-out visitor. */}
+      <Route path="auth/callback" element={<SsoCallbackPage />} />
       <Route element={<Layout />}>
         <Route index element={<PhaseMenuPage />} />
         <Route path="phase1" element={<HomePage />} />

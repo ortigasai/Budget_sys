@@ -5,6 +5,9 @@ import { z } from "zod";
 import { prisma } from "../prisma";
 import { JWT_SECRET } from "../middleware/auth";
 import { computeAccess, getEffectiveMatrix } from "../lib/accessControl";
+import { exchangeSsoCode, loginMethods, ssoAuthorizeUrl } from "../lib/sso";
+import { asyncHandler } from "../asyncHandler";
+import { HttpError } from "../httpError";
 
 // No group membership at all (e.g. accounts not listed in the User Management
 // workbook) => access is null, which the frontend/route guards treat as "not
@@ -77,19 +80,37 @@ authRouter.post("/login", async (req, res) => {
   }
   const { email, password } = parsed.data;
 
-  const user = await prisma.user.findUnique({
-    where: { email: email.trim().toLowerCase() },
-    include: { department: true, roleAssignments: { include: { department: true } }, sbuRoleAssignments: true, groupMemberships: true },
-  });
+  // Password / quick login are switched off where only SSO is allowed
+  // (LOGIN_METHODS=sso on the server). Quick login uses this same route.
+  const methods = loginMethods();
+  if (!methods.includes("password") && !methods.includes("quick")) {
+    res.status(403).json({ error: "Sign in with Microsoft 365." });
+    return;
+  }
 
+  const user = await findUserForLogin(email);
   if (!user || !user.passwordHash || !(await bcrypt.compare(password, user.passwordHash))) {
     res.status(401).json({ error: "Invalid email or password." });
     return;
   }
 
-  const token = jwt.sign({ sub: user.id }, JWT_SECRET, { expiresIn: "12h" });
+  res.json(await loginResponse(user));
+});
 
-  res.json({
+const loginUserInclude = { department: true, roleAssignments: { include: { department: true } }, sbuRoleAssignments: true, groupMemberships: true } as const;
+
+async function findUserForLogin(email: string) {
+  return prisma.user.findFirst({
+    where: { email: { equals: email.trim(), mode: "insensitive" } },
+    include: loginUserInclude,
+  });
+}
+
+// Same response for every way of logging in: a JWT (sub = user id) that
+// both backends verify, plus the user's profile.
+async function loginResponse(user: NonNullable<Awaited<ReturnType<typeof findUserForLogin>>>) {
+  const token = jwt.sign({ sub: user.id }, JWT_SECRET, { expiresIn: "12h" });
+  return {
     token,
     id: user.id,
     name: user.name,
@@ -103,8 +124,44 @@ authRouter.post("/login", async (req, res) => {
       })),
       ...user.sbuRoleAssignments.map((r) => ({ roleType: r.roleType, sbu: r.sbu })),
     ],
-  });
+  };
+}
+
+// ---- Login page options + Microsoft 365 sign-in (lib/sso.ts) ----
+authRouter.get("/config", (_req, res) => {
+  res.json({ methods: loginMethods() });
 });
+
+// Where to send the browser to start Microsoft sign-in. `state` is made and
+// kept by the browser, and checked again when it comes back.
+authRouter.get(
+  "/sso/start",
+  asyncHandler(async (req, res) => {
+    if (!loginMethods().includes("sso")) throw new HttpError(403, "Microsoft sign-in isn't enabled here.");
+    const redirectUri = String(req.query.redirectUri ?? "");
+    const state = String(req.query.state ?? "");
+    if (!/^[A-Za-z0-9_-]{16,128}$/.test(state)) throw new HttpError(400, "Invalid sign-in state.");
+    res.json({ url: ssoAuthorizeUrl(redirectUri, state) });
+  })
+);
+
+// The callback page posts the broker's `code` here. Signs in the account
+// whose email matches; with no account, returns the Microsoft identity so the
+// login page can open "Request access" with it filled in.
+authRouter.post(
+  "/sso/callback",
+  asyncHandler(async (req, res) => {
+    if (!loginMethods().includes("sso")) throw new HttpError(403, "Microsoft sign-in isn't enabled here.");
+    const { code } = z.object({ code: z.string().min(1).max(4096) }).parse(req.body ?? {});
+    const profile = await exchangeSsoCode(code);
+    const user = await findUserForLogin(profile.email);
+    if (!user) {
+      res.status(404).json({ error: `${profile.email} doesn't have access to the Budgeting System yet.`, sso: profile });
+      return;
+    }
+    res.json(await loginResponse(user));
+  })
+);
 
 // ---- Login page > "Request access" (no login needed) ----
 // Department dropdown for the request form - names only.

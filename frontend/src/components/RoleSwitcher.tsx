@@ -1,5 +1,7 @@
 import { useState, type FormEvent } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
+import { startSsoLogin } from "../lib/ssoLogin";
 import { useAuth } from "../context/AuthContext";
 import { api } from "../api/client";
 import { SearchableSelect } from "./SearchableSelect";
@@ -50,7 +52,35 @@ export function RoleSwitcher() {
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [quickUserId, setQuickUserId] = useState("");
-  const [requestingAccess, setRequestingAccess] = useState(false);
+  // ?requestAccess=1 - sent here by the Microsoft sign-in callback when the
+  // person has no account yet; the form opens with their Microsoft identity.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [requestingAccess, setRequestingAccess] = useState(() => searchParams.get("requestAccess") === "1");
+  const [ssoStarting, setSsoStarting] = useState(false);
+
+  // Which login options this environment offers (backend LOGIN_METHODS):
+  // local dev - testing dropdown, password and Microsoft 365; server/UAT -
+  // Microsoft 365 only. Until it loads, the dropdown and form show as before.
+  const { data: authConfig } = useQuery({
+    queryKey: ["auth", "config"],
+    queryFn: async () => (await api.get<{ methods: ("quick" | "password" | "sso")[] }>("/auth/config")).data,
+    staleTime: 5 * 60_000,
+  });
+  const methods = authConfig?.methods ?? ["quick", "password"];
+  const showQuick = methods.includes("quick");
+  const showPassword = methods.includes("password");
+  const showSso = methods.includes("sso");
+
+  const signInWithMicrosoft = async () => {
+    setError(null);
+    setSsoStarting(true);
+    try {
+      await startSsoLogin();
+    } catch (err: any) {
+      setError(err.response?.data?.error ?? "Couldn't start Microsoft sign-in.");
+      setSsoStarting(false);
+    }
+  };
 
   const doLogin = async (loginEmail: string, loginPassword: string) => {
     const res = await api.post<{ id: string; token: string }>("/auth/login", {
@@ -108,11 +138,47 @@ export function RoleSwitcher() {
     }
   };
 
-  if (requestingAccess) return <RequestAccessForm ownEmail={email} onBack={() => setRequestingAccess(false)} />;
+  if (requestingAccess) {
+    return (
+      <RequestAccessForm
+        ownEmail={email}
+        onBack={() => {
+          setRequestingAccess(false);
+          if (searchParams.has("requestAccess")) setSearchParams({}, { replace: true });
+        }}
+      />
+    );
+  }
 
   return (
     <div className="flex w-full flex-col gap-3">
-      {roleAssignedUsers.length > 0 && (
+      {showSso && (
+        <div className="flex w-full flex-col gap-2">
+          <button
+            type="button"
+            onClick={signInWithMicrosoft}
+            disabled={ssoStarting || submitting}
+            className="flex w-full items-center justify-center gap-2 rounded border border-slate-300 bg-white px-2 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50 disabled:opacity-50"
+          >
+            <svg aria-hidden="true" viewBox="0 0 21 21" className="h-4 w-4">
+              <rect x="1" y="1" width="9" height="9" fill="#f25022" />
+              <rect x="11" y="1" width="9" height="9" fill="#7fba00" />
+              <rect x="1" y="11" width="9" height="9" fill="#00a4ef" />
+              <rect x="11" y="11" width="9" height="9" fill="#ffb900" />
+            </svg>
+            {ssoStarting ? "Opening Microsoft sign-in…" : "Sign in with Microsoft 365"}
+          </button>
+          {!showQuick && !showPassword && error && <div className="text-xs text-red-600">{error}</div>}
+          {(showQuick || showPassword) && (
+            <div className="flex items-center gap-2 text-xs text-slate-400">
+              <div className="h-px flex-1 bg-slate-200" />
+              or
+              <div className="h-px flex-1 bg-slate-200" />
+            </div>
+          )}
+        </div>
+      )}
+      {showQuick && roleAssignedUsers.length > 0 && (
         <div className="flex w-full flex-col gap-2">
           <div className="w-full text-xs font-semibold tracking-wide text-slate-400">Quick login (testing)</div>
           <SearchableSelect
@@ -127,13 +193,16 @@ export function RoleSwitcher() {
             disabled={submitting}
             hideUntilTyped
           />
-          <div className="flex items-center gap-2 text-xs text-slate-400">
-            <div className="h-px flex-1 bg-slate-200" />
-            or log in
-            <div className="h-px flex-1 bg-slate-200" />
-          </div>
+          {showPassword && (
+            <div className="flex items-center gap-2 text-xs text-slate-400">
+              <div className="h-px flex-1 bg-slate-200" />
+              or log in
+              <div className="h-px flex-1 bg-slate-200" />
+            </div>
+          )}
         </div>
       )}
+      {showPassword && (
       <form onSubmit={submit} className="flex w-full flex-col gap-2">
         <div className="w-full text-xs font-semibold tracking-wide text-slate-400">Log in</div>
         <input type="email" required autoComplete="username" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} className="w-full rounded border border-slate-300 px-2 py-1.5 text-sm" />
@@ -143,6 +212,8 @@ export function RoleSwitcher() {
           {submitting ? "Logging in…" : "Log in"}
         </button>
       </form>
+      )}
+      {!showPassword && showQuick && error && <div className="text-xs text-red-600">{error}</div>}
       <div className="text-center text-xs text-slate-500">
         No access yet?{" "}
         <button type="button" onClick={() => setRequestingAccess(true)} className="font-semibold text-emerald-800 hover:underline">
