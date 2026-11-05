@@ -8,6 +8,7 @@ import {
 import { BudgetCodePrefixKind } from "@prisma/client";
 import { formatBudgetCode, getBudgetCodePrefixCode, nextBudgetCode } from "../src/lib/budgetCode";
 import { getFiscalCycle } from "../src/lib/fiscalCycle";
+import { splitDepartmentList } from "../src/lib/departmentVisibility";
 
 // Re-runnable importer for the real "Budgeting System_Expense Line Items"
 // catalog (notes item 3: "the list is not yet complete, will add more line
@@ -64,12 +65,17 @@ export async function importExpenseLineItems(prisma: PrismaClient, budgetOfficer
     return id;
   };
 
+  // Known names, for splitting a multi-department "Visible only to" cell.
+  const knownDepartmentNames = (await prisma.department.findMany({ select: { name: true } })).map((d) => d.name);
+
   let imported = 0;
   for (const row of rows) {
     const departmentId = await resolveDepartmentId(row.departmentName);
-    const visibleToDepartmentId = row.visibleToDepartmentName
-      ? await resolveDepartmentId(row.visibleToDepartmentName)
-      : null;
+    const visibleToDepartmentIds: string[] = [];
+    for (const name of splitDepartmentList(row.visibleToDepartmentName, knownDepartmentNames)) {
+      visibleToDepartmentIds.push(await resolveDepartmentId(name));
+    }
+    const visibleToDepartmentId = visibleToDepartmentIds[0] ?? null;
 
     let companyId: string | undefined;
     if (row.companyCode) {
@@ -140,6 +146,13 @@ export async function importExpenseLineItems(prisma: PrismaClient, budgetOfficer
         budgetCode,
       },
     });
+    await prisma.expenseLineItemVisibleDepartment.deleteMany({ where: { expenseLineItemId: id } });
+    if (visibleToDepartmentIds.length > 0) {
+      await prisma.expenseLineItemVisibleDepartment.createMany({
+        data: [...new Set(visibleToDepartmentIds)].map((departmentId) => ({ expenseLineItemId: id, departmentId })),
+        skipDuplicates: true,
+      });
+    }
     imported++;
   }
 

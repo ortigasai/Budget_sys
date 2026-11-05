@@ -212,6 +212,7 @@ model Department {
   growthRateAuditLogs    GrowthRateAuditLog[]
   ownedExpenseLineItems  ExpenseLineItem[]
   visibleExpenseLineItems ExpenseLineItem[] @relation("VisibleToDepartment")
+  expenseLineItemVisibility ExpenseLineItemVisibleDepartment[]
   additionalHeadcountRequests AdditionalHeadcountRequest[]
   forecastSubmissions    ForecastSubmission[]
   accessRequests         AccessRequest[]
@@ -376,8 +377,14 @@ model ExpenseLineItem {
   // set means only Requestors whose own department matches can select it
   // in the Standard Request picker. The Admin Console's catalog table
   // still shows every row regardless (management view, not the picker).
+  //
+  // Column R can list several departments ("Office of the CFO, Corporate
+  // Finance") - the full list is visibleToDepartments below, and that's what
+  // visibility checks use (no rows = everyone). visibleToDepartmentId keeps
+  // the first one only, for backend-py's read-only mirror of this table.
   visibleToDepartmentId String?
   visibleToDepartment   Department?           @relation("VisibleToDepartment", fields: [visibleToDepartmentId], references: [id])
+  visibleToDepartments  ExpenseLineItemVisibleDepartment[]
   // "Budgeting System_Expense Line Items" column J ("Centralized Dept
   // Requestor/Reviewer") - who a GAE request against this line item is
   // automatically routed to for Centralized L1 Review, once its Department
@@ -1239,4 +1246,16 @@ model AccessRequest {
 
   @@index([status, createdAt])
   @@index([email])
+}
+
+// Expense Line Items column R ("Visible only to") - every department a line
+// item is restricted to. No rows for an item = visible to every department.
+model ExpenseLineItemVisibleDepartment {
+  expenseLineItemId String
+  expenseLineItem   ExpenseLineItem @relation(fields: [expenseLineItemId], references: [id], onDelete: Cascade)
+  departmentId      String
+  department        Department      @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+
+  @@id([expenseLineItemId, departmentId])
+  @@index([departmentId])
 }

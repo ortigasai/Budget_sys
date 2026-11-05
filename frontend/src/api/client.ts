@@ -188,6 +188,8 @@ export interface ExpenseLineItem {
   spendGridFrequency: string | null;
   visibleToDepartmentId: string | null;
   visibleToDepartment?: Department | null;
+  // Full "Visible only to" list (empty = everyone); visibleToDepartment above is just the first.
+  visibleToDepartments?: { department: { id: string; name: string } }[];
   isCustom: boolean;
   status: "STANDARD" | "PENDING_REFINEMENT";
   extraFieldsConfig: ExtraField[];

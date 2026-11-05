@@ -13,7 +13,7 @@ const CENTRALIZED_DEPARTMENTS = [
   "Admin Services",
   "Corporate Marketing",
   "Human Resources",
-  "IS & IT",
+  "Information System & Information Technology",
   "Tax",
   "Technical Services Group",
   "Corporate Finance",
@@ -298,10 +298,10 @@ async function main() {
   });
 
   await prisma.growthRateOverride.upsert({
-    where: { departmentId: byName["IS & IT"].id },
+    where: { departmentId: byName["Information System & Information Technology"].id },
     update: {},
     create: {
-      departmentId: byName["IS & IT"].id,
+      departmentId: byName["Information System & Information Technology"].id,
       value: 8,
       editedBy: budgetOfficer.id,
     },

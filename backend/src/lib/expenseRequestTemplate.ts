@@ -50,7 +50,12 @@ export async function visibleLineItemsForRequest(departmentId: string) {
     where: {
       status: "STANDARD",
       ...(isBudgetDepartment ? {} : { category: { not: "Manpower - Salary" } }),
-      ...(applyVisibilityFilter ? { OR: [{ visibleToDepartmentId: null }, { visibleToDepartmentId: departmentId }] } : {}),
+      // Visible to everyone, restricted to this department, or owned by it - a
+      // centralized department always gets every line item it owns, whatever
+      // its "Visible only to" says.
+      ...(applyVisibilityFilter
+        ? { OR: [{ visibleToDepartments: { none: {} } }, { visibleToDepartments: { some: { departmentId } } }, { ownerDepartmentId: departmentId }] }
+        : {}),
     },
     include: { company: true },
     orderBy: { name: "asc" },

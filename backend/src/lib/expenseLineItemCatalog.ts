@@ -288,7 +288,9 @@ function parseWorkbook(workbook: ExcelJS.Workbook): ParsedExpenseLineItemRow[] {
       spendGridComputation: spendGridComputationRaw || null,
       spendGridFrequency: spendGridFrequencyRaw || null,
       sampleCharges: sampleChargesRaw || null,
-      visibleToDepartmentName: visibleToDepartmentRaw ? canonicalDepartmentName(visibleToDepartmentRaw) : null,
+      // Raw cell text - may list several departments; split (and old names
+      // corrected) by lib/departmentVisibility.ts's splitDepartmentList.
+      visibleToDepartmentName: visibleToDepartmentRaw || null,
       centralizedReviewerName: centralizedReviewerRaw || null,
       centralizedHeadName: centralizedHeadRaw || null,
       budgetCodePrefix: budgetCodePrefixRaw || null,

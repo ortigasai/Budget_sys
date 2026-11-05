@@ -3,6 +3,7 @@ import { prisma } from "../prisma";
 import { buildExpenseLineItemId, parseExpenseLineItemsBuffer } from "../lib/expenseLineItemCatalog";
 import { formatBudgetCode, getBudgetCodePrefixCode, nextBudgetCode } from "../lib/budgetCode";
 import { getFiscalCycle } from "../lib/fiscalCycle";
+import { splitDepartmentList } from "../lib/departmentVisibility";
 
 // Same fuzzy name-matching convention prisma/importCentralizedReviewers.ts
 // uses for columns J/K, folded into the main catalog upload so a future
@@ -145,11 +146,17 @@ export async function overrideExpenseLineItemsFromUpload(
         return id;
       };
 
+      // Known department names, for splitting a multi-department "Visible
+      // only to" cell (column R) without breaking names that contain a comma.
+      const knownDepartmentNames = (await tx.department.findMany({ select: { name: true } })).map((d) => d.name);
+
       for (const row of rows) {
         const departmentId = await resolveDepartmentId(row.departmentName);
-        const visibleToDepartmentId = row.visibleToDepartmentName
-          ? await resolveDepartmentId(row.visibleToDepartmentName)
-          : null;
+        const visibleToDepartmentIds: string[] = [];
+        for (const name of splitDepartmentList(row.visibleToDepartmentName, knownDepartmentNames)) {
+          visibleToDepartmentIds.push(await resolveDepartmentId(name));
+        }
+        const visibleToDepartmentId = visibleToDepartmentIds[0] ?? null;
 
         const companyId = row.companyCode ? companyByCode.get(row.companyCode)!.id : undefined;
         const id = buildExpenseLineItemId(row.category, row.name, row.companyCode);
@@ -201,6 +208,13 @@ export async function overrideExpenseLineItemsFromUpload(
             centralizedHeadId,
           },
         });
+        await tx.expenseLineItemVisibleDepartment.deleteMany({ where: { expenseLineItemId: id } });
+        if (visibleToDepartmentIds.length > 0) {
+          await tx.expenseLineItemVisibleDepartment.createMany({
+            data: [...new Set(visibleToDepartmentIds)].map((departmentId) => ({ expenseLineItemId: id, departmentId })),
+            skipDuplicates: true,
+          });
+        }
         if (existing) updated++;
         else created++;
       }
@@ -243,7 +257,7 @@ export async function overrideExpenseLineItemsFromUpload(
 
       return { created, updated, removed, migratedRequests, skippedRemovals };
     },
-    { maxWait: 15000, timeout: 30000 }
+    { maxWait: 15000, timeout: 60000 }
   );
 
   return { ok: true, ...result, errors: [] };

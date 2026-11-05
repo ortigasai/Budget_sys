@@ -465,11 +465,13 @@ adminRouter.get(
         status: status as any,
         ...(category ? { category } : {}),
         ...(q ? { name: { contains: q, mode: "insensitive" } } : {}),
+        // Same rule as the upload template (lib/expenseRequestTemplate.ts):
+        // a centralized department always sees every line item it owns.
         ...(applyVisibilityFilter
-          ? { OR: [{ visibleToDepartmentId: null }, { visibleToDepartmentId: requesterDepartmentId }] }
+          ? { OR: [{ visibleToDepartments: { none: {} } }, { visibleToDepartments: { some: { departmentId: requesterDepartmentId } } }, { ownerDepartmentId: requesterDepartmentId }] }
           : {}),
       },
-      include: { company: true, ownerDepartment: true, visibleToDepartment: true },
+      include: { company: true, ownerDepartment: true, visibleToDepartment: true, visibleToDepartments: { include: { department: { select: { id: true, name: true } } } } },
       orderBy: [{ category: "asc" }, { name: "asc" }],
     });
     res.json(items);
@@ -519,7 +521,11 @@ adminRouter.post(
   asyncHandler(async (req, res) => {
     const body = expenseLineItemSchema.parse(req.body);
     const created = await prisma.expenseLineItem.create({
-      data: { ...body, managedBy: req.user!.id },
+      data: {
+        ...body,
+        managedBy: req.user!.id,
+        ...(body.visibleToDepartmentId ? { visibleToDepartments: { create: [{ departmentId: body.visibleToDepartmentId }] } } : {}),
+      },
     });
     res.status(201).json(created);
   })
@@ -532,7 +538,13 @@ adminRouter.patch(
     const body = expenseLineItemSchema.partial().parse(req.body);
     const updated = await prisma.expenseLineItem.update({
       where: { id: req.params.id },
-      data: body,
+      data: {
+        ...body,
+        // Setting the single "visible to" department replaces the whole list.
+        ...(body.visibleToDepartmentId !== undefined
+          ? { visibleToDepartments: { deleteMany: {}, ...(body.visibleToDepartmentId ? { create: [{ departmentId: body.visibleToDepartmentId }] } : {}) } }
+          : {}),
+      },
     });
     res.json(updated);
   })

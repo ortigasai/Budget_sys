@@ -158,7 +158,9 @@ export function ExpenseLineItemsTab() {
                 <td className="px-3 py-2 text-slate-500">{item.spendGridComputation ?? "—"}</td>
                 <td className="px-3 py-2 text-slate-500">{item.spendGridFrequency ?? "—"}</td>
                 <td className="px-3 py-2 text-slate-500">{item.sampleCharges ?? "—"}</td>
-                <td className="px-3 py-2 text-slate-500">{item.visibleToDepartment?.name ?? "Everyone"}</td>
+                <td className="px-3 py-2 text-slate-500">{item.visibleToDepartments && item.visibleToDepartments.length > 0
+                    ? item.visibleToDepartments.map((v) => v.department.name).join(", ")
+                    : (item.visibleToDepartment?.name ?? "Everyone")}</td>
                 <td className="px-3 py-2 text-right">
                   <button
                     onClick={() => {
