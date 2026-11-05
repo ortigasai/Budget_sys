@@ -1,4 +1,5 @@
 import axios from "axios";
+import { HttpError } from "../httpError";
 
 // Note 11: the first server-to-server call this app makes - until now, the
 // two backends only ever shared data via Python's own read-only mirrors of
@@ -13,6 +14,19 @@ import axios from "axios";
 const PY_BACKEND_URL = process.env.PY_BACKEND_URL ?? "http://127.0.0.1:8010";
 
 const pyClient = axios.create({ baseURL: PY_BACKEND_URL, timeout: 10_000 });
+
+// Turn backend-py failures into readable errors for the page: "not
+// responding" (down, still starting, or timed out) becomes a 503 with a
+// plain message, and an error backend-py itself returned keeps its status
+// and reason (e.g. a real 403) instead of surfacing as a generic 500.
+pyClient.interceptors.response.use(undefined, (err) => {
+  if (!axios.isAxiosError(err)) throw err;
+  if (!err.response) {
+    throw new HttpError(503, "The NPC / SAP data service isn't responding right now - please try again in a minute.");
+  }
+  const detail = (err.response.data as { detail?: unknown } | undefined)?.detail;
+  throw new HttpError(err.response.status, typeof detail === "string" ? detail : `The NPC / SAP data service returned an error (${err.response.status}).`);
+});
 
 export interface CcGlEntry {
   id: number;

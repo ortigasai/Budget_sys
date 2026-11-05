@@ -115,7 +115,7 @@ export function NpcForecastView() {
   const [pickedSbu, setPickedSbu] = useState<NpcSbu | "">("");
   const effectiveSbu: NpcSbu | "" = pickedSbu && mySbus.includes(pickedSbu) ? pickedSbu : mySbus[0] ?? "";
 
-  const { data, isLoading, isError } = useQuery({
+  const { data, isLoading, isError, error } = useQuery({
     queryKey: ["forecast", "npc", effectiveSbu],
     queryFn: async () => (await api.get<{ asOfMonth: number; rows: NpcForecastRow[] }>(`/forecast/npc/${effectiveSbu}`)).data,
     enabled: !!effectiveSbu,
@@ -286,7 +286,15 @@ export function NpcForecastView() {
       </div>
       </div>
 
-      {isError && <div className="text-sm text-red-700">You do not have access to this SBU's NPC forecast.</div>}
+      {/* Only a real 403 means "no access" - anything else (e.g. the NPC/SAP
+          data service not responding) shows the server's own reason. */}
+      {isError && (
+        <div className="text-sm text-red-700">
+          {(error as any)?.response?.status === 403
+            ? ((error as any).response.data?.error ?? "You do not have access to this SBU's NPC forecast.")
+            : ((error as any)?.response?.data?.error ?? "Couldn't load the NPC forecast - please try again in a minute.")}
+        </div>
+      )}
 
       <ExpandableSection title="NPC Forecast" inlineExpand>
         {/* max-h + overflow-auto (not a lone overflow-x-auto) so this is a
