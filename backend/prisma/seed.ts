@@ -269,23 +269,6 @@ async function main() {
       assignedById: budgetOfficer.id,
     },
   });
-  await prisma.roleAssignment.upsert({
-    where: {
-      departmentId_roleType_userId: {
-        departmentId: byName["Corporate Finance"].id,
-        roleType: RoleType.BUDGET_OFFICER,
-        userId: budgetOfficer.id,
-      },
-    },
-    update: {},
-    create: {
-      departmentId: byName["Corporate Finance"].id,
-      roleType: RoleType.BUDGET_OFFICER,
-      userId: budgetOfficer.id,
-      assignedById: budgetOfficer.id,
-    },
-  });
-
   // Real expense line item catalog (Company rows + ~230 ExpenseLineItem rows
   // with category/company/GL-CC/additional-field parsing). Re-runnable as
   // the source file grows.
@@ -568,9 +551,35 @@ async function main() {
     },
   });
 
+  // "Bea Officer" above is only a placeholder for attributing the records
+  // seeded before the real employees exist - it is not a Budget Officer.
+  // Now that Princess does, move those records to her and remove the
+  // placeholder account (same as migration 20261110100000).
+  await prisma.$executeRawUnsafe(`
+    DO $$
+    DECLARE col record;
+    BEGIN
+      FOR col IN
+        SELECT c.table_name, c.column_name FROM information_schema.columns c
+        JOIN information_schema.tables t ON t.table_schema = c.table_schema AND t.table_name = c.table_name AND t.table_type = 'BASE TABLE'
+        WHERE c.table_schema = 'public' AND c.data_type IN ('text', 'character varying') AND c.table_name NOT IN ('User', '_prisma_migrations')
+          AND c.table_name NOT IN ('RoleAssignment', 'SbuRoleAssignment', 'UserGroupMembership')
+      LOOP
+        EXECUTE format('UPDATE %I SET %I = $1 WHERE %I = $2', col.table_name, col.column_name, col.column_name)
+          USING '${princess.id}', '${budgetOfficer.id}';
+      END LOOP;
+    END $$;
+  `);
+  await prisma.roleAssignment.deleteMany({ where: { userId: budgetOfficer.id } });
+  await prisma.roleAssignment.updateMany({ where: { assignedById: budgetOfficer.id }, data: { assignedById: princess.id } });
+  await prisma.sbuRoleAssignment.deleteMany({ where: { userId: budgetOfficer.id } });
+  await prisma.sbuRoleAssignment.updateMany({ where: { assignedById: budgetOfficer.id }, data: { assignedById: princess.id } });
+  await prisma.userGroupMembership.deleteMany({ where: { userId: budgetOfficer.id } });
+  await prisma.user.delete({ where: { id: budgetOfficer.id } });
+
   console.log("Seed complete.");
   console.log("Demo users:");
-  console.log(`  Budget Officer:            ${budgetOfficer.email}`);
+  console.log(`  Budget Officer:            ${princess.email}`);
   console.log(`  BC&A Head:                 ${bcaHead.email}`);
   console.log(`  CFO:                       ${cfo.email}`);
   console.log(`  HR Analyst:                ${hrAnalyst.email}`);

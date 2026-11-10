@@ -675,9 +675,9 @@ budgetRequestsRouter.get(
   asyncHandler(async (req, res) => {
     const request = await prisma.budgetRequest.findUniqueOrThrow({
       where: { id: req.params.id },
-      include: { expenseLineItem: { select: { ownerDepartmentId: true, ownerDepartment: { select: { name: true } } } } },
+      include: { expenseLineItem: { select: { ownerDepartmentId: true, centralizedReviewerId: true, ownerDepartment: { select: { name: true } } } } },
     });
-    const net = (rows: { proposedAmount: number; budgetCutAmount: number }[]) => rows.reduce((sum, r) => sum + r.proposedAmount - r.budgetCutAmount, 0);
+    const net =(rows: { proposedAmount: number; budgetCutAmount: number }[]) => rows.reduce((sum, r) => sum + r.proposedAmount - r.budgetCutAmount, 0);
     const amountFields = { proposedAmount: true, budgetCutAmount: true } as const;
 
     if (request.requestCategory === "NPC" && request.npcSbu) {
@@ -708,6 +708,22 @@ budgetRequestsRouter.get(
 
     if (request.requestCategory === "GAE" && request.expenseLineItem) {
       const ownerId = request.expenseLineItem.ownerDepartmentId;
+      // The GAE budget picture is only for the owning centralized department
+      // (its Requestor/Reviewer and Head, plus the line item's own column-J
+      // reviewer or a picked Centralized Head) and the Budget Officer - not
+      // the requestor's Department Head or the later approvers.
+      const user = req.user!;
+      const canSeeGaeBudget =
+        hasRole(user, RoleType.BUDGET_OFFICER) ||
+        hasRole(user, RoleType.CENTRALIZED_BUDGET_PREPARER, ownerId) ||
+        hasRole(user, RoleType.CENTRALIZED_FIRST_LEVEL_REVIEWER, ownerId) ||
+        hasRole(user, RoleType.CENTRALIZED_DEPARTMENT_HEAD, ownerId) ||
+        user.id === request.expenseLineItem.centralizedReviewerId ||
+        user.id === request.centralizedHeadId;
+      if (!canSeeGaeBudget) {
+        res.json(null);
+        return;
+      }
       const cap = await computeDepartmentalCap(ownerId, request.fiscalYear);
       const hasForecast = (await prisma.historicalActuals.count({ where: { departmentId: ownerId, fiscalYear: request.fiscalYear } })) > 0;
       const others = { fiscalYear: request.fiscalYear, expenseLineItem: { ownerDepartmentId: ownerId }, id: { not: request.id } };

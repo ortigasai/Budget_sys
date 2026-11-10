@@ -19,7 +19,9 @@ const amount = (n: number) => (n < 0 ? `(${Math.round(-n).toLocaleString()})` : 
 // Shown to reviewers beside an NPC or GAE request (Inbox card and the
 // request's own page): where it leaves the budget it draws on - its NPC SBU's
 // Board-Approved NPC Budget, or its owning department's Departmental Budget
-// Cap for GAE (see GET /budget-requests/:id/budget-summary).
+// Cap for GAE (see GET /budget-requests/:id/budget-summary). For GAE the
+// server only returns it to the owning centralized department and the Budget
+// Officer; everyone else gets null and nothing is shown.
 export function RequestBudgetSummary({ requestId }: { requestId: string }) {
   const { data, isLoading } = useQuery({
     queryKey: ["budget-summary", requestId],
