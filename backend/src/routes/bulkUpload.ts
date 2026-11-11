@@ -47,6 +47,9 @@ const uploadDir = path.resolve(process.env.UPLOAD_DIR ?? "./uploads");
 fs.mkdirSync(uploadDir, { recursive: true });
 
 // 1-indexed column number -> Excel column letters (1 -> "A", 27 -> "AA").
+// Light yellow - the template's "required input" highlight.
+const REQUIRED_FILL_ARGB = "FFFFF2CC";
+
 function columnLetter(n: number): string {
   let s = "";
   while (n > 0) {
@@ -234,7 +237,8 @@ bulkUploadRouter.get(
     catalogSheet.getRow(1).font = { bold: true };
     for (const item of sortedItems) {
       const extraFieldsConfig = (item.extraFieldsConfig as { label: string; required: boolean }[] | null) ?? [];
-      const requiredLabels = extraFieldsConfig.filter((f) => f.required).map((f) => f.label);
+      // Spend Month has no column - it's read from the Jan-Dec amounts.
+      const requiredLabels = extraFieldsConfig.filter((f) => f.required && f.label !== "Spend Month").map((f) => f.label);
       catalogSheet.addRow([item.category, item.name, companyLabel(item) || "All", requiredLabels.length > 0 ? requiredLabels.join(", ") : "—"]);
     }
     catalogSheet.columns = [{ width: 28 }, { width: 36 }, { width: 12 }, { width: 50 }];
@@ -251,7 +255,7 @@ bulkUploadRouter.get(
       ["2. Every Expense Line Item available to your department already has its own row. Fill in only the ones you're budgeting for - rows you leave blank are skipped."],
       ["   Some line items are set up separately per company (e.g. Laptop for OCC, OCLP and OLC) - each has its own row, with the Company column filled in. Company is blank for items that apply to every company."],
       ["3. Enter the amount for each month (Jan to Dec) under the month columns, plus a Business Justification. To budget the same line item twice, pick it (and its Company, if it has one) again in one of the empty rows at the bottom."],
-      ["4. Fill in any Additional Field marked as required, in that field's own column on the data sheet (see the Catalog Reference tab for which fields your chosen item needs)."],
+      ["4. Fill in the Additional Field cells highlighted in yellow - those are required for that row's line item (the Catalog Reference tab lists them too)."],
       ["5. Save the file and upload it on the New Request page."],
       [""],
       ["Expense line item not on the list?"],
@@ -325,6 +329,52 @@ bulkUploadRouter.get(
         };
       }
       sheet.getCell(`${totalColLetter}${row}`).value = { formula: `SUM(${janColLetter}${row}:${decColLetter}${row})` } as any;
+    }
+
+    // Highlight the Additional Field cells each line item requires (e.g.
+    // Bereavement Assistance -> Headcount and Cost per Head). Pre-filled
+    // rows get a plain fill; the empty rows underneath, where the line item
+    // is picked from the dropdown, get a conditional format that looks the
+    // picked item's required fields up in the hidden Reference sheet.
+    const requiredByName = new Map<string, Set<string>>();
+    for (const item of items) {
+      const fields = (item.extraFieldsConfig as { label: string; required: boolean }[] | null) ?? [];
+      const set = requiredByName.get(item.name) ?? new Set<string>();
+      for (const f of fields) if (f.required && f.label && f.label !== "Spend Month") set.add(f.label);
+      requiredByName.set(item.name, set);
+    }
+    const requiredFill: ExcelJS.Fill = { type: "pattern", pattern: "solid", fgColor: { argb: REQUIRED_FILL_ARGB } };
+    sortedItems.forEach((item, i) => {
+      for (const label of requiredByName.get(item.name) ?? []) {
+        const col = header.indexOf(label) + 1;
+        if (col > 0) sheet.getCell(i + 2, col).fill = requiredFill;
+      }
+    });
+    const firstExtraCol = header.length - extraFieldLabelsFor(items).length + 1;
+    const firstEmptyRow = sortedItems.length + 2;
+    if (firstExtraCol <= header.length && firstEmptyRow <= lastRow) {
+      // Reference: item name -> "|Label 1|Label 2|" for an exact-match FIND.
+      const nameCol = 4 + categories.length;
+      const requiredEntries = [...requiredByName.entries()].filter(([, set]) => set.size > 0);
+      requiredEntries.forEach(([name, set], r) => {
+        refSheet.getCell(r + 1, nameCol).value = name;
+        refSheet.getCell(r + 1, nameCol + 1).value = `|${[...set].join("|")}|`;
+      });
+      if (requiredEntries.length > 0) {
+        workbook.definedNames.add(`Reference!$${columnLetter(nameCol)}$1:$${columnLetter(nameCol + 1)}$${requiredEntries.length}`, "required_fields");
+        const fromCol = columnLetter(firstExtraCol);
+        sheet.addConditionalFormatting({
+          ref: `${fromCol}${firstEmptyRow}:${columnLetter(header.length)}${lastRow}`,
+          rules: [
+            {
+              type: "expression",
+              priority: 1,
+              formulae: [`ISNUMBER(FIND("|"&${fromCol}$1&"|",IFERROR(VLOOKUP($B${firstEmptyRow},required_fields,2,FALSE),"")))`],
+              style: { fill: { type: "pattern", pattern: "solid", bgColor: { argb: REQUIRED_FILL_ARGB } } },
+            },
+          ],
+        });
+      }
     }
 
     sheet.columns.forEach((col) => {

@@ -12,6 +12,11 @@ const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "
 // before Company existed (months starting at column C) still upload.
 const FIXED_HEADER = ["Expense Category", "Expense Line Item", "Company", ...MONTHS, "Total", "Business Justification"];
 
+// The "User to select which month" items' month picker (expenseLineItemCatalog.ts).
+// The web form stores it as full month names, comma-separated.
+const SPEND_MONTH = "Spend Month";
+const FULL_MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+
 // Every distinct Additional Field label the given items' extraFieldsConfig
 // declares (e.g. "Headcount", "Meal Allowance Rate", "Specify") - each gets
 // its own real column in the template instead of one catch-all "Other
@@ -21,11 +26,14 @@ const FIXED_HEADER = ["Expense Category", "Expense Line Item", "Company", ...MON
 // the caller passes (bulkUpload.ts passes the same department-visible list
 // the rest of the template is already built from), so the columns always
 // match what's actually selectable on that sheet.
+// "Spend Month" is left out: on the template the Jan-Dec columns already say
+// which month(s) the amount falls in, so the upload fills it in from those
+// (see SPEND_MONTH below) instead of asking for it twice.
 export function extraFieldLabelsFor(items: { extraFieldsConfig: unknown }[]): string[] {
   const labels = new Set<string>();
   for (const item of items) {
     const fields = item.extraFieldsConfig as { label: string }[] | null;
-    for (const f of fields ?? []) if (f.label) labels.add(f.label);
+    for (const f of fields ?? []) if (f.label && f.label !== SPEND_MONTH) labels.add(f.label);
   }
   return Array.from(labels).sort((a, b) => a.localeCompare(b));
 }
@@ -163,6 +171,11 @@ export function parseExpenseRequestSheet(
 
       const otherRequiredFields: Record<string, string> = {};
       for (const field of extraFieldsConfig) {
+        if (field.label === SPEND_MONTH) {
+          // Taken from the months the row actually has amounts in.
+          otherRequiredFields[field.label] = FULL_MONTH_NAMES.filter((_, m) => monthlyAmounts[m] > 0).join(",");
+          continue;
+        }
         const col = columnByLabel.get(field.label);
         const value = col ? String(row.getCell(col).value ?? "").trim() : "";
         const key = usesHeadcountTable ? `Row 1 ${field.label}` : field.label;

@@ -181,10 +181,14 @@ export function StandardRequestTab({ requestCategory, subtitle }: { requestCateg
   // A Centralized Department Requestor raising a GAE request for their own
   // department has no separate Department Head to pick - Submit sends it
   // straight to their own Centralized Department Head (no L1 review stage).
+  // A custom ("not in the list") expense is filed under the requestor's own
+  // department until the Budget Officer assigns its real owner (see POST
+  // /budget-requests), so the server routes it the same way - match that here.
+  const ownerDepartmentId = useCustom ? currentUser?.department?.id : selectedItem?.ownerDepartmentId;
   const ownDeptInitiated =
     requestCategory === "GAE" &&
-    !!selectedItem &&
-    !!currentUser?.roles.some((r) => (r.roleType === "CENTRALIZED_BUDGET_PREPARER" || r.roleType === "CENTRALIZED_FIRST_LEVEL_REVIEWER") && r.department?.id === selectedItem.ownerDepartmentId);
+    !!ownerDepartmentId &&
+    !!currentUser?.roles.some((r) => (r.roleType === "CENTRALIZED_BUDGET_PREPARER" || r.roleType === "CENTRALIZED_FIRST_LEVEL_REVIEWER") && r.department?.id === ownerDepartmentId);
   const proposedAmount = monthlyAmounts.reduce((a, b) => a + b, 0);
   const needsAttachment = docThreshold && proposedAmount > docThreshold.amount;
 
@@ -389,7 +393,20 @@ export function StandardRequestTab({ requestCategory, subtitle }: { requestCateg
           <input type="file" className="mt-1 text-sm" onChange={(e) => e.target.files?.[0] && attachMutation.mutate(e.target.files[0])} />
         </div>
 
-        {error && <div className="rounded bg-red-50 p-2 text-sm text-red-700">{error}</div>}
+        {/* The approver wasn't picked before Save Draft - pick it here
+            instead of having Submit fail. */}
+        {ownDeptInitiated && !created.centralizedHeadId && (
+          <div className="max-w-md">
+            <ApproverPicker label="Centralized Department Head" value={centralizedHeadId} onChange={setCentralizedHeadId} />
+          </div>
+        )}
+        {!ownDeptInitiated && requestCategory === "GAE" && !created.departmentHeadId && (
+          <div className="max-w-md">
+            <ApproverPicker label="Department Head / Approver" value={departmentHeadId} onChange={setDepartmentHeadId} />
+          </div>
+        )}
+
+        {error &&<div className="rounded bg-red-50 p-2 text-sm text-red-700">{error}</div>}
       </div>
     );
   }
