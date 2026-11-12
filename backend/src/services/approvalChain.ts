@@ -50,14 +50,16 @@ export interface ChainRequest {
   // catalog line item - see SBU_BATCH_CATEGORIES below). Only ever
   // dereferenced by the GAE-only stages (CENTRALIZED_L1_REVIEW/
   // CENTRALIZED_HEAD_REVIEW), which those categories' chain never includes.
-  // isCustom: an expense that isn't in the standard list ("This expense
-  // isn't in the standard list") - a GAE one goes to the Budget Officer only.
-  expenseLineItem: { ownerDepartmentId: string; centralizedReviewerId: string | null; isCustom: boolean } | null;
+  // isCustom + PENDING_REFINEMENT: an expense that isn't in the standard
+  // list yet (older custom-expense GAE requests) - goes to the Budget Officer
+  // only. Items added to the list through an approved New Expense Line Item
+  // Request are isCustom too but STANDARD, and follow the normal chain.
+  expenseLineItem: { ownerDepartmentId: string; centralizedReviewerId: string | null; isCustom: boolean; status: string } | null;
 }
 
 /** A GAE request for an expense that isn't in the standard list. */
 export function isCustomGaeRequest(r: Pick<ChainRequest, "requestCategory" | "expenseLineItem">): boolean {
-  return r.requestCategory === RequestCategory.GAE && !!r.expenseLineItem?.isCustom;
+  return r.requestCategory === RequestCategory.GAE && !!r.expenseLineItem?.isCustom && r.expenseLineItem.status === "PENDING_REFINEMENT";
 }
 
 // NPC's 8 SBUs -> the 6-value SBU enum SBU Finance roles are scoped by (the

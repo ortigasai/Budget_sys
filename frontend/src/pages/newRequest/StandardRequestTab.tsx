@@ -503,7 +503,7 @@ export function StandardRequestTab({ requestCategory, subtitle }: { requestCateg
               <input type="checkbox" checked={newExpenseOpen} onChange={(e) => setNewExpenseOpen(e.target.checked)} />
               This expense isn't in the standard list
             </label>
-            {newExpenseOpen && <NewExpenseRequestModal fiscalYear={FISCAL_YEAR} onClose={() => setNewExpenseOpen(false)} />}
+            {newExpenseOpen && <NewExpenseRequestModal onClose={() => setNewExpenseOpen(false)} />}
             {(
               <div className="mt-2 space-y-2">
                 <div>

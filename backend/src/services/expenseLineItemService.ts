@@ -219,7 +219,10 @@ export async function overrideExpenseLineItemsFromUpload(
         else created++;
       }
 
-      const existingStandard = await tx.expenseLineItem.findMany({ where: { status: "STANDARD" } });
+      // Line items added through an approved New Expense Line Item Request
+      // (isCustom) aren't in the workbook - keep them rather than removing
+      // them as "no longer listed".
+      const existingStandard = await tx.expenseLineItem.findMany({ where: { status: "STANDARD", isCustom: false } });
       const toRemove = existingStandard.filter((item) => !keepIds.has(item.id));
       let removed = 0;
       const migratedRequests: { name: string; reason: string }[] = [];

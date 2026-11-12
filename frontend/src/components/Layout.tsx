@@ -580,7 +580,15 @@ export function Layout() {
     select: (data) => data.length,
     ...inboxCountQuery,
   });
-  const pendingCount = budgetInboxCount + headcountInboxCount + forecastInboxCount + office365InboxCount + mobilePhoneBudgetInboxCount + revenueInboxCount;
+  // Same key/data as InboxPage's NewExpenseRequestsInboxSection (Budget Officer only).
+  const { data: newExpenseInboxCount = 0 } = useQuery({
+    queryKey: ["new-expense-requests", "pending"],
+    queryFn: async () => (await api.get<unknown[]>("/new-expense-requests/pending")).data,
+    select: (data) => data.length,
+    ...inboxCountQuery,
+    enabled: !!currentUser && isBudgetOfficer,
+  });
+  const pendingCount = budgetInboxCount + headcountInboxCount + forecastInboxCount + office365InboxCount + mobilePhoneBudgetInboxCount + revenueInboxCount + newExpenseInboxCount;
 
   // Budget Officer Review requests (GAE/DOE/Commission/Cost of Sales/D&A/
   // Interest Expense/NPC) are deliberately excluded from the generic Inbox

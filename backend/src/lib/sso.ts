@@ -51,6 +51,8 @@ export function ssoAuthorizeUrl(redirectUri: string, state: string): string {
 export interface SsoProfile {
   email: string;
   name: string | null;
+  // Entra's "department" attribute, when the broker passes it on.
+  department: string | null;
 }
 
 // The broker's exchange response isn't documented beyond "exchange the
@@ -76,7 +78,7 @@ function pickProfile(data: unknown): SsoProfile | null {
   };
   const email = first(["email", "mail", "userPrincipalName", "upn", "preferred_username", "unique_name"]);
   if (!email || !email.includes("@")) return null;
-  return { email: email.toLowerCase(), name: first(["name", "displayName", "display_name", "full_name"]) };
+  return { email: email.toLowerCase(), name: first(["name", "displayName", "display_name", "full_name"]), department: first(["department", "dept"]) };
 }
 
 export async function exchangeSsoCode(code: string): Promise<SsoProfile> {

@@ -214,12 +214,16 @@ export function RoleSwitcher() {
       </form>
       )}
       {!showPassword && showQuick && error && <div className="text-xs text-red-600">{error}</div>}
-      <div className="text-center text-xs text-slate-500">
-        No access yet?{" "}
-        <button type="button" onClick={() => setRequestingAccess(true)} className="font-semibold text-emerald-800 hover:underline">
-          Request access
-        </button>
-      </div>
+      {/* With Microsoft 365 sign-in, anyone in the organization gets an
+          account on first sign-in - no Request access step needed. */}
+      {!showSso && (
+        <div className="text-center text-xs text-slate-500">
+          No access yet?{" "}
+          <button type="button" onClick={() => setRequestingAccess(true)} className="font-semibold text-emerald-800 hover:underline">
+            Request access
+          </button>
+        </div>
+      )}
     </div>
   );
 }

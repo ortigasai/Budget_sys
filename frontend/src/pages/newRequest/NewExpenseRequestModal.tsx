@@ -1,13 +1,13 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
-import { api, type BudgetRequest } from "../../api/client";
+import { api } from "../../api/client";
 
 // "This expense isn't in the standard list" on the New GAE Request form opens
 // this window. Only the expense's name is required; it goes straight to the
-// Budget Officer (see backend approvalChain.ts's chainFor), who sets the
-// expense up and assigns its GL-CC - there's no approver to pick.
-export function NewExpenseRequestModal({ fiscalYear, onClose }: { fiscalYear: number; onClose: () => void }) {
+// Budget Officer, who adds it to the standard list (setting its GL-CC) or
+// disapproves it - there's no approver to pick and no budget approval flow.
+export function NewExpenseRequestModal({ onClose }: { onClose: () => void }) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [name, setName] = useState("");
@@ -20,27 +20,16 @@ export function NewExpenseRequestModal({ fiscalYear, onClose }: { fiscalYear: nu
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
+  // A request to add the expense to the standard list - not a budget request
+  // (backend routes/newExpenseRequests.ts). It shows in the Budget Officer's
+  // Inbox > New Expense Line Item Requests, and in the requestor's My Requests.
   const submit = useMutation({
-    mutationFn: async () => {
-      const draft = (
-        await api.post<BudgetRequest>("/budget-requests", {
-          fiscalYear,
-          requestCategory: "GAE",
-          customExpenseName: name.trim(),
-          businessJustification: justification.trim() || undefined,
-        })
-      ).data;
-      try {
-        await api.post(`/budget-requests/${draft.id}/submit`, {});
-      } catch (err: any) {
-        throw new Error(`${err.response?.data?.error ?? "Couldn't send it to the Budget Officer."} It was saved as a draft in My Requests.`);
-      }
-    },
+    mutationFn: async () => (await api.post("/new-expense-requests", { name: name.trim(), details: justification.trim() || undefined })).data,
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["my-requests"] });
+      queryClient.invalidateQueries({ queryKey: ["new-expense-requests"] });
       navigate("/requests/mine");
     },
-    onError: (err: any) => setError(err.response?.data?.error ?? err.message ?? "Failed to submit the request."),
+    onError: (err: any) => setError(err.response?.data?.error ?? "Failed to submit the request."),
   });
 
   return (
@@ -57,7 +46,7 @@ export function NewExpenseRequestModal({ fiscalYear, onClose }: { fiscalYear: nu
         </div>
 
         <p className="mb-4 text-sm text-slate-600">
-          This goes straight to the Budget Officer, who sets up the expense and assigns its GL-CC. There's no approver to pick.
+          This goes straight to the Budget Officer. Once approved, the expense is added to the standard list and you can budget for it like any other line item.
         </p>
 
         <label className="block text-sm font-medium text-slate-700">

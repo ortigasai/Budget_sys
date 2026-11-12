@@ -171,6 +171,22 @@ export interface ExtraField {
   multi?: boolean;
 }
 
+// New GAE Request > "This expense isn't in the standard list" - a request to
+// add a line item to the standard list (backend routes/newExpenseRequests.ts).
+export interface NewExpenseRequest {
+  id: string;
+  name: string;
+  details: string | null;
+  department: { id: string; name: string };
+  status: "PENDING" | "APPROVED" | "DISAPPROVED";
+  decisionNote: string | null;
+  decidedAt: string | null;
+  expenseLineItemId: string | null;
+  createdAt: string;
+  requestedBy: { id: string; name: string };
+  decidedBy: { id: string; name: string } | null;
+}
+
 export interface ExpenseLineItem {
   id: string;
   name: string;

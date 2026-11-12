@@ -216,6 +216,7 @@ model Department {
   additionalHeadcountRequests AdditionalHeadcountRequest[]
   forecastSubmissions    ForecastSubmission[]
   accessRequests         AccessRequest[]
+  newExpenseRequests     NewExpenseRequest[]
 }
 
 // Business unit / legal entity (OCC, OCLP, OCLP Project, OLC, OLC Project,
@@ -1218,6 +1219,33 @@ model FeatureToggle {
 // themselves or for another person); it lands in Admin Console > Access
 // Requests, where the Budget Officer approves (creates the account) or
 // disapproves it. No password - they sign in through SSO.
+// New GAE Request > "This expense isn't in the standard list": a request to
+// add an expense line item to the standard list - not a budget request. Goes
+// to the Budget Officer only (Inbox > New Expense Line Item Requests); on
+// approval she fills in its category, GL-CC and owning department and it's
+// added to the catalog as a STANDARD ExpenseLineItem (expenseLineItemId).
+model NewExpenseRequest {
+  id                String     @id @default(cuid())
+  name              String
+  details           String?
+  // The requestor's department.
+  departmentId      String
+  department        Department @relation(fields: [departmentId], references: [id])
+  // Loose User.id references (this app's convention, see BudgetRequest.departmentHeadId).
+  requestedById     String
+  // "PENDING" | "APPROVED" | "DISAPPROVED"
+  status            String     @default("PENDING")
+  decidedById       String?
+  decidedAt         DateTime?
+  decisionNote      String?
+  // The catalog line item created on approval.
+  expenseLineItemId String?
+  createdAt         DateTime   @default(now())
+
+  @@index([status, createdAt])
+  @@index([requestedById])
+}
+
 model AccessRequest {
   id             String      @id @default(cuid())
   // "SELF" | "OTHER"

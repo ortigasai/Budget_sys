@@ -14,6 +14,7 @@ import { RequestCategory } from "@prisma/client";
 import { additionalHeadcountRouter } from "./routes/additionalHeadcount";
 import { manpowerRouter } from "./routes/manpower";
 import { approvedBudgetRouter } from "./routes/approvedBudget";
+import { newExpenseRequestsRouter } from "./routes/newExpenseRequests";
 
 export function createApp() {
   const app = express();
@@ -47,6 +48,7 @@ export function createApp() {
   app.use("/api/additional-headcount", additionalHeadcountRouter);
   app.use("/api/manpower", manpowerRouter);
   app.use("/api/approved-budget", approvedBudgetRouter);
+  app.use("/api/new-expense-requests", newExpenseRequestsRouter);
 
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {

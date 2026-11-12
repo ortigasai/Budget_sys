@@ -8,6 +8,7 @@ import { SearchableSelect } from "../components/SearchableSelect";
 import { PageHeader } from "../components/PageHeader";
 import { roleLabel } from "../components/RoleSwitcher";
 import { useFiscalYear } from "../lib/fiscalCycle";
+import { NewExpenseRequestsInboxSection } from "./NewExpenseRequestsInboxSection";
 
 const HEADCOUNT_DECISION_ENDPOINT: Record<string, string> = {
   DEPT_HEAD_REVIEW: "dept-head",
@@ -798,6 +799,7 @@ export function InboxPage() {
       <MobilePhoneBudgetInboxSection />
       <ForecastInboxSection />
       <RevenueBatchInboxSection />
+      <NewExpenseRequestsInboxSection />
       {bulkResult && (
         <div className="rounded-lg border border-slate-200 bg-white p-3 text-xs">
           <div className="mb-1 font-medium text-emerald-700">{bulkResult.succeeded.length} request(s) approved.</div>

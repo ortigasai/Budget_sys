@@ -6,6 +6,8 @@ import { prisma } from "../prisma";
 import { JWT_SECRET } from "../middleware/auth";
 import { computeAccess, getEffectiveMatrix } from "../lib/accessControl";
 import { exchangeSsoCode, loginMethods, ssoAuthorizeUrl } from "../lib/sso";
+import { canonicalDepartmentName } from "../lib/departmentAliases";
+import { Prisma } from "@prisma/client";
 import { asyncHandler } from "../asyncHandler";
 import { HttpError } from "../httpError";
 
@@ -154,14 +156,36 @@ authRouter.post(
     if (!loginMethods().includes("sso")) throw new HttpError(403, "Microsoft sign-in isn't enabled here.");
     const { code } = z.object({ code: z.string().min(1).max(4096) }).parse(req.body ?? {});
     const profile = await exchangeSsoCode(code);
-    const user = (await findUserForLogin(profile.email)) ?? (await linkSsoByName(profile));
-    if (!user) {
-      res.status(404).json({ error: `${profile.email} doesn't have access to the Budgeting System yet.`, sso: profile });
-      return;
-    }
+    const user = (await findUserForLogin(profile.email)) ?? (await linkSsoByName(profile)) ?? (await createSsoAccount(profile));
     res.json(await loginResponse(user));
   })
 );
+
+// Anyone who can sign in with the organization's Microsoft 365 gets in - no
+// Request access step. With no existing account (by email, or by name - see
+// linkSsoByName), one is made on first sign-in: their Microsoft email and
+// name, their department when Microsoft sends one that matches, no password
+// (Microsoft sign-in only) and no roles - the Budget Officer assigns those in
+// Admin Console > User Access as usual.
+async function createSsoAccount(profile: { email: string; name: string | null; department: string | null }) {
+  let departmentId: string | undefined;
+  if (profile.department) {
+    const department = await prisma.department.findFirst({
+      where: { name: { equals: canonicalDepartmentName(profile.department.trim()), mode: "insensitive" } },
+      select: { id: true },
+    });
+    departmentId = department?.id;
+  }
+  const name = profile.name?.trim() || profile.email.split("@")[0];
+  try {
+    await prisma.user.create({ data: { email: profile.email, name, departmentId } });
+    console.log(`[sso] created an account on first Microsoft sign-in for ${profile.email}${departmentId ? "" : " (no matching department)"}`);
+  } catch (err) {
+    // Two sign-ins racing on the same new email - the other one made it.
+    if (!(err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002")) throw err;
+  }
+  return (await findUserForLogin(profile.email))!;
+}
 
 // Most Employee List accounts were imported without a real email (the roster
 // had only ID numbers), so they got a made-up "first.last@ortigas.com.ph"
@@ -171,7 +195,8 @@ authRouter.post(
 // whole system has that name, and it's one of those made-up-email accounts,
 // it becomes that person's account - its email is replaced with the
 // Microsoft one, so every later sign-in matches by email. Any doubt (no
-// name from Microsoft, no match, more than one) still goes to Request access.
+// name from Microsoft, no match, more than one) makes a new account instead
+// (createSsoAccount below).
 const nameKey = (name: string) =>
   name
     .normalize("NFD")

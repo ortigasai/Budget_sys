@@ -5,7 +5,7 @@ import { useColumnFilters } from "../lib/useColumnFilters";
 import { useTableSort } from "../lib/useTableSort";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
-import { api, downloadFile, requestLineDisplay, type AdditionalHeadcountRequest, type BudgetRequest, type DoeBatchDetail, type MobilePhoneBudgetRequest, type Office365AccountRequest, type RevenueBatchSummary } from "../api/client";
+import { api, downloadFile, requestLineDisplay, type AdditionalHeadcountRequest, type BudgetRequest, type DoeBatchDetail, type MobilePhoneBudgetRequest, type NewExpenseRequest, type Office365AccountRequest, type RevenueBatchSummary } from "../api/client";
 import { STAGE_LABELS, StatusBadge } from "../components/StatusBadge";
 import { PageHeader } from "../components/PageHeader";
 import { ApproverPicker } from "../components/ApproverPicker";
@@ -69,6 +69,49 @@ type TopLevelRow =
     }
   | { kind: "revenue"; id: string; createdAt: string; data: RevenueBatchSummary }
   | { kind: "sbu-batch"; id: string; createdAt: string; data: DoeBatchDetail; tab: string; label: string };
+
+const NEW_EXPENSE_STATUS: Record<NewExpenseRequest["status"], { label: string; className: string }> = {
+  PENDING: { label: "Pending - Budget Officer", className: "bg-amber-100 text-amber-800" },
+  APPROVED: { label: "Approved - added to the standard list", className: "bg-emerald-100 text-emerald-800" },
+  DISAPPROVED: { label: "Disapproved", className: "bg-red-100 text-red-700" },
+};
+
+// "This expense isn't in the standard list" requests (requests to add a line
+// item to the standard list - not budget requests, so not in the table below).
+function MyNewExpenseRequests() {
+  const { data: requests = [] } = useQuery({
+    queryKey: ["new-expense-requests", "mine"],
+    queryFn: async () => (await api.get<NewExpenseRequest[]>("/new-expense-requests/mine")).data,
+  });
+  if (requests.length === 0) return null;
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+      <div className="mb-2 text-xs font-semibold tracking-wide text-emerald-800">New Expense Line Item Requests</div>
+      <table className="w-full text-sm">
+        <thead className="text-left text-xs text-slate-500">
+          <tr>
+            <th className="py-1 pr-3 font-medium">Expense</th>
+            <th className="py-1 pr-3 font-medium">Submitted</th>
+            <th className="py-1 pr-3 font-medium">Status</th>
+            <th className="py-1 font-medium">Budget Officer's comment</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-slate-100">
+          {requests.map((r) => (
+            <tr key={r.id}>
+              <td className="py-1.5 pr-3 font-medium text-slate-800">{r.name}</td>
+              <td className="py-1.5 pr-3 text-slate-600">{new Date(r.createdAt).toLocaleDateString()}</td>
+              <td className="py-1.5 pr-3">
+                <span className={`rounded px-2 py-0.5 text-xs font-medium ${NEW_EXPENSE_STATUS[r.status].className}`}>{NEW_EXPENSE_STATUS[r.status].label}</span>
+              </td>
+              <td className="py-1.5 text-slate-600">{r.decisionNote ?? "—"}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
 
 export function MyRequestsPage() {
   const { data: budgetRequests = [], isLoading: budgetLoading } = useQuery({
@@ -215,6 +258,7 @@ export function MyRequestsPage() {
   return (
     <div className="space-y-4">
       <PageHeader subtitle={`${totalCount} request(s) submitted`} />
+      <MyNewExpenseRequests />
       {isLoading ? (
         <div className="text-sm text-slate-400">Loading…</div>
       ) : rows.length === 0 ? (
