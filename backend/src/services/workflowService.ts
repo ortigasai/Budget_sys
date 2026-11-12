@@ -6,7 +6,7 @@ import { determineRequiresCfoApproval } from "./mobilePolicyService";
 import { getFiscalCycle } from "../lib/fiscalCycle";
 import { uploadCostCenterPlanning } from "./sapMockAdapter";
 import type { AuthedUser } from "../middleware/auth";
-import { assigneeForStage, canActOnStage, chainFor, nextStageAfter, previousStageBefore, type ChainRequest } from "./approvalChain";
+import { assigneeForStage, canActOnStage, chainFor, isCustomGaeRequest, nextStageAfter, previousStageBefore, type ChainRequest } from "./approvalChain";
 
 const DUE_DATE_STAGE_LABELS: Record<DueDateStage, string> = {
   FINALIZE_FORECAST: "Finalize Forecast",
@@ -80,11 +80,14 @@ export async function submitRequest(requestId: string) {
   }
   await assertDueDateNotPassed(DueDateStage.REQUEST_AND_AUTHORIZATION);
 
-  if (request.proposedAmount <= 0) {
+  // An expense that isn't in the standard list only needs its name - it goes
+  // to the Budget Officer, who sets it up (see approvalChain.ts's chainFor).
+  const customGae = isCustomGaeRequest(request);
+  if (request.proposedAmount <= 0 && !customGae) {
     const { targetCalendarYear } = await getFiscalCycle();
     throw new HttpError(400, `${targetCalendarYear} Proposed Amount must be greater than 0 to submit.`);
   }
-  if (!request.businessJustification?.trim()) {
+  if (!request.businessJustification?.trim() && !customGae) {
     throw new HttpError(400, "Business Justification is mandatory.");
   }
 
@@ -141,8 +144,10 @@ export async function submitRequest(requestId: string) {
   // centralized department has no separate Department Head - their own Submit
   // sends it straight to their Centralized Department Head (see
   // approvalChain.ts's chainFor - no Centralized L1 Review stage).
+  // (Not for an expense that isn't in the standard list - that goes to the
+  // Budget Officer only, with no approver to pick.)
   let ownDeptInitiated = false;
-  if (request.requestCategory === "GAE") {
+  if (request.requestCategory === "GAE" && !isCustomGaeRequest(request)) {
     const creatorRoles = await prisma.roleAssignment.findMany({
       where: {
         userId: request.createdById,
@@ -370,7 +375,7 @@ export async function returnAtStep5(
     | "REQUESTOR",
   reasonCodeId: string
 ) {
-  const request = await prisma.budgetRequest.findUniqueOrThrow({ where: { id: requestId } });
+  const request = await prisma.budgetRequest.findUniqueOrThrow({ where: { id: requestId }, include: { expenseLineItem: true } });
   requireStage(request.currentStage, RequestStage.BUDGET_OFFICER_REVIEW);
   await assertDueDateNotPassed(DueDateStage.BCA_AND_FINALIZATION);
 

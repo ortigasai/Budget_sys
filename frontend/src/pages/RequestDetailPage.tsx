@@ -144,8 +144,12 @@ export function RequestDetailPage() {
   // Mirrors StandardRequestTab.tsx's own-department detection - no separate
   // Department Head for these, they assign their own Centralized Department
   // Head directly instead.
+  // A GAE expense that isn't in the standard list goes to the Budget Officer
+  // only - no approver to pick (see approvalChain.ts's chainFor).
+  const goesToBudgetOfficerOnly = request.requestCategory === "GAE" && !!request.expenseLineItem?.isCustom;
   const ownDeptInitiated =
     request.requestCategory === "GAE" &&
+    !goesToBudgetOfficerOnly &&
     currentUser?.roles.some((r) => (r.roleType === "CENTRALIZED_BUDGET_PREPARER" || r.roleType === "CENTRALIZED_FIRST_LEVEL_REVIEWER") && r.department?.id === request.expenseLineItem!.ownerDepartmentId);
   const line = requestLineDisplay(request);
 
@@ -180,6 +184,7 @@ export function RequestDetailPage() {
 
       {canSubmit &&
         (request.requestCategory === "GAE" || request.requestCategory === "NPC") &&
+        !goesToBudgetOfficerOnly &&
         ((ownDeptInitiated && !request.centralizedHeadId) || (!ownDeptInitiated && !request.departmentHeadId)) && (
           <div className="grid grid-cols-1 gap-4 rounded-lg border border-slate-200 bg-white p-4 shadow-sm sm:grid-cols-2">
             {ownDeptInitiated

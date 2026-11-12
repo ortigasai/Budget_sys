@@ -154,7 +154,7 @@ authRouter.post(
     if (!loginMethods().includes("sso")) throw new HttpError(403, "Microsoft sign-in isn't enabled here.");
     const { code } = z.object({ code: z.string().min(1).max(4096) }).parse(req.body ?? {});
     const profile = await exchangeSsoCode(code);
-    const user = await findUserForLogin(profile.email);
+    const user = (await findUserForLogin(profile.email)) ?? (await linkSsoByName(profile));
     if (!user) {
       res.status(404).json({ error: `${profile.email} doesn't have access to the Budgeting System yet.`, sso: profile });
       return;
@@ -162,6 +162,49 @@ authRouter.post(
     res.json(await loginResponse(user));
   })
 );
+
+// Most Employee List accounts were imported without a real email (the roster
+// had only ID numbers), so they got a made-up "first.last@ortigas.com.ph"
+// that Microsoft never returns - e.g. johnmark.daymiel@ortigas.com.ph vs his
+// real daymieljma@capitolcommons.com.ph. When the Microsoft email matches no
+// account, fall back to the person's name: if exactly one account in the
+// whole system has that name, and it's one of those made-up-email accounts,
+// it becomes that person's account - its email is replaced with the
+// Microsoft one, so every later sign-in matches by email. Any doubt (no
+// name from Microsoft, no match, more than one) still goes to Request access.
+const nameKey = (name: string) =>
+  name
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z\s]/g, " ")
+    .split(/\s+/)
+    // Middle initials and generational suffixes vary between the two lists.
+    .filter((t) => t.length > 1 && !["jr", "sr", "ii", "iii", "iv"].includes(t))
+    .sort()
+    .join(" ");
+
+const hasMadeUpEmail = (u: { email: string; employeeIdNumber: number | null }) =>
+  u.employeeIdNumber !== null && /^[a-z0-9]+\.[a-z0-9]+\d*@ortigas\.com\.ph$/i.test(u.email);
+
+async function linkSsoByName(profile: { email: string; name: string | null }) {
+  if (!profile.name) {
+    console.warn("[sso] no account for the Microsoft email and Microsoft returned no name to match on");
+    return null;
+  }
+  const key = nameKey(profile.name);
+  if (!key) return null;
+  const all = await prisma.user.findMany({ select: { id: true, name: true, email: true, employeeIdNumber: true } });
+  const sameName = all.filter((u) => nameKey(u.name) === key);
+  if (sameName.length !== 1 || !hasMadeUpEmail(sameName[0])) {
+    console.warn(`[sso] couldn't link a Microsoft sign-in by name (${sameName.length} account(s) with that name)`);
+    return null;
+  }
+  const match = sameName[0];
+  await prisma.user.update({ where: { id: match.id }, data: { email: profile.email } });
+  console.log(`[sso] linked ${profile.email} to the existing account for ${match.name} (was ${match.email})`);
+  return findUserForLogin(profile.email);
+}
 
 // ---- Login page > "Request access" (no login needed) ----
 // Department dropdown for the request form - names only.

@@ -50,7 +50,14 @@ export interface ChainRequest {
   // catalog line item - see SBU_BATCH_CATEGORIES below). Only ever
   // dereferenced by the GAE-only stages (CENTRALIZED_L1_REVIEW/
   // CENTRALIZED_HEAD_REVIEW), which those categories' chain never includes.
-  expenseLineItem: { ownerDepartmentId: string; centralizedReviewerId: string | null } | null;
+  // isCustom: an expense that isn't in the standard list ("This expense
+  // isn't in the standard list") - a GAE one goes to the Budget Officer only.
+  expenseLineItem: { ownerDepartmentId: string; centralizedReviewerId: string | null; isCustom: boolean } | null;
+}
+
+/** A GAE request for an expense that isn't in the standard list. */
+export function isCustomGaeRequest(r: Pick<ChainRequest, "requestCategory" | "expenseLineItem">): boolean {
+  return r.requestCategory === RequestCategory.GAE && !!r.expenseLineItem?.isCustom;
 }
 
 // NPC's 8 SBUs -> the 6-value SBU enum SBU Finance roles are scoped by (the
@@ -82,6 +89,13 @@ export function chainFor(r: ChainRequest): RequestStage[] {
     // validates before SBU Finance, then routes the request on (no BCA, no
     // SBU or Division Head) after SBU Finance Head Review.
     return [S.DEPT_HEAD_REVIEW, S.BUDGET_OFFICER_VALIDATION, S.SF_VALIDATION, S.SF_HEAD_REVIEW, S.BUDGET_OFFICER_ROUTING, S.BUDGET_OFFICER_REVIEW];
+  }
+  // An expense that isn't in the standard list has no line item owner,
+  // Department Head or centralized department to review it yet - it goes
+  // straight to the Budget Officer, who validates it (and assigns its GL-CC)
+  // and then finalizes it.
+  if (isCustomGaeRequest(r)) {
+    return [S.BUDGET_OFFICER_VALIDATION, S.BUDGET_OFFICER_REVIEW];
   }
   // GAE (and anything else on the shared expense chain). No Centralized L1
   // Review stage - a Centralized Department Requestor raising it for their

@@ -165,10 +165,15 @@ budgetRequestsRouter.post(
     if (!body.expenseLineItemId && !body.customExpenseName) {
       throw new HttpError(400, "Select an expense line item or provide a custom expense name.");
     }
+    // An expense that isn't in the standard list (GAE) goes to the Budget
+    // Officer only, and only its name is required - the spend grid and
+    // Business Justification are optional for it.
+    const customGae = requestCategory === RequestCategory.GAE && !body.expenseLineItemId && !!body.customExpenseName;
     if (!body.monthlyAmounts) {
-      throw new HttpError(400, "Provide the monthly spend grid.");
+      if (!customGae) throw new HttpError(400, "Provide the monthly spend grid.");
+      body.monthlyAmounts = Array(12).fill(0);
     }
-    if (!body.businessJustification) {
+    if (!body.businessJustification && !customGae) {
       throw new HttpError(400, "Provide a business justification.");
     }
     if (requestCategory === RequestCategory.DOE && !body.sbu) {
@@ -214,7 +219,7 @@ budgetRequestsRouter.post(
         expenseLineItemId: expenseLineItemId!,
         monthlyAmounts: body.monthlyAmounts,
         proposedAmount,
-        businessJustification: body.businessJustification,
+        businessJustification: body.businessJustification ?? "",
         otherRequiredFields: body.otherRequiredFields ?? {},
         requestCategory,
         sbu: requestCategory === RequestCategory.DOE ? body.sbu : undefined,

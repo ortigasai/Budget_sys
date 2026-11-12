@@ -11,6 +11,7 @@ import { evaluateSpendGridFormula, spreadByFrequency, spreadByMonthNumbers } fro
 import { useFiscalYear } from "../../lib/fiscalCycle";
 import { startUpload, useUploadTaskBySlot } from "../../lib/uploadManager";
 import { UploadedDraftsPanel, type UploadedDraft } from "../../components/UploadedDraftsPanel";
+import { NewExpenseRequestModal } from "./NewExpenseRequestModal";
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
@@ -136,8 +137,8 @@ export function StandardRequestTab({ requestCategory, subtitle }: { requestCateg
 
   const [category, setCategory] = useState("");
   const [expenseLineItemId, setExpenseLineItemId] = useState("");
-  const [useCustom, setUseCustom] = useState(false);
-  const [customExpenseName, setCustomExpenseName] = useState("");
+  // "This expense isn't in the standard list" opens NewExpenseRequestModal.
+  const [newExpenseOpen, setNewExpenseOpen] = useState(false);
   const [monthlyAmounts, setMonthlyAmounts] = useState<number[]>(Array(12).fill(0));
   const [businessJustification, setBusinessJustification] = useState("");
   const [departmentHeadId, setDepartmentHeadId] = useState("");
@@ -181,14 +182,10 @@ export function StandardRequestTab({ requestCategory, subtitle }: { requestCateg
   // A Centralized Department Requestor raising a GAE request for their own
   // department has no separate Department Head to pick - Submit sends it
   // straight to their own Centralized Department Head (no L1 review stage).
-  // A custom ("not in the list") expense is filed under the requestor's own
-  // department until the Budget Officer assigns its real owner (see POST
-  // /budget-requests), so the server routes it the same way - match that here.
-  const ownerDepartmentId = useCustom ? currentUser?.department?.id : selectedItem?.ownerDepartmentId;
   const ownDeptInitiated =
     requestCategory === "GAE" &&
-    !!ownerDepartmentId &&
-    !!currentUser?.roles.some((r) => (r.roleType === "CENTRALIZED_BUDGET_PREPARER" || r.roleType === "CENTRALIZED_FIRST_LEVEL_REVIEWER") && r.department?.id === ownerDepartmentId);
+    !!selectedItem &&
+    !!currentUser?.roles.some((r) => (r.roleType === "CENTRALIZED_BUDGET_PREPARER" || r.roleType === "CENTRALIZED_FIRST_LEVEL_REVIEWER") && r.department?.id === selectedItem.ownerDepartmentId);
   const proposedAmount = monthlyAmounts.reduce((a, b) => a + b, 0);
   const needsAttachment = docThreshold && proposedAmount > docThreshold.amount;
 
@@ -313,21 +310,22 @@ export function StandardRequestTab({ requestCategory, subtitle }: { requestCateg
     }
   }, [usesHeadcountTable, monthlyFromHeadcountRows, usesMobileRankTable, monthlyFromMobileRank, formulaResult, usesSpendMonthField, otherFields, selectedItem?.spendGridFrequency]);
 
+  const createDraft = async () =>
+    (
+      await api.post<BudgetRequest>("/budget-requests", {
+        fiscalYear: FISCAL_YEAR,
+        expenseLineItemId,
+        monthlyAmounts,
+        businessJustification: businessJustification.trim() || undefined,
+        otherRequiredFields: usesHeadcountTable && rateField ? headcountRowsToFields(headcountRows, rateField.label) : otherFields,
+        requestCategory,
+        departmentHeadId: departmentHeadId || undefined,
+        centralizedHeadId: centralizedHeadId || undefined,
+      })
+    ).data;
+
   const createMutation = useMutation({
-    mutationFn: async () =>
-      (
-        await api.post<BudgetRequest>("/budget-requests", {
-          fiscalYear: FISCAL_YEAR,
-          expenseLineItemId: useCustom ? undefined : expenseLineItemId,
-          customExpenseName: useCustom ? customExpenseName : undefined,
-          monthlyAmounts,
-          businessJustification,
-          otherRequiredFields: usesHeadcountTable && rateField ? headcountRowsToFields(headcountRows, rateField.label) : otherFields,
-          requestCategory,
-          departmentHeadId: departmentHeadId || undefined,
-          centralizedHeadId: centralizedHeadId || undefined,
-        })
-      ).data,
+    mutationFn: createDraft,
     onSuccess: (data) => {
       setCreated(data);
       setError(null);
@@ -411,7 +409,7 @@ export function StandardRequestTab({ requestCategory, subtitle }: { requestCateg
     );
   }
 
-  const saveDraftDisabled = createMutation.isPending || (!useCustom && !expenseLineItemId) || (useCustom && !customExpenseName);
+  const saveDraftDisabled = createMutation.isPending || !expenseLineItemId;
 
   return (
     <div className="mx-auto max-w-6xl space-y-4">
@@ -502,12 +500,11 @@ export function StandardRequestTab({ requestCategory, subtitle }: { requestCateg
           <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
             <SectionLabel>Expense Selection</SectionLabel>
             <label className="flex items-center gap-2 text-sm">
-              <input type="checkbox" checked={useCustom} onChange={(e) => setUseCustom(e.target.checked)} />
+              <input type="checkbox" checked={newExpenseOpen} onChange={(e) => setNewExpenseOpen(e.target.checked)} />
               This expense isn't in the standard list
             </label>
-            {useCustom ? (
-              <input className="mt-2 w-full rounded border border-slate-300 px-2 py-1.5 text-sm" placeholder="Describe the expense (routes to the Budget Officer for GL-CC assignment)" value={customExpenseName} onChange={(e) => setCustomExpenseName(e.target.value)} />
-            ) : (
+            {newExpenseOpen && <NewExpenseRequestModal fiscalYear={FISCAL_YEAR} onClose={() => setNewExpenseOpen(false)} />}
+            {(
               <div className="mt-2 space-y-2">
                 <div>
                   <label className="block text-xs font-medium text-slate-500">Expense Category</label>
