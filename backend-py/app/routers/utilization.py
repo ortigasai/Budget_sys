@@ -50,7 +50,7 @@ OPEN_COMMITMENT_STATUSES = ["OPEN", "APPROVED_PR"]
 # roles (see RoleSwitcher.tsx's ROLE_LABELS: Centralized Department
 # Preparer/Reviewer/Approver). Utilization Tracking is open to all of them,
 # not just Preparers/Heads as FR-2.1 originally stated - widened per request.
-CENTRALIZED_ROLE_TYPES = ("CENTRALIZED_BUDGET_PREPARER", "CENTRALIZED_DEPARTMENT_HEAD", "CENTRALIZED_FIRST_LEVEL_REVIEWER")
+CENTRALIZED_ROLE_TYPES = ("CENTRALIZED_BUDGET_PREPARER", "CENTRALIZED_DEPARTMENT_HEAD", "CENTRALIZED_DEPARTMENT_HEAD_2", "CENTRALIZED_FIRST_LEVEL_REVIEWER")
 
 
 class DepartmentOut(BaseModel):

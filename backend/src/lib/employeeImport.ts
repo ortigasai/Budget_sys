@@ -51,6 +51,7 @@ const ROSTER_ROLE_TYPES: Record<string, RoleType> = {
   "Manpower Preparer": RoleType.HR_ANALYST,
   "Centralized Department Requestor/Reviewer": RoleType.CENTRALIZED_BUDGET_PREPARER,
   "Centralized Department Head": RoleType.CENTRALIZED_DEPARTMENT_HEAD,
+  "2nd Centralized Department Head": RoleType.CENTRALIZED_DEPARTMENT_HEAD_2,
 };
 
 function slugifyEmailPart(value: string): string {

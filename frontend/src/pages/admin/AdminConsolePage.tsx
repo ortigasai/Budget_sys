@@ -22,6 +22,7 @@ import { SapSyncStatusTab } from "./SapSyncStatusTab";
 import { AccessControlTab } from "./AccessControlTab";
 import { HiddenMenusTab } from "./HiddenMenusTab";
 import { AccessRequestsTab } from "./AccessRequestsTab";
+import { MissingDepartmentNotice } from "./MissingDepartmentNotice";
 
 // Shared with Layout.tsx's AdminConsoleSidebarNav, which renders this same
 // list as real `?tab=` links in the leftmost sidebar, grouped by `group`
@@ -84,6 +85,7 @@ export function AdminConsolePage() {
 
   return (
     <div className="space-y-4">
+      <MissingDepartmentNotice />
       {tab === "sap-sync-status" && <SapSyncStatusTab />}
       {tab === "expense-items" && <ExpenseLineItemsTab />}
       {tab === "budget-codes" && <BudgetCodesTab />}

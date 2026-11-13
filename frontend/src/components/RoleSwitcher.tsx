@@ -21,6 +21,9 @@ const ROLE_LABELS: Record<string, string> = {
   CENTRALIZED_BUDGET_PREPARER: "Centralized Department Requestor/Reviewer",
   CENTRALIZED_FIRST_LEVEL_REVIEWER: "Centralized Department Reviewer",
   CENTRALIZED_DEPARTMENT_HEAD: "Centralized Department Head",
+  // Reviews after the department's Centralized Department Head (a second
+  // Centralized Department Head Review stage).
+  CENTRALIZED_DEPARTMENT_HEAD_2: "2nd Centralized Department Head",
   CFO: "CFO",
   CEO: "CEO",
   HR_ANALYST: "Manpower Preparer",

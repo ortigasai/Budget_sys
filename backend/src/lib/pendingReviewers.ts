@@ -14,6 +14,7 @@ const BUDGET_STAGE_ROLE: Partial<Record<RequestStage, RoleType>> = {
   [RequestStage.CFO_APPROVAL]: RoleType.CFO,
   [RequestStage.CENTRALIZED_L1_REVIEW]: RoleType.CENTRALIZED_FIRST_LEVEL_REVIEWER,
   [RequestStage.CENTRALIZED_HEAD_REVIEW]: RoleType.CENTRALIZED_DEPARTMENT_HEAD,
+  [RequestStage.CENTRALIZED_HEAD_2_REVIEW]: RoleType.CENTRALIZED_DEPARTMENT_HEAD_2,
   [RequestStage.BCA_HEAD_REVIEW]: RoleType.BCA_HEAD,
   [RequestStage.BUDGET_OFFICER_VALIDATION]: RoleType.BUDGET_OFFICER,
   [RequestStage.BUDGET_OFFICER_ROUTING]: RoleType.BUDGET_OFFICER,
@@ -23,6 +24,7 @@ const DEPARTMENT_SCOPED_ROLES = new Set<RoleType>([RoleType.DEPARTMENT_HEAD]);
 const OWNER_DEPARTMENT_SCOPED_ROLES = new Set<RoleType>([
   RoleType.CENTRALIZED_FIRST_LEVEL_REVIEWER,
   RoleType.CENTRALIZED_DEPARTMENT_HEAD,
+  RoleType.CENTRALIZED_DEPARTMENT_HEAD_2,
 ]);
 
 let humanResourcesDeptIdPromise: Promise<string | null> | null = null;

@@ -93,6 +93,7 @@ export default function App() {
                 "BUDGET_OFFICER",
                 "CENTRALIZED_BUDGET_PREPARER",
                 "CENTRALIZED_DEPARTMENT_HEAD",
+                "CENTRALIZED_DEPARTMENT_HEAD_2",
                 "CENTRALIZED_FIRST_LEVEL_REVIEWER",
               ]}
             >

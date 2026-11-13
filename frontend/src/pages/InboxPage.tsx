@@ -568,6 +568,7 @@ const STAGE_DISPLAY: Record<string, string> = {
   CFO_APPROVAL: "CFO",
   CENTRALIZED_L1_REVIEW: "Centralized Department Requestor/Reviewer",
   CENTRALIZED_HEAD_REVIEW: "Centralized Department Head",
+  CENTRALIZED_HEAD_2_REVIEW: "2nd Centralized Department Head",
   BCA_HEAD_REVIEW: "BC&A Head",
   BUDGET_OFFICER_REVIEW: "Budget Officer",
   BUDGET_OFFICER_VALIDATION: "Budget Officer Validation",

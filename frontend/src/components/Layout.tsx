@@ -13,6 +13,7 @@ import { sfSbus } from "../lib/groupScope";
 import { useFiscalYear } from "../lib/fiscalCycle";
 import { ADMIN_GROUPS, ADMIN_TABS } from "../pages/admin/AdminConsolePage";
 import { useAccessRequests } from "../pages/admin/AccessRequestsTab";
+import { useUsersWithoutDepartment } from "../pages/admin/MissingDepartmentNotice";
 import { AdminConsoleSearch } from "./AdminConsoleSearch";
 
 const linkClass = ({ isActive }: { isActive: boolean }) => `flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${isActive ? "bg-emerald-700 text-white shadow-sm shadow-emerald-700/30" : "text-slate-600 hover:bg-emerald-50 hover:text-emerald-900"}`;
@@ -471,6 +472,7 @@ function AdminConsoleSidebarNav() {
   const activeTab = ADMIN_TABS.find((t) => t.id === tabParam)?.id ?? "expense-items";
   const { data: accessRequests = [] } = useAccessRequests();
   const pendingAccessRequests = accessRequests.filter((r) => r.status === "PENDING").length;
+  const usersWithoutDepartment = useUsersWithoutDepartment().length;
 
   return (
     <>
@@ -485,6 +487,11 @@ function AdminConsoleSidebarNav() {
                 {t.label}
                 {t.id === "access-requests" && pendingAccessRequests > 0 && (
                   <span className="ml-auto rounded-full bg-red-600 px-1.5 text-[10px] font-semibold leading-4 text-white">{pendingAccessRequests}</span>
+                )}
+                {t.id === "roles" && usersWithoutDepartment > 0 && (
+                  <span title="Users with no department assigned" className="ml-auto rounded-full bg-amber-500 px-1.5 text-[10px] font-semibold leading-4 text-white">
+                    {usersWithoutDepartment}
+                  </span>
                 )}
               </Link>
             ))}
@@ -518,7 +525,7 @@ export function Layout() {
   const activeReportView = location.pathname === "/reports/trend" ? "trend" : location.pathname === "/reports/npc" ? "npc" : (new URLSearchParams(location.search).get("comparison") ?? "budget-actual");
   const isBudgetOfficer = hasRole("BUDGET_OFFICER");
   const finalizationViewScope = useFinalizationViewScope();
-  const isReviewer = hasRole("DEPARTMENT_HEAD") || hasRole("CENTRALIZED_FIRST_LEVEL_REVIEWER") || hasRole("CENTRALIZED_DEPARTMENT_HEAD") || hasRole("BCA_HEAD") || hasRole("CFO") || isBudgetOfficer;
+  const isReviewer = hasRole("DEPARTMENT_HEAD") || hasRole("CENTRALIZED_FIRST_LEVEL_REVIEWER") || hasRole("CENTRALIZED_DEPARTMENT_HEAD") || hasRole("CENTRALIZED_DEPARTMENT_HEAD_2") || hasRole("BCA_HEAD") || hasRole("CFO") || isBudgetOfficer;
   // Spec item 16 - Revenue's 4-stage chain reuses BCA_HEAD/BUDGET_OFFICER
   // (already covered by isReviewer) plus Phase 3's two SBU-scoped roles.
   const isRevenueReviewer = isReviewer || hasSbuRole("BU_FINANCE_OFFICER") || hasSbuRole("BU_FINANCE_HEAD");

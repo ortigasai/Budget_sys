@@ -376,16 +376,24 @@ adminRouter.delete(
 // Budget Officer correct a user's login email (e.g. the auto-generated
 // first.last@ortigas.com.ph placeholder from the Employee List import)
 // before assigning them a role.
-const updateUserSchema = z.object({ email: z.string().email() });
+// Also sets the person's own (home) department - used by the Admin Console's
+// "no department assigned" notice for accounts made on first Microsoft
+// sign-in or from an access request without one.
+const updateUserSchema = z
+  .object({ email: z.string().email().optional(), departmentId: z.string().min(1).optional() })
+  .refine((b) => b.email !== undefined || b.departmentId !== undefined, { message: "Nothing to update." });
 adminRouter.patch(
   "/users/:id",
   requireRole(RoleType.BUDGET_OFFICER),
   asyncHandler(async (req, res) => {
-    const { email } = updateUserSchema.parse(req.body);
+    const { email, departmentId } = updateUserSchema.parse(req.body);
+    if (departmentId && !(await prisma.department.findUnique({ where: { id: departmentId }, select: { id: true } }))) {
+      throw new HttpError(400, "That department doesn't exist.");
+    }
     try {
       const updated = await prisma.user.update({
         where: { id: req.params.id },
-        data: { email: email.trim().toLowerCase() },
+        data: { ...(email !== undefined && { email: email.trim().toLowerCase() }), ...(departmentId && { departmentId }) },
       });
       res.json(updated);
     } catch (err: any) {

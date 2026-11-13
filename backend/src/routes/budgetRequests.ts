@@ -723,6 +723,7 @@ budgetRequestsRouter.get(
         hasRole(user, RoleType.CENTRALIZED_BUDGET_PREPARER, ownerId) ||
         hasRole(user, RoleType.CENTRALIZED_FIRST_LEVEL_REVIEWER, ownerId) ||
         hasRole(user, RoleType.CENTRALIZED_DEPARTMENT_HEAD, ownerId) ||
+        hasRole(user, RoleType.CENTRALIZED_DEPARTMENT_HEAD_2, ownerId) ||
         user.id === request.expenseLineItem.centralizedReviewerId ||
         user.id === request.centralizedHeadId;
       if (!canSeeGaeBudget) {
@@ -897,6 +898,7 @@ budgetRequestsRouter.post(
           "DEPT_HEAD_REVIEW",
           "CENTRALIZED_L1_REVIEW",
           "CENTRALIZED_HEAD_REVIEW",
+          "CENTRALIZED_HEAD_2_REVIEW",
           "BCA_HEAD_REVIEW",
           "BUDGET_OFFICER_VALIDATION",
           "SF_VALIDATION",

@@ -157,7 +157,14 @@ export async function submitRequest(requestId: string) {
     });
     ownDeptInitiated = creatorRoles.length > 0;
   }
-  const chainReq = { ...request, requiresCfoApproval, ownDeptInitiated };
+  // A 2nd Centralized Department Head on the line item's owning department
+  // adds a second Centralized Department Head Review after the first.
+  const centralizedHead2Review =
+    request.requestCategory === "GAE" &&
+    !isCustomGaeRequest(request) &&
+    !!request.expenseLineItem &&
+    (await prisma.roleAssignment.count({ where: { departmentId: request.expenseLineItem.ownerDepartmentId, roleType: "CENTRALIZED_DEPARTMENT_HEAD_2" } })) > 0;
+  const chainReq = { ...request, requiresCfoApproval, ownDeptInitiated, centralizedHead2Review };
   const chain = chainFor(chainReq);
   if (chain[0] === RequestStage.DEPT_HEAD_REVIEW && !request.departmentHeadId) {
     throw new HttpError(400, 'Select a "Department Head / Approver" for this request.');
@@ -170,7 +177,7 @@ export async function submitRequest(requestId: string) {
   }
   return prisma.budgetRequest.update({
     where: { id: requestId },
-    data: { currentStage: chain[0], status: "IN_REVIEW", requiresCfoApproval, ownDeptInitiated, assigneeId: assigneeForStage(chainReq, chain[0]) },
+    data: { currentStage: chain[0], status: "IN_REVIEW", requiresCfoApproval, ownDeptInitiated, centralizedHead2Review, assigneeId: assigneeForStage(chainReq, chain[0]) },
   });
 }
 
@@ -196,6 +203,7 @@ const DUE_DATE_BY_STAGE: Partial<Record<RequestStage, DueDateStage>> = {
   [RequestStage.DEPT_HEAD_REVIEW]: DueDateStage.REQUEST_AND_AUTHORIZATION,
   [RequestStage.CENTRALIZED_L1_REVIEW]: DueDateStage.CENTRALIZED_L1_REVIEW,
   [RequestStage.CENTRALIZED_HEAD_REVIEW]: DueDateStage.CENTRALIZED_HEAD_REVIEW,
+  [RequestStage.CENTRALIZED_HEAD_2_REVIEW]: DueDateStage.CENTRALIZED_HEAD_REVIEW,
   [RequestStage.BUDGET_OFFICER_VALIDATION]: DueDateStage.BCA_AND_FINALIZATION,
   [RequestStage.BUDGET_OFFICER_ROUTING]: DueDateStage.BCA_AND_FINALIZATION,
   [RequestStage.BCA_HEAD_REVIEW]: DueDateStage.BCA_AND_FINALIZATION,
@@ -364,6 +372,7 @@ export async function returnAtStep5(
         | "DEPT_HEAD_REVIEW"
         | "CENTRALIZED_L1_REVIEW"
         | "CENTRALIZED_HEAD_REVIEW"
+        | "CENTRALIZED_HEAD_2_REVIEW"
         | "BCA_HEAD_REVIEW"
         | "BUDGET_OFFICER_VALIDATION"
         | "SF_VALIDATION"

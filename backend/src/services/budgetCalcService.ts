@@ -9,6 +9,7 @@ export const POOL_CONSUMING_STAGES: RequestStage[] = [
   RequestStage.DEPT_HEAD_REVIEW,
   RequestStage.CENTRALIZED_L1_REVIEW,
   RequestStage.CENTRALIZED_HEAD_REVIEW,
+  RequestStage.CENTRALIZED_HEAD_2_REVIEW,
   RequestStage.BUDGET_OFFICER_VALIDATION,
   RequestStage.SF_VALIDATION,
   RequestStage.SF_HEAD_REVIEW,
