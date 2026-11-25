@@ -549,7 +549,7 @@ export function StandardRequestTab({ requestCategory, subtitle }: { requestCateg
                   This request is for <strong>new mobile phone applications only</strong> — no need to request for employees who already have an existing mobile phone.
                 </div>
                 <div>
-                  For a <strong>new hire</strong>, mobile phone budget is requested automatically through the "Additional Manpower" request once it's approved — no separate submission needed here.
+                  For a <strong>new hire</strong>, mobile phone budget is requested automatically through the "Manpower Request" (Additional Manpower) once it's approved — no separate submission needed here. A replacement for a resigned employee takes over their existing phone.
                 </div>
               </div>
             )}

@@ -61,7 +61,7 @@ const TABLE_LAYOUT: LayoutEntry[] = [
   { kind: "row", key: "request.gae", label: "General & Administrative Expenses (GAE)", level: 2 },
   { kind: "row", key: "request.sbu", label: "SBU Budget (Upload Template)", level: 2 },
   { kind: "row", key: "request.npc", label: "Non-Project Capex (NPC)", level: 2 },
-  { kind: "row", key: "request.headcount", label: "Additional Manpower", level: 2 },
+  { kind: "row", key: "request.headcount", label: "Manpower Request", level: 2 },
   { kind: "row", key: "myRequests", label: "My Requests", level: 1 },
   { kind: "row", key: "inbox", label: "Inbox", level: 1 },
   { kind: "row", key: "finalization", label: "Budget Finalization & Upload", level: 1 },

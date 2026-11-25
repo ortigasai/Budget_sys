@@ -34,7 +34,7 @@ export const ACCESS_MATRIX: Row[] = [
   r("request.da", "New Request - Depreciation & Amortization", "SBU", "XXXPX"),
   r("request.interest", "New Request - Interest Expense", "SBU", "XXXPX"),
   r("request.npc", "New Request - NPC", "NPC SBU", "XXXXP"),
-  r("request.headcount", "New Request - Additional Manpower", "N/A", "PPXPP"),
+  r("request.headcount", "New Request - Manpower Request", "N/A", "PPXPP"),
   r("myRequests", "My Requests", "N/A", "PPXPP"),
   r("inbox", "Inbox", "N/A", "PPPPP"),
   r("finalization", "Budget Finalization & Upload", "N/A", "XXXXX"),

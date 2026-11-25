@@ -765,6 +765,12 @@ export interface FollowOnMyDecision {
   timestamp: string;
 }
 
+export type ManpowerRequestType = "ADDITIONAL" | "REPLACEMENT";
+export const MANPOWER_REQUEST_TYPE_LABELS: Record<ManpowerRequestType, string> = {
+  ADDITIONAL: "Additional Manpower",
+  REPLACEMENT: "Replacement of Resigned Employee",
+};
+
 export interface AdditionalHeadcountRequest {
   id: string;
   // Null while the request is a DRAFT; assigned on submit.
@@ -773,6 +779,10 @@ export interface AdditionalHeadcountRequest {
   // at DEPT_HEAD_REVIEW.
   departmentHeadId: string | null;
   departmentHead?: { id: string; name: string; email: string } | null;
+  // Additional Manpower (new headcount) or Replacement of a resigned employee.
+  requestType: ManpowerRequestType;
+  // Only set for a REPLACEMENT.
+  resignedEmployeeName: string | null;
   position: string;
   rank: number;
   companyId: string;

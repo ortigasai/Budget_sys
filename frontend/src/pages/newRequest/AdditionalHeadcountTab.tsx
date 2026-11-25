@@ -3,7 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import { useAuth } from "../../context/AuthContext";
 import { useFiscalYear } from "../../lib/fiscalCycle";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, type AdditionalHeadcountRequest, type Company } from "../../api/client";
+import { api, MANPOWER_REQUEST_TYPE_LABELS, type AdditionalHeadcountRequest, type Company, type ManpowerRequestType } from "../../api/client";
 import { SectionLabel } from "../../components/TabBar";
 import { StatusBadge } from "../../components/StatusBadge";
 import { SearchableSelect } from "../../components/SearchableSelect";
@@ -44,6 +44,8 @@ export function AdditionalHeadcountTab({ subtitle }: { subtitle: string }) {
   });
 
   const [form, setForm] = useState({
+    requestType: "ADDITIONAL" as ManpowerRequestType,
+    resignedEmployeeName: "",
     position: "",
     rank: "",
     companyId: "",
@@ -92,7 +94,10 @@ export function AdditionalHeadcountTab({ subtitle }: { subtitle: string }) {
 
   // The form is saved as a DRAFT (no reference code yet) and only gets a code
   // and enters the approval chain on submit. Saving again updates the same draft.
+  const isReplacement = form.requestType === "REPLACEMENT";
   const payloadFromForm = () => ({
+    requestType: form.requestType,
+    resignedEmployeeName: isReplacement ? form.resignedEmployeeName.trim() : null,
     position: form.position,
     rank: Number(form.rank),
     companyId: form.companyId,
@@ -166,6 +171,8 @@ export function AdditionalHeadcountTab({ subtitle }: { subtitle: string }) {
   const editDraft = () => {
     if (!created) return;
     setForm({
+      requestType: created.requestType,
+      resignedEmployeeName: created.resignedEmployeeName ?? "",
       position: created.position,
       rank: String(created.rank),
       companyId: created.companyId,
@@ -180,7 +187,7 @@ export function AdditionalHeadcountTab({ subtitle }: { subtitle: string }) {
   const resetForm = () => {
     setCreated(null);
     setDraftId(null);
-    setForm({ position: "", rank: "", companyId: "", estimatedHireDate: "", justification: "", departmentHeadId: "" });
+    setForm({ requestType: "ADDITIONAL", resignedEmployeeName: "", position: "", rank: "", companyId: "", estimatedHireDate: "", justification: "", departmentHeadId: "" });
   };
 
   const isBusy = saveDraftMutation.isPending || submitMutation.isPending || cancelMutation.isPending;
@@ -217,6 +224,16 @@ export function AdditionalHeadcountTab({ subtitle }: { subtitle: string }) {
         </div>
 
         <div className="grid grid-cols-2 gap-4 rounded-lg border border-emerald-200 bg-emerald-50 p-4 text-sm shadow-sm sm:grid-cols-3">
+          <div>
+            <div className="text-xs text-slate-500">Request Type</div>
+            <div className="font-medium">{MANPOWER_REQUEST_TYPE_LABELS[created.requestType]}</div>
+          </div>
+          {created.requestType === "REPLACEMENT" && (
+            <div>
+              <div className="text-xs text-slate-500">Resigned Employee</div>
+              <div className="font-medium">{created.resignedEmployeeName}</div>
+            </div>
+          )}
           <div>
             <div className="text-xs text-slate-500">Originating Department</div>
             <div className="font-medium">{created.department.name}</div>
@@ -260,7 +277,7 @@ export function AdditionalHeadcountTab({ subtitle }: { subtitle: string }) {
     return (
       <div className="mx-auto max-w-xl space-y-4">
         <PageHeader
-          subtitle={<span className="font-medium text-slate-700">Additional Manpower Request submitted</span>}
+          subtitle={<span className="font-medium text-slate-700">Manpower Request submitted</span>}
           actions={
             <button
               onClick={resetForm}
@@ -276,6 +293,14 @@ export function AdditionalHeadcountTab({ subtitle }: { subtitle: string }) {
             <span className="font-mono font-bold text-emerald-800">{created.code}</span>
           </div>
           <div>
+            <span className="font-medium">Request Type:</span> {MANPOWER_REQUEST_TYPE_LABELS[created.requestType]}
+          </div>
+          {created.requestType === "REPLACEMENT" && (
+            <div>
+              <span className="font-medium">Resigned Employee:</span> {created.resignedEmployeeName}
+            </div>
+          )}
+          <div>
             <span className="font-medium">Position:</span> {created.position} (Rank {created.rank})
           </div>
           <div>
@@ -289,15 +314,26 @@ export function AdditionalHeadcountTab({ subtitle }: { subtitle: string }) {
           </div>
         </div>
         <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
-          This code stands in for {created.position} on employee pickers (like Mobile Phone requests) until they're
-          hired and added to the real roster. Once fully approved, this also auto-generates their Office 365 Account
-          and Mobile Phone budget requests.
+          {created.requestType === "REPLACEMENT" ? (
+            <>
+              The replacement takes over {created.resignedEmployeeName}'s existing Office 365 account and mobile phone, so
+              no new Office 365 Account or Mobile Phone budget requests are created.
+            </>
+          ) : (
+            <>
+              This code stands in for {created.position} on employee pickers (like Mobile Phone requests) until they're
+              hired and added to the real roster. Once fully approved, this also auto-generates their Office 365 Account
+              and Mobile Phone budget requests.
+            </>
+          )}
         </div>
       </div>
     );
   }
 
-  const isFormComplete = Boolean(form.departmentHeadId && form.position && form.rank && form.companyId && form.estimatedHireDate && form.justification);
+  const isFormComplete = Boolean(
+    form.departmentHeadId && form.position && form.rank && form.companyId && form.estimatedHireDate && form.justification && (!isReplacement || form.resignedEmployeeName.trim())
+  );
 
   return (
     <div className="mx-auto max-w-6xl space-y-4">
@@ -328,6 +364,39 @@ export function AdditionalHeadcountTab({ subtitle }: { subtitle: string }) {
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-5">
       <div className="space-y-4 lg:col-span-3">
+      <div className="space-y-4 rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+        <SectionLabel>Request Type</SectionLabel>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          {(["ADDITIONAL", "REPLACEMENT"] as const).map((t) => (
+            <label
+              key={t}
+              className={`flex cursor-pointer items-start gap-2 rounded-lg border p-3 text-sm ${form.requestType === t ? "border-emerald-500 bg-emerald-50" : "border-slate-200 hover:border-emerald-300"}`}
+            >
+              <input type="radio" name="manpowerRequestType" className="mt-0.5 accent-emerald-700" checked={form.requestType === t} onChange={() => setForm({ ...form, requestType: t })} />
+              <span>
+                <span className="block font-medium text-slate-800">{MANPOWER_REQUEST_TYPE_LABELS[t]}</span>
+                <span className="block text-xs text-slate-500">
+                  {t === "ADDITIONAL" ? "A new position. Office 365 and mobile phone requests are created once approved." : "Fills a resigned employee's position. Their Office 365 account and mobile phone are turned over."}
+                </span>
+              </span>
+            </label>
+          ))}
+        </div>
+        {isReplacement && (
+          <div>
+            <label className="block text-sm font-medium text-slate-600">
+              Name of Resigned Employee <span className="text-red-500">*</span>
+            </label>
+            <input
+              className="mt-1 w-full rounded border border-slate-300 px-2 py-1.5 text-sm"
+              placeholder="e.g. Juan A. Dela Cruz"
+              value={form.resignedEmployeeName}
+              onChange={(e) => setForm({ ...form, resignedEmployeeName: e.target.value })}
+            />
+          </div>
+        )}
+      </div>
+
       <div className="space-y-4 rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
         <SectionLabel>Position Details</SectionLabel>
         <div>
@@ -410,10 +479,11 @@ export function AdditionalHeadcountTab({ subtitle }: { subtitle: string }) {
         <div className="space-y-2 rounded-lg border border-emerald-200 bg-emerald-50/60 p-4 text-sm shadow-sm lg:sticky" style={{ top: frozenHeaderHeight + 16 }}>
           <SectionLabel>Quick Guide</SectionLabel>
           <ol className="list-decimal space-y-1.5 pl-5 text-xs text-slate-700">
+            <li>Choose Additional Manpower or Replacement of Resigned Employee. For a replacement, enter the resigned employee's name.</li>
             <li>Pick the Position from the list. Rank and Company are needed too.</li>
             <li>Enter the Estimated Hire Date.</li>
-            <li>Write a Justification for the headcount.</li>
-            <li>Save Draft to keep it for later, or Submit Request. It goes to your Department Head, then the HR Analyst, then the HR Head.</li>
+            <li>Write a Justification for the request.</li>
+            <li>Save Draft, then Submit for Approval. It goes to your Department Head, then the HR Analyst, then the HR Head.</li>
           </ol>
         </div>
       </div>

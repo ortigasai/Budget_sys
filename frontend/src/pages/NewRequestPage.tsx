@@ -11,7 +11,7 @@ type RequestTab = "standard" | "headcount" | "npc" | "revenue";
 
 const SUBTITLES: Record<RequestTab, string> = {
   standard: "Create a General & Administrative Expenses (GAE) request.",
-  headcount: "Request additional manpower.",
+  headcount: "Request additional manpower or a replacement for a resigned employee.",
   npc: "Request non-project capital expenditure.",
   revenue: "Submit a revenue request.",
 };

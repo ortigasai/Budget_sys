@@ -150,7 +150,7 @@ function NewRequestSubMenu() {
       )}
       {gate("request.headcount", true) && (
         <NavLink to="/requests/new?tab=headcount" className={subLinkClass(currentTab === "headcount")}>
-          Additional Manpower
+          Manpower Request
         </NavLink>
       )}
     </div>

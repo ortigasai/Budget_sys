@@ -1,5 +1,5 @@
 import ExcelJS from "exceljs";
-import { HeadcountRequestStage, ManpowerSubmissionStage } from "@prisma/client";
+import { HeadcountRequestStage, ManpowerRequestType, ManpowerSubmissionStage } from "@prisma/client";
 import { prisma } from "../prisma";
 import { HttpError } from "../httpError";
 import { sumMonthlyForecast } from "./budgetCalcService";
@@ -16,10 +16,14 @@ async function getMeritRate(fiscalYear: number) {
   return config?.ratePercent ?? 0;
 }
 
+// Only Additional Manpower adds headcount - a replacement fills a position
+// that's already budgeted.
+const APPROVED_ADDITIONAL = { currentStage: HeadcountRequestStage.APPROVED, requestType: ManpowerRequestType.ADDITIONAL };
+
 async function approvedHeadcountByCompany(): Promise<Record<string, number>> {
   const rows = await prisma.additionalHeadcountRequest.groupBy({
     by: ["companyId"],
-    where: { currentStage: HeadcountRequestStage.APPROVED },
+    where: APPROVED_ADDITIONAL,
     _count: { _all: true },
   });
   return Object.fromEntries(rows.map((r) => [r.companyId, r._count._all]));
@@ -89,7 +93,7 @@ interface GridRow {
  */
 async function resolveAdditionalHeadcountByComponent(fiscalYear: number): Promise<Map<string, number>> {
   const [approved, salaryLevels, payComponents] = await Promise.all([
-    prisma.additionalHeadcountRequest.findMany({ where: { currentStage: HeadcountRequestStage.APPROVED } }),
+    prisma.additionalHeadcountRequest.findMany({ where: APPROVED_ADDITIONAL }),
     prisma.manpowerSalaryLevel.findMany(),
     prisma.payComponent.findMany({
       where: { name: { in: [...Object.keys(SALARY_LEVEL_FIELD_BY_COMPONENT), "Guaranteed Bonus"] } },

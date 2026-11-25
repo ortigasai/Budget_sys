@@ -2,7 +2,7 @@ import { RequestBudgetSummary } from "../components/RequestBudgetSummary";
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, downloadFile, requestLineDisplay, type AdditionalHeadcountRequest, type BudgetRequest, type DemoUser, type HeadcountReviewDecision, type MobilePhoneBudgetRequest, type Office365AccountRequest, type ReviewDecision, type RevenueBatchSummary } from "../api/client";
+import { api, downloadFile, MANPOWER_REQUEST_TYPE_LABELS, requestLineDisplay, type AdditionalHeadcountRequest, type BudgetRequest, type DemoUser, type HeadcountReviewDecision, type MobilePhoneBudgetRequest, type Office365AccountRequest, type ReviewDecision, type RevenueBatchSummary } from "../api/client";
 import { StatusBadge } from "../components/StatusBadge";
 import { SearchableSelect } from "../components/SearchableSelect";
 import { PageHeader } from "../components/PageHeader";
@@ -99,7 +99,7 @@ function HeadcountInboxSection() {
     <div className="space-y-3">
       <div className="flex items-center gap-2">
         <span className="rounded bg-emerald-700 px-2 py-0.5 text-xs font-bold text-white">{requests.length}</span>
-        <h2 className="text-sm font-semibold tracking-wide text-emerald-800">Additional Manpower Requests</h2>
+        <h2 className="text-sm font-semibold tracking-wide text-emerald-800">Manpower Requests</h2>
       </div>
       {requests.map((r) => {
         const isOpen = expanded === r.id;
@@ -110,8 +110,12 @@ function HeadcountInboxSection() {
                 <span className="font-medium">
                   {r.position} (Rank {r.rank}) — {r.company.code}
                 </span>
+                <div className="text-xs font-medium text-slate-600">
+                  {MANPOWER_REQUEST_TYPE_LABELS[r.requestType]}
+                  {r.requestType === "REPLACEMENT" && r.resignedEmployeeName ? ` · replaces ${r.resignedEmployeeName}` : ""}
+                </div>
                 <div className="text-xs text-slate-500">
-                  {r.department.name} · by {r.createdBy.name} · est. hire{""}
+                  {r.department.name} · by {r.createdBy.name} · est. hire{" "}
                   {new Date(r.estimatedHireDate).toLocaleDateString()}
                 </div>
               </div>

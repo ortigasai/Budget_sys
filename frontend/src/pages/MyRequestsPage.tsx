@@ -113,6 +113,16 @@ function MyNewExpenseRequests() {
   );
 }
 
+// Manpower Request rows: "Manpower - Additional" / "Manpower - Replacement",
+// and the item names the resigned employee for a replacement.
+function manpowerTypeLabel(d: AdditionalHeadcountRequest) {
+  return d.requestType === "REPLACEMENT" ? "Manpower - Replacement" : "Manpower - Additional";
+}
+function manpowerItemLabel(d: AdditionalHeadcountRequest) {
+  const base = `${d.code ?? "Draft"} — ${d.position} (Rank ${d.rank})`;
+  return d.requestType === "REPLACEMENT" && d.resignedEmployeeName ? `${base} · replaces ${d.resignedEmployeeName}` : base;
+}
+
 export function MyRequestsPage() {
   const { data: budgetRequests = [], isLoading: budgetLoading } = useQuery({
     queryKey: ["my-requests"],
@@ -185,7 +195,7 @@ export function MyRequestsPage() {
   const getValue = useCallback((row: TopLevelRow, key: string): string | number | null => {
     if (row.kind === "headcount") {
       const d = row.data;
-      return { type: "Additional Manpower", item: `${d.code} — ${d.position} (Rank ${d.rank})`, stage: STAGE_LABELS[d.currentStage] ?? d.currentStage }[key] ?? null;
+      return { type: manpowerTypeLabel(d), item: manpowerItemLabel(d), stage: STAGE_LABELS[d.currentStage] ?? d.currentStage }[key] ?? null;
     }
     if (row.kind === "revenue" || row.kind === "sbu-batch") {
       const d = row.data;
@@ -389,10 +399,10 @@ export function MyRequestsPage() {
                       </>
                     ) : row.kind === "headcount" ? (
                       <>
-                        <td className="px-4 py-2 text-xs font-medium text-slate-500">Additional Manpower</td>
+                        <td className="px-4 py-2 text-xs font-medium text-slate-500">{manpowerTypeLabel(row.data)}</td>
                         <td className="px-4 py-2">
                           <Link to={`/requests/headcount/${row.data.id}`} className="font-medium text-emerald-800 hover:underline">
-                            {row.data.code} — {row.data.position} (Rank {row.data.rank})
+                            {manpowerItemLabel(row.data)}
                           </Link>
                         </td>
                         {/* Notes_11: Additional Manpower requests carry no

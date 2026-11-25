@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, type AdditionalHeadcountRequest } from "../api/client";
+import { api, MANPOWER_REQUEST_TYPE_LABELS, type AdditionalHeadcountRequest } from "../api/client";
 import { StatusBadge } from "../components/StatusBadge";
 import { SectionLabel } from "../components/TabBar";
 import { useAuth } from "../context/AuthContext";
@@ -94,6 +94,8 @@ export function HeadcountRequestDetailPage() {
 
       <div className="grid grid-cols-2 gap-4 rounded-lg border border-emerald-200 bg-emerald-50 p-4 text-sm shadow-sm sm:grid-cols-3">
         <Field label="Reference Code" value={request.code ?? "Assigned on submit"} accent={Boolean(request.code)} />
+        <Field label="Request Type" value={MANPOWER_REQUEST_TYPE_LABELS[request.requestType]} />
+        {request.requestType === "REPLACEMENT" && <Field label="Resigned Employee" value={request.resignedEmployeeName ?? "—"} />}
         <Field label="Originating Department" value={request.department.name} />
         <Field label="Company" value={request.company.code} />
         <Field label="Estimated Hire Date" value={new Date(request.estimatedHireDate).toLocaleDateString()} />

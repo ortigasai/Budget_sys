@@ -115,6 +115,15 @@ enum RequestStage {
   SBU_HEAD_REVIEW
 }
 
+// A Manpower Request is either new headcount or a replacement for someone
+// who resigned. A replacement takes over the resigned employee's existing
+// Office 365 account and mobile phone, so it doesn't create those follow-on
+// requests, and it doesn't add to the Manpower Budget's headcount.
+enum ManpowerRequestType {
+  ADDITIONAL
+  REPLACEMENT
+}
+
 enum HeadcountRequestStage {
   DRAFT
   DEPT_HEAD_REVIEW
@@ -904,6 +913,10 @@ model AdditionalHeadcountRequest {
   // actually imported into the roster. Null while the request is a DRAFT;
   // assigned when the draft is submitted.
   code              String?               @unique
+  requestType       ManpowerRequestType   @default(ADDITIONAL)
+  // Only for REPLACEMENT: who resigned (free text - they may already be off
+  // the employee list).
+  resignedEmployeeName String?
   position          String
   rank              Int
   companyId         String

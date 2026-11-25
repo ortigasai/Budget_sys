@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { z } from "zod";
-import { HeadcountRequestStage, Prisma, RoleType } from "@prisma/client";
+import { HeadcountRequestStage, ManpowerRequestType, Prisma, RoleType } from "@prisma/client";
 import { prisma } from "../prisma";
 import { asyncHandler } from "../asyncHandler";
 import { hasRole, requireAuth, requireRole } from "../middleware/auth";
@@ -29,15 +29,23 @@ const DETAIL_INCLUDE = {
   departmentHead: true,
 } satisfies Prisma.AdditionalHeadcountRequestInclude;
 
-const createSchema = z.object({
-  position: z.string().min(1),
-  rank: z.number().int(),
-  companyId: z.string(),
-  estimatedHireDate: z.string().datetime(),
-  justification: z.string().min(1),
-  // Picked by the requester (Department Head / Approver), same as GAE.
-  departmentHeadId: z.string().min(1),
-});
+const createSchema = z
+  .object({
+    // Additional Manpower (new headcount) or Replacement of a resigned employee.
+    requestType: z.nativeEnum(ManpowerRequestType).default(ManpowerRequestType.ADDITIONAL),
+    resignedEmployeeName: z.string().trim().optional().nullable(),
+    position: z.string().min(1),
+    rank: z.number().int(),
+    companyId: z.string(),
+    estimatedHireDate: z.string().datetime(),
+    justification: z.string().min(1),
+    // Picked by the requester (Department Head / Approver), same as GAE.
+    departmentHeadId: z.string().min(1),
+  })
+  .refine((b) => b.requestType !== ManpowerRequestType.REPLACEMENT || !!b.resignedEmployeeName, {
+    message: "Enter the name of the resigned employee.",
+    path: ["resignedEmployeeName"],
+  });
 
 // Notes_8: "Submitted request will generate a code - MR-'YY'-001." Sequential
 // per calendar year of submission, e.g. MR-26-001, MR-26-002. A plain
@@ -62,7 +70,12 @@ async function loadOwnDraft(id: string, userId: string) {
 }
 
 function draftData(body: z.infer<typeof createSchema>) {
-  return { ...body, estimatedHireDate: new Date(body.estimatedHireDate) };
+  return {
+    ...body,
+    // Only a replacement names the resigned employee.
+    resignedEmployeeName: body.requestType === ManpowerRequestType.REPLACEMENT ? body.resignedEmployeeName! : null,
+    estimatedHireDate: new Date(body.estimatedHireDate),
+  };
 }
 
 additionalHeadcountRouter.post(

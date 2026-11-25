@@ -1,4 +1,4 @@
-import { HeadcountRequestStage, ReviewDecisionType } from "@prisma/client";
+import { HeadcountRequestStage, ManpowerRequestType, ReviewDecisionType } from "@prisma/client";
 import { prisma } from "../prisma";
 import { HttpError } from "../httpError";
 
@@ -73,7 +73,9 @@ export const hrHeadHeadcountDecision = async (
   // Notes_8: the hire is confirmed once HR Head approves — that's when the
   // Office 365 Account request (IS & IT) and Mobile Phone budget request
   // (Admin Services) are both created for their respective reviewers.
-  if (decision === "APPROVE") {
+  // A replacement takes over the resigned employee's existing account and
+  // phone, so only Additional Manpower gets these follow-ons.
+  if (decision === "APPROVE" && updated.requestType === ManpowerRequestType.ADDITIONAL) {
     await prisma.office365AccountRequest.create({ data: { additionalHeadcountRequestId: requestId } });
     await prisma.mobilePhoneBudgetRequest.create({ data: { additionalHeadcountRequestId: requestId } });
   }
