@@ -4,6 +4,7 @@ import { RequireRole } from "./components/RequireRole";
 import { PhaseMenuPage } from "./pages/PhaseMenuPage";
 import { HomePage } from "./pages/HomePage";
 import { PortalRequestsPage } from "./pages/PortalRequestsPage";
+import { TotalPortalRequestsPage } from "./pages/TotalPortalRequestsPage";
 import { NewRequestPage } from "./pages/NewRequestPage";
 import { MyRequestsPage } from "./pages/MyRequestsPage";
 import { RequestDetailPage } from "./pages/RequestDetailPage";
@@ -40,6 +41,7 @@ export default function App() {
       <Route element={<Layout />}>
         <Route index element={<PhaseMenuPage />} />
         <Route path="phase1" element={<HomePage />} />
+        <Route path="dashboard/totals/requests" element={<TotalPortalRequestsPage />} />
         <Route path="dashboard/:departmentId/requests" element={<PortalRequestsPage />} />
         <Route path="requests/new" element={<NewRequestPage />} />
         <Route path="requests/mine" element={<MyRequestsPage />} />

@@ -117,7 +117,8 @@ export async function listPoolConsumingRequests(departmentId: string, fiscalYear
     include: {
       expenseLineItem: true,
       department: true,
-      createdBy: true,
+      // Only what the drill-down shows — never the whole User row.
+      createdBy: { select: { name: true, email: true } },
     },
     orderBy: { updatedAt: "desc" },
   });

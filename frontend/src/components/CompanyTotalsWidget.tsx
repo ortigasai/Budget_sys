@@ -56,7 +56,12 @@ export function CompanyTotalsWidget({ fiscalYear }: { fiscalYear: number }) {
             note={`${gae.departmentCount} centralized departments: (${peso(gae.actualsYtd2026)} YTD Actuals + ${peso(gae.remainingForecast2026)} Remaining Forecast) x each department's growth rate`}
             link={{ to: "/forecast?category=GAE", label: "View Forecast" }}
           />
-          <Tile label={`${fiscalYear} GAE Portal Approved and Pending Requests`} value={peso(gae.portalRequests)} tone="blue" />
+          <Tile
+            label={`${fiscalYear} GAE Portal Approved and Pending Requests`}
+            value={peso(gae.portalRequests)}
+            tone="blue"
+            link={{ to: `/dashboard/totals/requests?fiscalYear=${fiscalYear}`, label: "View Requests" }}
+          />
           <Tile label="Remaining GAE Pool" value={peso(gae.remainingPool)} tone={gae.remainingPool < 0 ? "red" : "emerald"} />
           <Tile
             label="Board-Approved G&A"
@@ -77,7 +82,13 @@ export function CompanyTotalsWidget({ fiscalYear }: { fiscalYear: number }) {
             note="All NPC SBUs, Original + Additions/Reductions"
             link={{ to: "/step5?category=NPC", label: "Board-Approved NPC Budget" }}
           />
-          <Tile label="Total Approved and Proposed" value={peso(npcRequests)} tone="blue" note={`${npc.requestCount} NPC request(s), net of budget cuts - ${peso(npc.approved)} fully approved`} />
+          <Tile
+            label="Total Approved and Proposed"
+            value={peso(npcRequests)}
+            tone="blue"
+            note={`${npc.requestCount} NPC request(s), net of budget cuts - ${peso(npc.approved)} fully approved`}
+            link={{ to: "/step5?category=NPC", label: "View Requests by SBU" }}
+          />
           <Tile label="Available NPC Budget" value={peso(npc.available)} tone={npc.available < 0 ? "red" : "emerald"} />
           <Tile label="Proposed (in review)" value={peso(npc.proposed)} tone="amber" />
         </div>

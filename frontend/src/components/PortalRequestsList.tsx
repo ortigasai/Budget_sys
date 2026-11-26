@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { api, type Department, type ExpenseLineItem } from "../api/client";
 import { StatusBadge } from "./StatusBadge";
 
-interface PoolConsumingRequest {
+export interface PoolConsumingRequest {
   id: string;
   proposedAmount: number;
   budgetCutAmount: number;
@@ -31,13 +31,19 @@ export function PortalRequestsList({ departmentId, fiscalYear }: { departmentId:
     enabled: !!departmentId,
   });
 
-  const total = requests.reduce((sum, r) => sum + Math.max(0, r.proposedAmount - r.budgetCutAmount), 0);
-
   if (isLoading) return <div className="text-sm text-slate-400">Loading…</div>;
 
   if (requests.length === 0) {
     return <div className="rounded-lg border border-slate-200 bg-white p-4 text-sm text-slate-500">No requests are currently consuming this department's pool.</div>;
   }
+
+  return <PortalRequestsTable requests={requests} />;
+}
+
+// The table itself, also used by the Budget Officer's all-departments
+// drill-down (TotalPortalRequestsPage).
+export function PortalRequestsTable({ requests }: { requests: PoolConsumingRequest[] }) {
+  const total = requests.reduce((sum, r) => sum + Math.max(0, r.proposedAmount - r.budgetCutAmount), 0);
 
   return (
     <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white shadow-sm">

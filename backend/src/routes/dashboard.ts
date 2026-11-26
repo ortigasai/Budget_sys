@@ -68,6 +68,31 @@ dashboardRouter.get(
   })
 );
 
+// Drill-down behind the totals' "GAE Portal Approved and Pending Requests"
+// tile: the same requests listPoolConsumingRequests returns for each core
+// department, grouped by owning department (departments with none omitted).
+dashboardRouter.get(
+  "/totals/requests",
+  requireRoleOrAccess([RoleType.BUDGET_OFFICER], "finalization"),
+  asyncHandler(async (req, res) => {
+    const { targetCalendarYear } = await getFiscalCycle();
+    const fiscalYear = Number(req.query.fiscalYear ?? targetCalendarYear);
+
+    const core = await prisma.department.findMany({
+      where: { name: { in: CORE_CENTRALIZED_DEPARTMENT_NAMES } },
+      orderBy: { name: "asc" },
+    });
+    const groups = await Promise.all(
+      core.map(async (d) => {
+        const requests = await listPoolConsumingRequests(d.id, fiscalYear);
+        const total = requests.reduce((s, r) => s + Math.max(0, r.proposedAmount - r.budgetCutAmount), 0);
+        return { department: { id: d.id, name: d.name }, total, requests };
+      })
+    );
+    res.json({ fiscalYear, groups: groups.filter((g) => g.requests.length > 0) });
+  })
+);
+
 // FR-1.6 — Cap / Remaining Pool, recomputed live on every read.
 dashboardRouter.get(
   "/:departmentId",
